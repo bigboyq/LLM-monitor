@@ -4,58 +4,72 @@ import SQLite3
 
 final class GlmZcodeDBReaderTests: GlmTestCase {
 
-    /// 合并测试：Method A 分类 + assistant_message_id NULL + 字符分摊 part 关联 + malformed JSON。
-    /// 6 行 model_usage 覆盖所有 reasoning 路径（优先级：native > reasoning part > text only > NULL > malformed），
-    /// 一天内聚合结果应严格符合 Method A 规则。
-    func testGlmZcodeDBReaderMethodAClassification() throws {
+    /// 合并测试：日级字符分摊 + native 优先 + 无 part → reasoning=0 + malformed JSON。
+    /// 智谱行与分片统一走 `ReasoningCharSplit`：日聚合按 day 分摊、样本按行分摊，
+    /// native `reasoning_tokens > 0` 的日子/行按账单值优先。三个互不重叠的日子，
+    /// 避免 day 级分摊互相稀释。
+    func testGlmZcodeDBReaderCharSplitDayAggregation() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: localCalendar())
-        let ts = ms(day)
         let cal = localCalendar()
+        let day = Self.todayMidnight(calendar: cal)
+        let yesterday = cal.date(byAdding: .day, value: -1, to: day)!
+        let olderDay = cal.date(byAdding: .day, value: -2, to: day)!
 
-        // R1: 账单层直接给 reasoning_tokens=20 → 优先级路径
-        try insert(databaseURL: db, id: "r1", sessionID: "s", turnID: "t1", timestamp: ts,
-                   input: 100, output: 30, reasoning: 20, assistantMessageID: "msg_r1")
-        // R2: assistant_message_id + text part（无 reasoning part）→ output 保持
-        try insertPart(databaseURL: db, id: "p_text", messageID: "msg_text", jsonData: #"{"type":"text","text":"hello"}"#)
-        try insert(databaseURL: db, id: "r2", sessionID: "s", turnID: "t2", timestamp: ts + 1,
-                   input: 100, output: 30, assistantMessageID: "msg_text")
-        // R3: assistant_message_id + reasoning part → 整轮 output 归 reasoning
-        try insertPart(databaseURL: db, id: "p_reason", messageID: "msg_reason", jsonData: #"{"type":"reasoning","text":"thinking..."}"#)
-        try insert(databaseURL: db, id: "r3", sessionID: "s", turnID: "t3", timestamp: ts + 2,
-                   input: 100, output: 30, assistantMessageID: "msg_reason")
-        // R4: assistant_message_id + 同时有 reasoning 和 text parts → 走 Method A（EXISTS 命中 reasoning）
-        try insertPart(databaseURL: db, id: "p_both_reason", messageID: "msg_both", jsonData: #"{"type":"reasoning","text":"think"}"#)
-        try insertPart(databaseURL: db, id: "p_both_text", messageID: "msg_both", jsonData: #"{"type":"text","text":"answer"}"#)
-        try insert(databaseURL: db, id: "r4", sessionID: "s", turnID: "t4", timestamp: ts + 3,
-                   input: 100, output: 30, assistantMessageID: "msg_both")
-        // R5: assistant_message_id + 损坏 JSON → json_valid fallback 到 {} → 走 output
-        try insertPart(databaseURL: db, id: "p_bad_json", messageID: "msg_bad_json", jsonData: "{invalid")
-        try insert(databaseURL: db, id: "r5", sessionID: "s", turnID: "t5", timestamp: ts + 4,
-                   input: 100, output: 30, assistantMessageID: "msg_bad_json")
-        // R6: assistant_message_id = NULL → 没 part 可 join → output 保持
-        try insert(databaseURL: db, id: "r6", sessionID: "s", turnID: "t6", timestamp: ts + 5,
-                   input: 100, output: 30, assistantMessageID: nil)
-        // R7: native reasoning 与 reasoning part 同时命中 → native priority wins
-        try insertPart(databaseURL: db, id: "p_priority", messageID: "msg_priority", jsonData: #"{"type":"reasoning","text":"thinking"}"#)
-        try insert(databaseURL: db, id: "r7", sessionID: "s", turnID: "t7", timestamp: ts + 6,
-                   input: 100, output: 30, reasoning: 25, assistantMessageID: "msg_priority")
+        // Day A（今天）：两行思考行，各 750 思考 / 250 可见字符 → 75% 占比
+        for index in 0...1 {
+            try insert(databaseURL: db, id: "a\(index)", sessionID: "sA", turnID: "ta\(index)",
+                       timestamp: ms(day) + Int64(index), input: 100, output: 40,
+                       assistantMessageID: "msg_a\(index)")
+            try insertPart(databaseURL: db, id: "pa_r\(index)", messageID: "msg_a\(index)",
+                           jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 750))"}"#)
+            try insertPart(databaseURL: db, id: "pa_t\(index)", messageID: "msg_a\(index)",
+                           jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 250))"}"#)
+        }
+        // Day B（昨天）：native reasoning 行 → 账单值优先透传（即使 part 字符比例不同）
+        try insert(databaseURL: db, id: "b1", sessionID: "sB", turnID: "tb1",
+                   timestamp: ms(yesterday), input: 100, output: 50, reasoning: 20,
+                   assistantMessageID: "msg_b1")
+        try insertPart(databaseURL: db, id: "pb_r", messageID: "msg_b1",
+                       jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 7))"}"#)
+        try insertPart(databaseURL: db, id: "pb_t", messageID: "msg_b1",
+                       jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 3))"}"#)
+        // Day C（前天）：assistant_message_id = NULL（无 part 可 join）+ 损坏 JSON part
+        // → 都没有可分摊的思考字符 → reasoning 保持 0
+        try insert(databaseURL: db, id: "c1", sessionID: "sC", turnID: "tc1",
+                   timestamp: ms(olderDay), input: 100, output: 33, assistantMessageID: nil)
+        try insert(databaseURL: db, id: "c2", sessionID: "sC", turnID: "tc2",
+                   timestamp: ms(olderDay) + 1, input: 100, output: 33, assistantMessageID: "msg_c2")
+        try insertPart(databaseURL: db, id: "pc_bad", messageID: "msg_c2", jsonData: "{invalid")
 
         let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
-        let today = try XCTUnwrap(aggregate.perDay[day])
 
-        // 7 行 input 累计 700; cacheRead 0
-        XCTAssertEqual(today.inputTokens, 700)
-        // tout = R1(30) + R2(30) + R3(0) + R4(0) + R5(30) + R6(30) + R7(30) = 150
-        XCTAssertEqual(today.outputTokens, 150)
-        // trsn = R1(20) + R2(0) + R3(30) + R4(30) + R5(0) + R6(0) + R7(25) = 105
-        XCTAssertEqual(today.reasoningTokens, 105)
-        XCTAssertEqual(today.rounds, 7)
-        XCTAssertEqual(today.turns, 7)
-
+        // Day A：80 output × 1500/2000 思考占比 → 60 reasoning + 20 output，守恒
+        let dayA = try XCTUnwrap(aggregate.perDay[day])
+        XCTAssertEqual(dayA.inputTokens, 200)
+        XCTAssertEqual(dayA.reasoningTokens, 60, "80 × 750/1000，day 级分摊与分片同公式")
+        XCTAssertEqual(dayA.outputTokens, 20)
+        XCTAssertEqual(dayA.reasoningTokens + dayA.outputTokens, 80, "守恒")
+        XCTAssertEqual(dayA.rounds, 2)
         // 守恒: total = uncached input + cacheRead + tout + trsn
-        XCTAssertEqual(today.totalTokens, today.inputTokens + today.cacheReadTokens + today.outputTokens + today.reasoningTokens)
+        XCTAssertEqual(dayA.totalTokens, dayA.inputTokens + dayA.cacheReadTokens + dayA.outputTokens + dayA.reasoningTokens)
+
+        // Day B：native reasoning 列全和 > 0 → 整日照账单值，不做字符分摊
+        let dayB = try XCTUnwrap(aggregate.perDay[yesterday])
+        XCTAssertEqual(dayB.reasoningTokens, 20, "native 优先透传")
+        XCTAssertEqual(dayB.outputTokens, 50)
+
+        // Day C：无思考字符 → reasoning = 0，output 原样保留
+        let dayC = try XCTUnwrap(aggregate.perDay[olderDay])
+        XCTAssertEqual(dayC.reasoningTokens, 0)
+        XCTAssertEqual(dayC.outputTokens, 66, "无 part / malformed JSON 行不凭空生思考")
+
+        // 样本行级分摊（started_at 升序：Day C → Day B → Day A）：
+        // 40 × 0.75 = 30；native 行透传；Day C 行保持 0
+        XCTAssertEqual(aggregate.samples.count, 5)
+        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [0, 0, 20, 30, 30])
+        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [33, 33, 50, 10, 10])
+        XCTAssertEqual(aggregate.samples[3].reasoningOutputTokens + aggregate.samples[3].outputTokens, 40, "行级守恒")
     }
 
     /// R9: 单行负 token 不能抵消其他行的合法正值；所有公开字段保持 0...Int.max。

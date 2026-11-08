@@ -477,11 +477,13 @@ final class MinimaxDBReaderTests: XCTestCase {
     /// ttftSeconds 同源同行）；队列耗尽 → nil。
     func testVerifiedDurationPopsFIFOUntilTokenMatch() {
         func entry(
-            input: Int?, output: Int?, seconds: Double?, ttft: Double? = nil
+            input: Int?, output: Int?, seconds: Double?, ttft: Double? = nil,
+            thinkingChars: Int = 0, msgChars: Int = 0
         ) -> MinimaxMessageDurationEntry {
             MinimaxMessageDurationEntry(
                 inputTokens: input, outputTokens: output,
-                durationSeconds: seconds, ttftSeconds: ttft
+                durationSeconds: seconds, ttftSeconds: ttft,
+                thinkingChars: thinkingChars, msgChars: msgChars
             )
         }
 
@@ -508,6 +510,153 @@ final class MinimaxDBReaderTests: XCTestCase {
         )
         XCTAssertNil(noDurationMatch?.durationSeconds, "命中但缺时长 → durationSeconds 为 nil")
         XCTAssertTrue(noDuration.isEmpty, "条目仍被消费")
+    }
+
+    // MARK: - 调用级字符分摊（v19）
+
+    /// 配对成功的样本用本行 thinking/msg 字符做调用级拆分（不再被日级平均抹平）：
+    /// 逐样本结果与 samples 同下标返回，日聚合 Σ 出 paired 产物；样本本身的
+    /// reasoning 字段仍由 scanner 落（reader 保持 0）。无思考字符的配对调用
+    /// （轻量确认）调用级结果为 (0, 全部 output)，不再吃日级大锅饭。
+    func testV2PairedSamplesSplitAtCallLevelWithRowChars() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 1000, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-b", timestampMs: base + 1_000,
+                         input: 100, output: 400, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // 重度推演：thinking 3000 / msg 1000 → 75% → reason 750 / output 250。
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 100, output: 1000, durationMs: 5_000,
+                                                    thinkingChars: 3000, msgChars: 1000),
+                           turnID: "turn-a"),
+                // 轻量确认：无思考字符 → 全记可见输出 (0, 400)。
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 100, output: 400, durationMs: 6_000,
+                                                    msgChars: 400),
+                           turnID: "turn-b"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 2)
+        XCTAssertEqual(aggregate.samples[0].durationSeconds, 5.0, "字符列不干扰时长 FIFO 配对")
+        XCTAssertEqual(aggregate.samples[1].durationSeconds, 6.0)
+        XCTAssertEqual(aggregate.samples[0].reasoningOutputTokens, 0, "reasoning 仍由 scanner 落，reader 保持账面值")
+
+        XCTAssertEqual(aggregate.perSampleCallSplits.count, 2)
+        XCTAssertEqual(
+            aggregate.perSampleCallSplits[0],
+            MinimaxCallSplit(reasoningTokens: 750, outputTokens: 250),
+            "3000/(3000+1000) × 1000 = 750，守恒 750 + 250 == 1000"
+        )
+        XCTAssertEqual(
+            aggregate.perSampleCallSplits[1],
+            MinimaxCallSplit(reasoningTokens: 0, outputTokens: 400),
+            "配对行证实无思考文本 → 全记可见输出，不吃日级比例"
+        )
+
+        let day = try XCTUnwrap(aggregate.perDay.values.first)
+        XCTAssertEqual(
+            aggregate.perDayPairedSplits[day.dayStart],
+            MinimaxPairedSplitDay(reasonTokens: 750, outputTokens: 650, thinkingChars: 3000, visibleChars: 1400)
+        )
+    }
+
+    /// 配对行的可见字符含 tool_call_args（与日级字符聚合同口径），全行配对时
+    /// Σ 配对可见字符 == 日级 output 字符，残余差减恰好归零。
+    func testV2PairedRowCharsIncludeToolCallArgsLikeDayAggregate() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 10, output: 500, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 10, output: 500, durationMs: 1_000,
+                                                    thinkingChars: 1000, msgChars: 200, toolArgsChars: 300),
+                           turnID: "turn-a"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+        let day = try XCTUnwrap(aggregate.perDay.values.first)
+
+        let chars = try XCTUnwrap(aggregate.perDayChars[day.dayStart])
+        XCTAssertEqual(chars.output, 500, "日级聚合: msg_content 200 + tool_call_args 300")
+        XCTAssertEqual(
+            aggregate.perDayPairedSplits[day.dayStart],
+            MinimaxPairedSplitDay(reasonTokens: 333, outputTokens: 167, thinkingChars: 1000, visibleChars: 500),
+            "配对可见字符与日级同口径（含 tool args）；1000/1500 × 500 ≈ 333"
+        )
+        XCTAssertEqual(
+            aggregate.perSampleCallSplits.first,
+            MinimaxCallSplit(reasoningTokens: 333, outputTokens: 167)
+        )
+    }
+
+    /// 未配对（无 message 行 / usage 核对不上）→ 调用级拆分为 nil，配对日聚合
+    /// 为空；日级字符聚合不受影响（未配对行的字符留给残余路径）。
+    func testV2UnpairedRowsGetNilCallSplitAndEmptyPairedDay() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 1000, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-b", timestampMs: base + 1_000,
+                         input: 100, output: 500, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // turn-a 无 message 行 → 队列耗尽 → 未配对。
+                // turn-b 的行 usage 核对不上（999/999）→ 丢弃 → 未配对。
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 999, output: 999, durationMs: 2_000,
+                                                    thinkingChars: 1000, msgChars: 1000),
+                           turnID: "turn-b"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 2)
+        XCTAssertEqual(aggregate.perSampleCallSplits, [nil, nil], "未配对样本没有调用级拆分")
+        XCTAssertTrue(aggregate.perDayPairedSplits.isEmpty, "无配对 → 整天回退日级行为")
+        let day = try XCTUnwrap(aggregate.perDay.values.first)
+        let chars = try XCTUnwrap(aggregate.perDayChars[day.dayStart])
+        XCTAssertEqual(chars.reason, 1000, "日级字符聚合不受 FIFO 配对影响")
+        XCTAssertEqual(chars.output, 1000)
+    }
+
+    /// `callLevelSplit` 纯逻辑契约：0 思考字符 → (0, output) 全记可见；output <= 0
+    /// → nil（无从分摊）；正常比例走 `ReasoningCharSplit` 且守恒。
+    func testCallLevelSplitContracts() {
+        XCTAssertEqual(
+            MinimaxDBReader.callLevelSplit(outputTokens: 400, thinkingChars: 0, visibleChars: 400),
+            MinimaxCallSplit(reasoningTokens: 0, outputTokens: 400)
+        )
+        XCTAssertNil(
+            MinimaxDBReader.callLevelSplit(outputTokens: 0, thinkingChars: 100, visibleChars: 10),
+            "output <= 0 无从分摊 → nil，字符留给日级残余路径"
+        )
+        XCTAssertEqual(
+            MinimaxDBReader.callLevelSplit(outputTokens: 1000, thinkingChars: 3000, visibleChars: 1000),
+            MinimaxCallSplit(reasoningTokens: 750, outputTokens: 250),
+            "与日级同一 ReasoningCharSplit 公式"
+        )
     }
 }
 
@@ -764,14 +913,35 @@ private func jsonString(_ value: String) -> String {
 /// assistant 行 `data_json` 的 `$.usage` 夹具：字段按需出现（nil = 整个字段缺失，
 /// 模拟空行 / 旧 schema 行），与生产 `$.usage.input_tokens` / `$.usage.output_tokens`
 /// / `$.usage.request_duration_ms` / `$.usage.decode_duration_ms` 的键名逐字一致。
+/// `thinkingChars` / `msgChars` / `toolArgsChars` 生成等长的 `$.thinking_content` /
+/// `$.msg_content` / `$.tool_calls[].tool_call_args` 字符（0 = 键不出现，保持旧
+/// 夹具字节不变），供调用级字符分摊测试。
 /// 模块内可见（与 `makeV2Database` / `TokenRow` 同作用域），scanner 套件共用。
-func assistantUsageJSON(input: Int?, output: Int?, durationMs: Int?, decodeMs: Int? = nil) -> String {
+func assistantUsageJSON(
+    input: Int?,
+    output: Int?,
+    durationMs: Int?,
+    decodeMs: Int? = nil,
+    thinkingChars: Int = 0,
+    msgChars: Int = 0,
+    toolArgsChars: Int = 0
+) -> String {
     var fields: [String] = []
     if let input { fields.append("\"input_tokens\":\(input)") }
     if let output { fields.append("\"output_tokens\":\(output)") }
     if let durationMs { fields.append("\"request_duration_ms\":\(durationMs)") }
     if let decodeMs { fields.append("\"decode_duration_ms\":\(decodeMs)") }
-    return "{\"usage\":{" + fields.joined(separator: ",") + "}}"
+    var data = "{\"usage\":{" + fields.joined(separator: ",") + "}"
+    if thinkingChars > 0 {
+        data += ",\"thinking_content\":\"\(String(repeating: "t", count: thinkingChars))\""
+    }
+    if msgChars > 0 {
+        data += ",\"msg_content\":\"\(String(repeating: "c", count: msgChars))\""
+    }
+    if toolArgsChars > 0 {
+        data += ",\"tool_calls\":[{\"tool_call_args\":\"\(String(repeating: "a", count: toolArgsChars))\"}]"
+    }
+    return data + "}"
 }
 
 /// 把 message 表替换成缺 `data_json` 列的坏 schema，让字符聚合 SQL 确定性失败。

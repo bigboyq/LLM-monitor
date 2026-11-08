@@ -31,8 +31,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
             throw SQLiteConnectionError.openFailed(path: path, code: 0, extendedCode: 0, message: "open failed")
         }
         defer { sqlite3_close(db) }
-        // schema 与 ZCode 真实 `model_usage` 表一致（含 part 表：智谱行走 Method A
-        // 归类、非智谱分片按字符比例分摊，都经 assistant_message_id JOIN 它）。
+        // schema 与 ZCode 真实 `model_usage` 表一致（含 part 表：智谱主卡与非智谱
+        // 分片都按字符比例分摊，都经 assistant_message_id JOIN 它）。
         let sql = """
         CREATE TABLE model_usage (
             id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn_id TEXT,
@@ -449,25 +449,51 @@ final class ZcodeProviderSliceTests: XCTestCase {
         XCTAssertEqual(sample.outputTokens, 200)
     }
 
-    /// 智谱行仍走 Method A 整轮归类，与非智谱字符分摊互不干扰。
-    func testZcodeGlmRowsKeepMethodAWhileSlicesSplitByChars() throws {
+    /// 智谱主卡与分片统一走字符分摊（旧 Method A 整轮归类已下线）：有思考 part 的
+    /// 智谱行按 `ReasoningCharSplit` 比例拆分 output，native `reasoning_tokens > 0`
+    /// 的日子/行账单值优先透传，分摊守恒，与非智谱分片互不干扰。
+    func testZcodeGlmRowsSplitByCharsUnifiedWithSlices() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
         let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
+        let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
 
+        // 今日：思考 750 字符 / 可见 250 字符 → 200 output 按 75% 拆分
         try insert(databaseURL: db, id: "glm1", sessionID: "g-s", turnID: "g-t1", timestamp: ms(today),
                    input: 100, output: 200, model: "GLM-5.3",
                    provider: "builtin:bigmodel-coding-plan", assistantMessageID: "g-msg")
         try insertPart(databaseURL: db, partID: "p-r", messageID: "g-msg", data: reasoningPartJSON(chars: 750))
         try insertPart(databaseURL: db, partID: "p-t", messageID: "g-msg", data: textPartJSON(chars: 250))
+        // 昨天：账面 reasoning_tokens > 0 → 账单值优先（独立日子，避免与字符分摊日混算）
+        try insert(databaseURL: db, id: "glm2", sessionID: "g-s2", turnID: "g-t2", timestamp: ms(yesterday),
+                   input: 100, output: 200, reasoning: 60, model: "GLM-5.3",
+                   provider: "builtin:bigmodel-coding-plan", assistantMessageID: "g-msg2")
+        try insertPart(databaseURL: db, partID: "p-r2", messageID: "g-msg2", data: reasoningPartJSON(chars: 750))
+        try insertPart(databaseURL: db, partID: "p-t2", messageID: "g-msg2", data: textPartJSON(chars: 250))
 
         let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
             dbPath: URL(fileURLWithPath: db), calendar: cal
         )
+
+        // 日聚合与分片同一字符分摊公式
         let glmDay = try XCTUnwrap(aggregate.perDay[today])
-        XCTAssertEqual(glmDay.reasoningTokens, 200, "Method A 整轮归 reasoning，不按字符分摊")
-        XCTAssertEqual(glmDay.outputTokens, 0)
+        XCTAssertEqual(glmDay.reasoningTokens, 150, "200 × 750/1000，day 级分摊")
+        XCTAssertEqual(glmDay.outputTokens, 50)
+        XCTAssertEqual(glmDay.reasoningTokens + glmDay.outputTokens, 200, "守恒")
+
+        // native reasoning 列全和 > 0 的日子按账单值优先透传，不按字符二次分摊
+        let nativeDay = try XCTUnwrap(aggregate.perDay[yesterday])
+        XCTAssertEqual(nativeDay.reasoningTokens, 60)
+        XCTAssertEqual(nativeDay.outputTokens, 200)
+
+        // 样本行级分摊（started_at 升序：昨天在前），与日级同公式
+        XCTAssertEqual(aggregate.samples.count, 2)
+        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [60, 150])
+        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [200, 50])
+        XCTAssertEqual(aggregate.samples[1].reasoningOutputTokens + aggregate.samples[1].outputTokens, 200, "行级也守恒")
+
+        // 分片互不干扰
         XCTAssertNil(aggregate.providerSlices.perSliceDay["minimax"])
         XCTAssertNil(aggregate.providerSlices.perSliceDay["deepseek"])
     }

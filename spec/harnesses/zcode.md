@@ -36,7 +36,8 @@ assistant_message_id           # FK to message.id; NULL for session_title, other
                                #   to test whether a reasoning part exists
 input_tokens                   # FULL input (cacheRead is a subset, NOT uncached)
 output_tokens                  # generation (includes folded reasoning for reasoning models)
-reasoning_tokens               # native value when supplied; otherwise Method A may classify output by part type
+reasoning_tokens               # native value when supplied (0 rows in practice); otherwise
+                               #   reader splits output by part char share (ReasoningCharSplit)
 cache_read_input_tokens        # cache hit
 cache_creation_input_tokens    # cache write (bookkeeping, not in total)
 ```
@@ -61,60 +62,54 @@ part.data                      # JSON: {"type": "reasoning"|"text", ...}
 `uncached_input + cache_read + output + reasoning`; `cache_write` is reported separately
 and is not included in the consumption total.
 
-**Reasoning 口径（方案 A — 按 Round 整轮归类）**：GLM 系列是 reasoning model。ZCode 的账单层
-`model_usage.reasoning_tokens` 列实测恒为 0（GLM-5.2 / 5.3 / 5.3-Flash 均如此，2026-08-28 复核
-2636 行 GLM-5.3 亦全部走 part 表）—— 但 ZCode
+**Reasoning 口径（2026-11-08 起：智谱行与分片统一字符分摊；历史方案 Method A 已废止）**：
+GLM 系列是 reasoning model。ZCode 的账单层 `model_usage.reasoning_tokens` 列实测恒为 0
+（GLM-5.2 / 5.3 / 5.3-Flash 均如此，2026-08-28 复核 2636 行 GLM-5.3 亦全部走 part 表；
+2026-11-08 复测 bigmodel completed 行原生列**仍为 0 行有值**）——但 ZCode
 **实际把思考文本存到了 `part` 表**（`type='reasoning'` 的 part，`text` 字段是完整思考过程）。
 
-归类规则（**Method A — 100% 基于账单列和 part 表 JSON 直接判断，不做任何字符/token 换算**）：
+**现行规则（与「非智谱 provider 分片」同一套三段式，公式统一在 `ReasoningCharSplit`）**：
 
-| 条件 | 该轮 `output_tokens` 归到哪 |
+| 条件 | 该轮 `output_tokens` 拆分 |
 |---|---|
 | `mu.reasoning_tokens > 0`（账单层直接给出，priority path） | `reasoning_tokens` 报账单值, `output_tokens` 报账单值（独立两列；不重分类） |
-| `assistant_message_id` 存在 + `part` 表有 `type='reasoning'` part | `reasoning_tokens = output_tokens`, `output_tokens = 0`（**整轮归 reasoning**） |
-| `assistant_message_id` 存在 + `part` 表无 `type='reasoning'` part（含 text-only / 缺 type 字段 / 合法 JSON 但无 reasoning part） | `reasoning_tokens = 0`, `output_tokens = output_tokens`（保持原样） |
-| `assistant_message_id IS NULL`（`session_title` 后台任务 / 早期数据） | `reasoning_tokens = 0`, `output_tokens = output_tokens`（无 part 可关联） |
+| `assistant_message_id` 存在 + part 表有思考/可见内容 | 按 **part 字符比例**守恒拆分：reasoning 部分取 `type='reasoning'` 的 `$.text` LENGTH 和，可见部分取 `type='text'` 的 `$.text` + `type='tool'` 的 `$.state.input` LENGTH 和（与分片子查询逐字同公式）；`reasoning + output == 原始 output_tokens` 恒成立 |
+| 无 part / 缺 type / 损坏 JSON / `assistant_message_id IS NULL` | `reasoning_tokens = 0`, `output_tokens` 保持原样 |
 
-实现：`GlmZcodeDBReader.queryPerDay` 的 `SUM(CASE ... WHEN EXISTS (... type='reasoning') ...)`
-里，per-row 把 `output_tokens` 整轮归到 reasoning 列（或保持 output 列），不走字符比例估算。
-**不是 token 级精确拆分**,而是"该 round 是否整轮算 thinking"的硬分类。
+**废止 Method A 的实测依据（2026-11-08）**：旧规则「part 表有 reasoning part → 整轮
+归 reasoning、可见输出清零」存在系统性偏差——本机实测思考行 **100%（2019/2019 抽样）
+同时包含 reasoning 与 text 内容块**；H1 假设检验判定 `output_tokens` **包含思考**
+（纯文本行基准 2.06 chars/token，思考行 (think+text)/output=2.43 vs text/output=1.44，
+前者贴近基准）；整轮归类会把全部可见正文算进 reasoning。字符比例分摊与分片、
+MiniMax Code runtime / Dsh M3 同口径，是该数据面下唯一一致的估算法。
 
-> **关于字符分摊**：本节上面的归类规则、下面的边界条件表，以及"整轮硬分类、不做字符/token
-> 换算"的结论，**只适用于智谱行**。但 Method A 对**非智谱 provider 分片**不成立 —— MiniMax / DeepSeek
-> 的一轮里思考文本与正文混在同一 `assistant_message_id` 下，整轮归类会把可见正文一起算进
-> reasoning。因此分片改走**字符比例分摊**（见「非智谱 provider 分片的 reasoning 口径」），
-> 与 MiniMax Code runtime / Dsh M3 同一口径。
-> 当前状态：**分类策略仍是两套**（智谱行 = Method A 整轮归类；非智谱分片 = 字符比例分摊），
-> 但三处字符分摊的**公式**已统一到共享工具
-> `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`，不再各写一份比例算法。
+- **日聚合**（`queryPerDay` + `queryReasoningChars`）：SQL 按日汇总原始列与思考/可见
+  字符，Swift 按 day 守恒分摊（当日 native `reasoning_tokens` 全和 > 0 → 整日照账单值
+  透传）。
+- **样本**（`querySamples`）：行级两个相关子查询取本行字符，行级守恒分摊（native 优先
+  透传）。
+- 缓存 v13 重建（v12 是 Method A 结果）。
 
 | 边界条件 | 行为 |
 |---|---|
 | `assistant_message_id IS NULL` | `output_tokens` 保持原样, `reasoning_tokens = 0` |
-| `part` 表无该 `message_id` 对应行 | `output_tokens` 保持原样, `reasoning_tokens = 0` |
-| `part.data` 缺 `type` 字段 / `type='text'` / `type='tool'` | `output_tokens` 保持原样, `reasoning_tokens = 0` |
-| `part.data` 损坏 JSON | reader 先用 `json_valid` 将其替换为 `{}`，再执行 `json_extract`；走 ELSE 分支（output 保持原样、reasoning=0），静默处理 |
+| `part` 表无该 `message_id` 对应行 | 字符两侧均为 0 → `reasoning_tokens = 0`, `output_tokens` 保持原样 |
+| `part.data` 损坏 JSON | reader 先用 `json_valid` 将其替换为 `{}`，再执行 `json_extract`；该 part 不计入字符 |
 | 未来 ZCode 账单层直接写 `reasoning_tokens > 0` | priority path: `output_tokens` 报账单值, `reasoning_tokens` 报账单值（独立加总） |
-
-**实测分布**（189 行 / 单 session, 2026-08-02）: Method A 把 88 / 189 行（47%）的
-`output_tokens` 整轮归为 reasoning（part 表里有 `type='reasoning'` part），跟 GLM-5.2
-"思考重" 的直觉一致。剩余 101 / 189 行（`session_title` 后台任务 + text-only part）保持
-output 不变,`reasoning_tokens = 0`。
 
 OpenCode 的 `zhipuai-coding-plan` 分片本身有原生 reasoning tokens（由
 `ProviderStatus.usageProjection` 相加合并），
-所以合并后 reason 数据来自两个独立源交叉验证。如果 Method A 估值跟 OpenCode 原生 reason
+所以合并后 reason 数据来自两个独立源交叉验证。如果字符分摊估值跟 OpenCode 原生 reason
 差异巨大（>20%），说明 ZCode schema 变了（新增 reason 字段 / part 类型变化），
 需要重新评估 reader 逻辑。
 
 per-sample 分布：reader 直接输出 `LocalTokenUsageSample.reasoningOutputTokens` 跟 `outputTokens`
-(Method A 已经在 SQL CASE 里算好),scanner 不再额外做 sample 回写——比字符分摊时代少一层
-"按日比例回写"的复杂度。
+（行级字符分摊已在 reader 算好），scanner 不再额外做 sample 回写。
 
 ### 非智谱 provider 分片的 reasoning 口径（字符比例三段式）
 
 ZCode 的 `model_usage.reasoning_tokens` 对**所有** provider 恒 0，非智谱分片的思考文本同样
-只存在于 `part` 表。分片**不走 Method A**（智谱行的整轮硬分类会把 thinking 与正文混排的
+只存在于 `part` 表。分片与智谱行统一走字符分摊（Method A 的整轮硬分类会把 thinking 与正文混排的
 一轮整体算成 reasoning），改走与 MiniMax Code runtime / Dsh M3 同款的**字符比例守恒分摊**。
 
 公式收敛到共享工具 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` 的
@@ -191,7 +186,7 @@ ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 分类：
 | Start Plan | `provider_id` 含 `bigmodel-start-plan`（`account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`） | 智谱体验套餐；从「其他」里单独摘出成行（`isGlmStartPlanSample`） | 否 | 是 |
 | 加速卡 | `account:bigmodel-highspeed-card`、`account:zai-highspeed-card`（显式枚举于 `zcodeGlmHighspeedProviderIDs`；2026-10-25 实测只有 bigmodel 变体出现，zai 变体按账号化命名规律预防性登记） | ZCode 加速卡权益（highspeed-card，`model_id` 就是普通 `GLM-5.3`，不是独立模型）；从「其他」里单独摘出成行（`isGlmHighspeedSample`） | 否 | 是 |
 | 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`（含 `account:zai-start-plan`） | 未登记的未来智谱新套餐 | 否 | 是 |
-| （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片；reasoning 口径见「非智谱 provider 分片的 reasoning 口径」，不走 Method A） | — | — |
+| （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片；reasoning 口径见「非智谱 provider 分片的 reasoning 口径」，与智谱行统一字符分摊） | — | — |
 
 Start Plan、加速卡与「其他」任务都不消耗 Coding Plan 积分，额度窗口统计排除，避免高估
 消耗；token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPlanSample` 仍把
@@ -267,10 +262,11 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 
 ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 `cache_read_input_tokens` 是子集。reader 的 daily 路径先计算 uncached input；sample
-保留完整 input 以兼容 `LocalTokenUsageSample`。Method A 已在 reader 内完成 reasoning
-归类：output/reasoning 进入统一层时已经互斥，不再二次相减。`cache_creation_input_tokens`
-只保留为 raw 诊断，不进入统一 total、图表或金额估算。Method A 只属于**智谱行**；同一本
-账本里的**非智谱 provider 分片**（`minimax` / `deepseek` 等）不走 Method A，改走字符比例
+保留完整 input 以兼容 `LocalTokenUsageSample`。reasoning 拆分已在 reader 内完成
+（字符比例三段式，native 列优先）：output/reasoning 进入统一层时已经互斥，不再二次相减。
+`cache_creation_input_tokens`
+只保留为 raw 诊断，不进入统一 total、图表或金额估算。智谱行与同一本
+账本里的**非智谱 provider 分片**（`minimax` / `deepseek` 等）统一走字符比例
 三段式分摊，见「非智谱 provider 分片的 reasoning 口径」。见
 [`spec/accounting.md`](../accounting.md)。
 

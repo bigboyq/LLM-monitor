@@ -14,8 +14,12 @@ import Foundation
 ///   （`resolvedModelName`），无命中保持 nil（投影层落 unknownModelName）。
 ///
 /// 计数口径与 antigravity RPC 一致（`TokenAccountingCatalog.antigravity`）：
-/// input = 未缓存输入，cacheRead = 缓存读，output 含思考。无原生 reasoning
-/// 计数，用 `thinking` 文本按字符占比把 output 守恒拆成 reasoning + output
+/// input = 未缓存输入，cacheRead = 缓存读，output 含思考。reasoning/visible
+/// 拆分两级来源：同一 `conversations/<session>.db` gen_metadata `f1.f4` 的原生
+/// 真值（f9 reasoning + f10 normalized；2026-11-08 实测 10 库 100% 守恒、与
+/// transcript 口径精确一致，逐行校验 `reasoning + normalized == 账面
+/// output_tokens` 防 db/transcript 漂移）；`.db` 缺失 / 连接不命中 / 不守恒时
+/// 回退 `thinking` 文本按字符占比把 output 守恒拆成 reasoning + output
 /// （`ReasoningCharSplit`，逐行与日聚合两级都保持守恒）。
 ///
 /// 单次调用时长（`durationSeconds`）两级来源：方案 A——scanner 预读
@@ -139,20 +143,35 @@ enum AgyLocalUsageAggregation {
         return candidate?.modelName ?? timeline.first?.modelName
     }
 
-    /// 原始行 → 可聚合样本：模型名 join + thinking 字符占比分摊（守恒）+ 方案 A
-    /// 时长映射（`.db` 未覆盖时保持 nil，落给方案 B 会话级结算回填）。
+    /// 原始行 → 可聚合样本：模型名 join + reasoning/visible 拆分（原生 f4 真值
+    /// 优先、字符占比估算回退，两级都守恒）+ 方案 A 时长映射（`.db` 未覆盖时
+    /// 保持 nil，落给方案 B 会话级结算回填）。
+    ///
+    /// 拆分回退条件（任一即回退 `ReasoningCharSplit` 字符占比，v4 及以前唯一
+    /// 路径，行为不变）：该行 step_index 无原生映射（无 .db / gen 行连接不命中 /
+    /// usage 子消息缺失），或守恒校验不过（`reasoning + normalized !=
+    /// 账面 output_tokens`，防 db/transcript 漂移）。2026-11-08 实测守恒 100%
+    /// 成立（267/267），生产路径预期全量走原生真值。
     static func makeUsage(
         raw: AgyRawModelRow,
         sessionID: String,
         modelName: String?,
         planADurationSeconds: Double? = nil,
-        planATTFTSeconds: Double? = nil
+        planATTFTSeconds: Double? = nil,
+        nativeUsage: AntigravityStepTimestampReader.LLMCallNativeUsage? = nil
     ) -> AgyParsedUsage {
-        let split = ReasoningCharSplit.split(
-            outputTokens: raw.outputTokens,
-            reasoningChars: raw.thinkingChars,
-            visibleChars: raw.visibleChars
-        )
+        let split: (reasoning: Int, output: Int)?
+        if let nativeUsage,
+           nativeUsage.reasoning + nativeUsage.normalized == raw.outputTokens {
+            // 原生真值：f9 → reasoning，f10 normalized → 可见 output。
+            split = (reasoning: nativeUsage.reasoning, output: nativeUsage.normalized)
+        } else {
+            split = ReasoningCharSplit.split(
+                outputTokens: raw.outputTokens,
+                reasoningChars: raw.thinkingChars,
+                visibleChars: raw.visibleChars
+            )
+        }
         let stepKey = raw.stepIndex.map(String.init)
             ?? String(raw.createdAt.timeIntervalSince1970)
         return AgyParsedUsage(
@@ -184,6 +203,13 @@ enum AgyLocalUsageAggregation {
         /// reader 层剔除，范围过滤归聚合层。`.db` 缺失 / gen_metadata 表缺失 /
         /// 连接不命中的行为空映射（样本 TTFT 保持 nil）。
         var planATTFTSeconds: [Int: Double] = [:]
+        /// 同一 `.db` gen_metadata `f1.f4` 的原生 usage（f9 reasoning / f10
+        /// normalized / f3 raw），连接键与方案 A 同构（键即 step_index）。守恒
+        /// 校验（`reasoning + normalized == 账面 output_tokens`）归 `makeUsage`
+        /// ——必须对照 transcript 账面值，防 db/transcript 漂移。`.db` 缺失 /
+        /// gen_metadata 表缺失 / 连接不命中 / usage 缺失的行为空映射（该行回退
+        /// 字符估算）。
+        var nativeUsageByStepIndex: [Int: AntigravityStepTimestampReader.LLMCallNativeUsage] = [:]
         /// 方案 B 暂存：带 tool_calls 的 `MODEL:PLANNER_RESPONSE:DONE` 行
         ///（step_index → created_at = 发起整秒 ⌊f1⌋）。纯文本终答（无
         /// tool_calls）不入暂存，保持 nil——不误食下一轮 USER_INPUT 行。
@@ -202,6 +228,12 @@ enum AgyLocalUsageAggregation {
         func planATTFT(stepIndex: Int?) -> Double? {
             guard let stepIndex else { return nil }
             return planATTFTSeconds[stepIndex]
+        }
+
+        /// 同一 `.db` 的原生 usage 取值（映射外的 step_index 返回 nil）。
+        func nativeUsage(stepIndex: Int?) -> AntigravityStepTimestampReader.LLMCallNativeUsage? {
+            guard let stepIndex else { return nil }
+            return nativeUsageByStepIndex[stepIndex]
         }
 
         /// 计量行入上下文：带 tool_calls 的 PLANNER_RESPONSE 暂存待结算。

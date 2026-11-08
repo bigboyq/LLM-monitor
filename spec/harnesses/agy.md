@@ -42,12 +42,25 @@ Settings → Clients 的独立 Agy tab（由 `ClientDescriptor.all` 自动出现
 
 统一估算契约见 [`spec/accounting.md`](../accounting.md)。计数口径与 Antigravity RPC
 一致（`TokenAccountingCatalog.antigravity`）：`input_tokens` 是未缓存输入（uncached），
-`cache_read_tokens` 是独立缓存读桶，`output_tokens` 含思考。账本没有原生 reasoning
-计数：`thinking` 非空时按字符占比（`thinking` chars vs `content` + `tool_calls`
-序列化 chars；工具参数计入可见侧，与 DSH 的 `tool-call.arguments` 同口径）用共享的
-`ReasoningCharSplit.split(outputTokens:reasoningChars:visibleChars:)` 守恒拆分，
-`reasoning + output == 原始 output_tokens` 恒成立；无 `thinking` 时 raw output 全放
-`Output`、`Reason = 0`。分摊发生在逐行样本层，日聚合是拆分结果的直加（行级粒度）。
+`cache_read_tokens` 是独立缓存读桶，`output_tokens` 含思考。
+
+**Reasoning/visible 拆分两级来源（2026-11-08 升级）**：
+
+- **方案 A 原生真值（首选）**：`conversations/<session>.db` gen_metadata blob 的
+  `f1.f4` usage 子消息携带 f3 = rawOutput（含思考）、f9 = reasoningTokens、
+  f10 = normalizedOutput，守恒 `f9 + f10 == f3`。经 `AntigravityStepTimestampReader.llmCallNativeUsageByStepIndex`
+  按 `steps.idx == f20.last_step_index + 1` 连接（与 TTFT reader 同一 join），并以
+  **守恒校验门控**（`reasoning + normalized == 该行 transcript output_tokens`，防
+  db / transcript 漂移）通过后替代字符估算。2026-11-08 实测：10 库全部 100% 守恒，
+  样本库 267/267 行 1:1 对齐、f3 合计与 transcript output 合计精确相等（147,562）。
+- **字符估算（回退）**：无 .db / gen 行缺失 / 连接不命中 / 不守恒时，维持原路径——
+  `thinking` 非空时按字符占比（`thinking` chars vs `content` + `tool_calls`
+  序列化 chars；工具参数计入可见侧，与 DSH 的 `tool-call.arguments` 同口径）用共享的
+  `ReasoningCharSplit.split(outputTokens:reasoningChars:visibleChars:)` 守恒拆分；
+  无 `thinking` 时 raw output 全放 `Output`、`Reason = 0`。
+
+分摊发生在逐行样本层，日聚合是拆分结果的直加（行级粒度）；native 与回退两路共用
+同一 `AgyParsedUsage` 产出，daily 与 samples 天然同源。
 
 sample 层遵守 `LocalTokenUsageSample` 历史语义：`inputTokens` 存 cache-inclusive
 总输入（`input + cacheRead`），`cachedInputTokens` 存独立缓存读；进入价格估算时由
@@ -100,7 +113,8 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 连接 2012/2012 = 100% 命中、无负值），scanner 在 `AgySessionDurationContext` 里与
 计量行按 `idx == step_index` 配对供给样本；连接不上 / 读失败（`SQLiteTempCopy`
 纪律同款）降级为空映射，样本 `ttftSeconds` 保持 nil。无方案 B 降级——transcript
-无首字时刻。缓存 v4（v3 → v4 一次性失效重建）。聚合口径见
+无首字时刻。缓存 v5（v3→v4 为 TTFT 接入、v4→v5 为 f4 原生拆分接入，均一次性失效
+重建）。聚合口径见
 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 ## Provider mapping

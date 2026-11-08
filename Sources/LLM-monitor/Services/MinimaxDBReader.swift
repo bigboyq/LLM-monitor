@@ -26,6 +26,10 @@ struct MinimaxDBAggregate: Equatable, Sendable {
     /// v2 路径三个都填 (独立 per-day 聚合,需要 messageCount 验证 token 写入是否完整)。
     /// scanner 用这个按比例分摊 `outputTokens` 出 `reasoningTokens`。
     let perDayChars: [Date: MinimaxCharCounts]
+    /// dayStart → 当天配对成功调用的调用级拆分聚合（Σ split 结果 + Σ 配对行字符）。
+    /// scanner 的 daily 路径用它做「调用级 + 未配对残余」分摊；为空（旧 schema /
+    /// 时长查询失败 / 全库无配对）时整天回退日级字符比例。
+    let perDayPairedSplits: [Date: MinimaxPairedSplitDay]
     /// 去重 session 数
     let sessionCount: Int
     /// 总 rounds (= 总行数)
@@ -34,6 +38,9 @@ struct MinimaxDBAggregate: Equatable, Sendable {
     let turnCount: Int
     /// 最近窗口的逐次调用。scanner 会按每日 reasoning 比例做最终校正。
     let samples: [LocalTokenUsageSample]
+    /// 与 `samples` 同下标对齐的单样本调用级拆分：nil = 未配对 / 未拆分
+    /// （该样本由 scanner 走日级比例路径）。两数组恒同长（同一查询闭包 1:1 append）。
+    let perSampleCallSplits: [MinimaxCallSplit?]
     /// 字符聚合 SQL 失败时为 true：主 token 账本仍然有效（Reason 按 0 处理），
     /// 但 scanner 不得把该 source 当作完全成功 —— 指纹 entry 会带上 degraded
     /// 标记并在下一轮扫描强制重试。
@@ -42,24 +49,29 @@ struct MinimaxDBAggregate: Equatable, Sendable {
     init(
         perDay: [Date: MinimaxDailyUsage],
         perDayChars: [Date: MinimaxCharCounts],
+        perDayPairedSplits: [Date: MinimaxPairedSplitDay] = [:],
         sessionCount: Int,
         eventCount: Int,
         turnCount: Int,
         samples: [LocalTokenUsageSample] = [],
+        perSampleCallSplits: [MinimaxCallSplit?] = [],
         charAggregationDegraded: Bool = false
     ) {
         self.perDay = perDay
         self.perDayChars = perDayChars
+        self.perDayPairedSplits = perDayPairedSplits
         self.sessionCount = sessionCount
         self.eventCount = eventCount
         self.turnCount = turnCount
         self.samples = samples
+        self.perSampleCallSplits = perSampleCallSplits
         self.charAggregationDegraded = charAggregationDegraded
     }
 
     static let empty = MinimaxDBAggregate(
-        perDay: [:], perDayChars: [:],
-        sessionCount: 0, eventCount: 0, turnCount: 0, samples: []
+        perDay: [:], perDayChars: [:], perDayPairedSplits: [:],
+        sessionCount: 0, eventCount: 0, turnCount: 0,
+        samples: [], perSampleCallSplits: []
     )
 }
 
@@ -88,11 +100,41 @@ private struct TotalsRow {
 /// `ttftSeconds` = (`request_duration_ms` − `decode_duration_ms`) / 1000：总耗时
 /// （含首字等待 + 解码）减纯解码即首字等待，2026-11-08 全库实测 94.5% 的行可
 /// 推导（14,665 / 15,513）；decode 缺失 / 负值或差值为负 → nil。
+/// `thinkingChars` / `msgChars` 是本行 `$.thinking_content` / `$.msg_content`
+/// （后者含 tool_call_args，与日级字符聚合同口径）的字符数——配对成功后作为
+/// 该调用的字符侧输入做调用级 reasoning 拆分（v19）；键缺失 / 坏 JSON 记 0。
 internal struct MinimaxMessageDurationEntry: Equatable {
     let inputTokens: Int?
     let outputTokens: Int?
     let durationSeconds: Double?
     let ttftSeconds: Double?
+    let thinkingChars: Int
+    let msgChars: Int
+}
+
+/// 单次配对调用的调用级字符分摊结果（`ReasoningCharSplit.split` 产物），
+/// 守恒 `reasoningTokens + outputTokens == 该调用的账面 output`。
+struct MinimaxCallSplit: Equatable, Sendable {
+    let reasoningTokens: Int
+    let outputTokens: Int
+}
+
+/// 配对成功的调用级拆分按日聚合（v2 reasoning split 的调用级输入）：
+/// - `reasonTokens` / `outputTokens`：当天 Σ 调用级 split 结果（拆分后）
+/// - `thinkingChars` / `visibleChars`：当天 Σ 配对行字符（供 scanner 与日级
+///   字符聚合做差减，得到未配对残余的字符）
+struct MinimaxPairedSplitDay: Equatable, Sendable {
+    var reasonTokens: Int
+    var outputTokens: Int
+    var thinkingChars: Int
+    var visibleChars: Int
+
+    static let zero = MinimaxPairedSplitDay(
+        reasonTokens: 0, outputTokens: 0, thinkingChars: 0, visibleChars: 0
+    )
+
+    /// 配对调用覆盖的账面 output（拆分前）= reason + output（逐调用守恒的和）。
+    var rawOutputTokens: Int { SaturatingArithmetic.add(reasonTokens, outputTokens) }
 }
 
 /// FIFO 配对键：`(session_id, turn_id)`。`turn_id` 为 NULL / 空串的 message 行
@@ -285,6 +327,14 @@ final class MinimaxDBReader {
             )
         }
 
+        // 调用级字符分摊（v19）：配对成功的样本用本行 thinking/msg 字符拆分本行
+        // output，逐样本存进 perSampleCallSplits（与 samples 同下标），并按天 Σ 进
+        // perDayPairedSplits。账面已给原生 reasoning（未来 thinking model）的样本
+        // 不做字符拆分，沿用账单。两者只依赖 FIFO 配对结果，与字符聚合的 degraded
+        // 状态互不影响；时长查询失败 → 队列空 → 全部为空，scanner 整天回退日级。
+        var perDayPairedSplits: [Date: MinimaxPairedSplitDay] = [:]
+        var perSampleCallSplits: [MinimaxCallSplit?] = []
+
         // 逐次调用只保留 UI 需要的最近窗口。inputTokens 归一为
         // uncached + cacheRead，和 Codex UsageMetricSummary 的语义一致。
         let sampleWhere = cutoffMs == nil
@@ -407,9 +457,11 @@ final class MinimaxDBReader {
                 let promptComponent = turnID ?? "event-\(timestampMs)"
                 // MiniMax raw input is uncached and cache-read is separate;
                 // route raw→桶 through the harness catalog and rebuild the
-                // legacy cache-inclusive sample here. Reasoning is split later
-                // by the scanner when a safe native/character-based signal
-                // exists (the split preserves every field written here).
+                // legacy cache-inclusive sample here. Reasoning keeps the
+                // native bucket (0 for M3/M2.7): the scanner applies the
+                // per-call character split returned alongside in
+                // `perSampleCallSplits`（配对样本）or the per-day ratio
+                // （未配对回退）— the split preserves every field written here.
                 let buckets = TokenAccountingCatalog.minimax.normalizedBuckets(
                     rawInput: uncachedInput,
                     cacheRead: cachedInput,
@@ -432,6 +484,32 @@ final class MinimaxDBReader {
                         ledgerOutputTokens: output
                     )
                     durationQueues[key] = queue
+                }
+                // 调用级拆分：与日级同一 `ReasoningCharSplit` 公式，但字符与
+                // output 都来自同一（token 双核对过的）行——同一天内重度推演与
+                // 轻量确认不再被日级平均抹平。未配对 / 账面已给 reasoning 的样本
+                // 为 nil，由 scanner 走日级比例路径。
+                let callSplit = matchedEntry.flatMap { entry -> MinimaxCallSplit? in
+                    guard buckets.reasoning == 0 else { return nil }
+                    return Self.callLevelSplit(
+                        outputTokens: output,
+                        thinkingChars: entry.thinkingChars,
+                        visibleChars: entry.msgChars
+                    )
+                }
+                perSampleCallSplits.append(callSplit)
+                if let callSplit, let entry = matchedEntry {
+                    // 按天 Σ（与 scanner 既有口径一致：样本用 calendar.startOfDay
+                    // 对齐 perDay 的本地日桶）。
+                    let dayStart = calendar.startOfDay(
+                        for: Date(timeIntervalSince1970: Double(timestampMs) / 1000)
+                    )
+                    var paired = perDayPairedSplits[dayStart] ?? .zero
+                    paired.reasonTokens = SaturatingArithmetic.add(paired.reasonTokens, callSplit.reasoningTokens)
+                    paired.outputTokens = SaturatingArithmetic.add(paired.outputTokens, callSplit.outputTokens)
+                    paired.thinkingChars = SaturatingArithmetic.add(paired.thinkingChars, entry.thinkingChars)
+                    paired.visibleChars = SaturatingArithmetic.add(paired.visibleChars, entry.msgChars)
+                    perDayPairedSplits[dayStart] = paired
                 }
                 return LocalTokenUsageSample(
                     completedAt: Date(timeIntervalSince1970: Double(timestampMs) / 1000),
@@ -474,10 +552,12 @@ final class MinimaxDBReader {
         return MinimaxDBAggregate(
             perDay: perDay,
             perDayChars: perDayChars,
+            perDayPairedSplits: perDayPairedSplits,
             sessionCount: sessionCount,
             eventCount: eventCount,
             turnCount: totalTurns,
             samples: samples,
+            perSampleCallSplits: perSampleCallSplits,
             charAggregationDegraded: charAggregationDegraded
         )
     }
@@ -562,7 +642,12 @@ final class MinimaxDBReader {
     /// 过滤风格（`role = 'assistant'` + created_at_ms cutoff），但**独立守门**——
     /// 失败由 `aggregate()` 自己的 do/catch 接住，不进 `charAggregationDegraded`。
     /// 表不存在 / 缺列（旧 schema、坏 fixture）在 prepare 阶段抛 SQLITE_ERROR，
-    /// 调用方 catch 后队列为空，样本 durationSeconds / ttftSeconds 全部保持 nil。
+    /// 调用方 catch 后队列为空，样本 durationSeconds / ttftSeconds 全部保持 nil，
+    /// 调用级字符分摊同样整体回退日级。
+    /// 同一 SELECT 顺带取每行 `$.thinking_content` / `$.msg_content`（后者含
+    /// tool_call_args，与日级字符聚合同口径）的字符数，供 v19 调用级字符分摊；
+    /// 坏 `data_json` 用 `json_valid` 包裹成 `'{}'`（与日级字符聚合同款防御），
+    /// 该行 usage 各键为 NULL 永不配对、字符记 0。
     private func runtimeAssistantDurationQueues(
         cutoffMs: Int64?
     ) throws -> [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] {
@@ -570,16 +655,39 @@ final class MinimaxDBReader {
             ? ""
             : " AND (? IS NULL OR created_at_ms >= ?)"
         let sql = """
+            WITH safe_rows AS (
+              SELECT
+                id,
+                session_id,
+                turn_id,
+                CASE WHEN json_valid(data_json) THEN data_json ELSE '{}' END AS safe_data
+              FROM local_runtime_message_rows
+              WHERE role = 'assistant'
+                AND turn_id IS NOT NULL AND turn_id <> ''\(cutoffPredicate)
+            )
             SELECT
               session_id,
               turn_id,
-              json_extract(data_json, '$.usage.input_tokens'),
-              json_extract(data_json, '$.usage.output_tokens'),
-              json_extract(data_json, '$.usage.request_duration_ms'),
-              json_extract(data_json, '$.usage.decode_duration_ms')
-            FROM local_runtime_message_rows
-            WHERE role = 'assistant'
-              AND turn_id IS NOT NULL AND turn_id <> ''\(cutoffPredicate)
+              json_extract(safe_data, '$.usage.input_tokens'),
+              json_extract(safe_data, '$.usage.output_tokens'),
+              json_extract(safe_data, '$.usage.request_duration_ms'),
+              json_extract(safe_data, '$.usage.decode_duration_ms'),
+              LENGTH(COALESCE(json_extract(safe_data, '$.thinking_content'), '')),
+              LENGTH(COALESCE(json_extract(safe_data, '$.msg_content'), ''))
+                + (
+                  SELECT TOTAL(LENGTH(json_extract(
+                    CASE WHEN json_valid(j.value) THEN j.value ELSE '{}' END,
+                    '$.tool_call_args'
+                  )))
+                  FROM json_each(
+                    CASE
+                      WHEN json_type(safe_data, '$.tool_calls') = 'array'
+                      THEN json_extract(safe_data, '$.tool_calls')
+                      ELSE '[]'
+                    END
+                  ) j
+                ) AS msg_chars
+            FROM safe_rows
             ORDER BY id
             """
         struct Row {
@@ -589,6 +697,8 @@ final class MinimaxDBReader {
             let outputTokens: Int?
             let durationMs: Double?
             let decodeMs: Double?
+            let thinkingChars: Int
+            let msgChars: Int
         }
         let rows = try conn.query(
             sql: sql,
@@ -611,7 +721,9 @@ final class MinimaxDBReader {
                 inputTokens: optionalJSONInt(2),
                 outputTokens: optionalJSONInt(3),
                 durationMs: optionalJSONDouble(4),
-                decodeMs: optionalJSONDouble(5)
+                decodeMs: optionalJSONDouble(5),
+                thinkingChars: Self.nonNegativeInt(sqlite3_column_double(stmt, 6)),
+                msgChars: Self.nonNegativeInt(sqlite3_column_double(stmt, 7))
             )
         }
         var queues: [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] = [:]
@@ -645,7 +757,9 @@ final class MinimaxDBReader {
                     inputTokens: row.inputTokens,
                     outputTokens: row.outputTokens,
                     durationSeconds: durationSeconds,
-                    ttftSeconds: ttftSeconds
+                    ttftSeconds: ttftSeconds,
+                    thinkingChars: row.thinkingChars,
+                    msgChars: row.msgChars
                 ))
         }
         return queues
@@ -670,6 +784,30 @@ final class MinimaxDBReader {
             }
         }
         return nil
+    }
+
+    /// 单次配对调用的字符分摊：与本 reader 的日级聚合、DSH / ZCode 分片共用
+    /// `ReasoningCharSplit.split` 公式，但字符与 output 都来自同一（token 双核对
+    /// 过的）调用行。思考字符为 0 时配对行已证实本次调用没有思考文本，直接
+    /// (0, output) 全记可见输出——`split` 对该输入返回 nil（"无法估算"），与
+    /// "确定无思考"语义不同。output <= 0（无从分摊）返回 nil，该调用的字符留给
+    /// 日级残余路径。static 纯逻辑，单测可直接验证。
+    static func callLevelSplit(
+        outputTokens: Int,
+        thinkingChars: Int,
+        visibleChars: Int
+    ) -> MinimaxCallSplit? {
+        let output = max(outputTokens, 0)
+        guard output > 0 else { return nil }
+        guard thinkingChars > 0 else {
+            return MinimaxCallSplit(reasoningTokens: 0, outputTokens: output)
+        }
+        guard let split = ReasoningCharSplit.split(
+            outputTokens: output,
+            reasoningChars: thinkingChars,
+            visibleChars: visibleChars
+        ) else { return nil }
+        return MinimaxCallSplit(reasoningTokens: split.reasoning, outputTokens: split.output)
     }
 
     // MARK: - helpers

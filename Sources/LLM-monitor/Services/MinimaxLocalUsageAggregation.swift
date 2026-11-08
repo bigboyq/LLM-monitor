@@ -4,15 +4,31 @@ import Combine
 // MARK: - Aggregation (pure functions, unit-testable)
 
 extension MinimaxLocalUsageScanner {
-    /// 将 per-day reasoning 分摊比例回写到逐次调用，保证 Last Prompt / 窗口
-    /// hover 与 7 天柱图使用同一套 output/reason 口径。
+    /// 将 reasoning 拆分回写到逐次调用，保证 Last Prompt / 窗口 hover 与 7 天
+    /// 柱图使用同一套 output/reason 口径。
+    ///
+    /// v19 起两路并存：
+    /// - **配对样本（`perSampleCallSplits[index]` 非 nil）**：直接采用 reader 的
+    ///   调用级字符拆分结果（本行字符拆本行 output，不走日级平均）；
+    /// - **未配对样本**：维持既有日级比例路径（`adjustedPerDay` 的当日 reasoning
+    ///   占 `rawPerDay` 当日 output 的比例 × 样本 output）。
     nonisolated static func applyReasoningSplit(
         samples: [LocalTokenUsageSample],
+        perSampleCallSplits: [MinimaxCallSplit?],
         rawPerDay: [Date: MinimaxDailyUsage],
         adjustedPerDay: [Date: MinimaxDailyUsage],
         calendar: Calendar
     ) -> [LocalTokenUsageSample] {
-        samples.map { sample in
+        samples.enumerated().map { index, sample in
+            // 配对成功 → 调用级结果（`callLevelSplit` 守恒：reason + output ==
+            // 该样本的账面 output）。
+            if index < perSampleCallSplits.count, let split = perSampleCallSplits[index] {
+                return rebuiltSample(
+                    sample,
+                    reasoningTokens: split.reasoningTokens,
+                    visibleOutputTokens: split.outputTokens
+                )
+            }
             guard sample.reasoningOutputTokens == 0 else { return sample }
             let day = calendar.startOfDay(for: sample.completedAt)
             guard let raw = rawPerDay[day],
@@ -30,24 +46,36 @@ extension MinimaxLocalUsageScanner {
                 Int((Double(sample.outputTokens) * ratio).rounded()),
                 sample.outputTokens
             )
-            // 重建 sample 时必须原样带回诊断字段：sourceProviderID 供 hover / 汇总
-            // 追溯来源；durationSeconds 供窗口 token 速度统计——丢了会退化成 nil，
-            // 该样本分子分母都不计，速率分母被算小。ttftSeconds（reader 由
-            // request_duration_ms − decode_duration_ms 差分推导）同理原样透传，
-            // 透传方式与 durationSeconds 完全一致。
-            return LocalTokenUsageSample(
-                completedAt: sample.completedAt,
-                modelName: sample.modelName,
-                promptID: sample.promptID,
-                inputTokens: sample.inputTokens,
-                cachedInputTokens: sample.cachedInputTokens,
-                outputTokens: max(sample.outputTokens - reasoning, 0),
-                reasoningOutputTokens: reasoning,
-                sourceProviderID: sample.sourceProviderID,
-                durationSeconds: sample.durationSeconds,
-                ttftSeconds: sample.ttftSeconds
+            return rebuiltSample(
+                sample,
+                reasoningTokens: reasoning,
+                visibleOutputTokens: max(sample.outputTokens - reasoning, 0)
             )
         }
+    }
+
+    /// 重建 sample 的唯一构造点：诊断字段（sourceProviderID / durationSeconds /
+    /// ttftSeconds）必须原样带回——sourceProviderID 供 hover / 汇总追溯来源；
+    /// durationSeconds 供窗口 token 速度统计，ttftSeconds（reader 由
+    /// request_duration_ms − decode_duration_ms 差分推导）同理，丢了都会退化成
+    /// nil，该样本分子分母都不计，速率 / TTFT 分母被算小。
+    private nonisolated static func rebuiltSample(
+        _ sample: LocalTokenUsageSample,
+        reasoningTokens: Int,
+        visibleOutputTokens: Int
+    ) -> LocalTokenUsageSample {
+        LocalTokenUsageSample(
+            completedAt: sample.completedAt,
+            modelName: sample.modelName,
+            promptID: sample.promptID,
+            inputTokens: sample.inputTokens,
+            cachedInputTokens: sample.cachedInputTokens,
+            outputTokens: max(visibleOutputTokens, 0),
+            reasoningOutputTokens: max(reasoningTokens, 0),
+            sourceProviderID: sample.sourceProviderID,
+            durationSeconds: sample.durationSeconds,
+            ttftSeconds: sample.ttftSeconds
+        )
     }
 
     /// P1-1 v2 字符聚合过滤 — 异常 day 不跑字符分摊 (会偏高 reason 比例)。
@@ -84,7 +112,7 @@ extension MinimaxLocalUsageScanner {
     /// 把账单的 `outputTokens` 拆成 (realOutput, realReason)。
     /// per-day 决策,贴合 minimax 现实 + future-proof:
     ///
-    /// ## 两条路径(per-day 决策)
+    /// ## 三条路径(per-day 决策)
     ///
     /// 1. **`usage.reasoningTokens > 0`**：账单直接给了 reasoning(未来 thinking
     ///    model 路径)。`output = output - reason`,`reason = reasoningTokens`。
@@ -92,7 +120,18 @@ extension MinimaxLocalUsageScanner {
     ///    SUM(v8 修复 P1/P2-1),所以 `usage.reasoningTokens` 自动捕获两个源 —
     ///    不管 minimax 切到 `reasoning_tokens` 列还是 `raw.reasoning` JSON 字段,
     ///    这条路径都直接触发。
-    /// 2. **`usage.reasoningTokens == 0`**：M3 / M2.7 non-thinking 路径,按
+    /// 2. **当天有配对成功的调用（v19 调用级）**：配对调用采用 reader 逐调用
+    ///    `(session, turn)` FIFO 配对 + token 双核对后的 `ReasoningCharSplit`
+    ///    结果精确分摊,未配对残余按日级字符比例分摊:
+    ///    ```
+    ///    residualRaw      = outputTokens - paired.rawOutputTokens
+    ///    residualThinking = chars.reason  - paired.thinkingChars
+    ///    residualVisible  = chars.output  - paired.visibleChars
+    ///    reason = paired.reasonTokens + residualSplit.reasoning
+    ///    ```
+    ///    残余字符 = 当日字符聚合 − 配对行字符;字符聚合失败 / 被 P1-1 守门过滤
+    ///    / 无残余 → 残余分量为 0(残余 reason 记 0 不猜)。
+    /// 3. **整天无配对**：回退既有日级行为,按
     ///    `session_messages.thinking_content` + `msg_content` 字符数比例分摊:
     ///    ```
     ///    reasonTokens  = outputTokens * rawReason / (rawReason + rawOutput)
@@ -107,7 +146,8 @@ extension MinimaxLocalUsageScanner {
     /// (不需要构造完整 scanner)。
     nonisolated static func applyReasoningSplit(
         perDay: [Date: MinimaxDailyUsage],
-        perDayChars: [Date: MinimaxCharCounts]
+        perDayChars: [Date: MinimaxCharCounts],
+        pairedSplits: [Date: MinimaxPairedSplitDay] = [:]
     ) -> [Date: MinimaxDailyUsage] {
         var out: [Date: MinimaxDailyUsage] = [:]
         for (day, usage) in perDay {
@@ -126,13 +166,39 @@ extension MinimaxLocalUsageScanner {
                 }
                 reasonTokens = min(usage.reasoningTokens, outputTokens)
                 realOutput = outputTokens - reasonTokens
+            } else if let paired = pairedSplits[day], paired.rawOutputTokens > 0 {
+                // v19 调用级路径：配对调用精确分摊 + 未配对残余日级比例。
+                let residualRaw = max(outputTokens - paired.rawOutputTokens, 0)
+                let chars = perDayChars[day]
+                // 残余字符 = 当日字符聚合 − 配对行字符（午夜跨日边缘差减可能为负
+                // → 钳 0）。无字符数据 / 无残余时 `split` 返回 nil，残余 reason 记
+                // 0（不猜），残余 output 全记可见。
+                let residualThinking = max((chars?.reason ?? 0) - paired.thinkingChars, 0)
+                let residualVisible = max((chars?.output ?? 0) - paired.visibleChars, 0)
+                let residualSplit = ReasoningCharSplit.split(
+                    outputTokens: residualRaw,
+                    reasoningChars: residualThinking,
+                    visibleChars: residualVisible
+                )
+                var combinedReason = SaturatingArithmetic.add(
+                    paired.reasonTokens,
+                    residualSplit?.reasoning ?? 0
+                )
+                // 守恒兜底（P2-2 同款）：理论上配对调用 ⊆ 当天账本行，reason 不会
+                // 超过当天 raw output；防御午夜跨日 / 异常数据破坏守恒。
+                if combinedReason > outputTokens {
+                    logWarn("[minimax-scan] day=\(day): 调用级 reason(\(combinedReason)) > output(\(outputTokens)), 截断到 output 保持守恒")
+                    combinedReason = outputTokens
+                }
+                reasonTokens = combinedReason
+                realOutput = outputTokens - reasonTokens
             } else if let chars = perDayChars[day],
                       let split = ReasoningCharSplit.split(
                         outputTokens: outputTokens,
                         reasoningChars: chars.reason,
                         visibleChars: chars.output
                       ) {
-                // 当前 M3 / M2.7 路径:按字符比例分摊 outputTokens
+                // 整天无配对的回退路径:按字符比例分摊 outputTokens
                 // (公式与 Dsh M3 / ZCode 分片共用 `ReasoningCharSplit`)
                 reasonTokens = split.reasoning
                 realOutput = split.output

@@ -37,7 +37,7 @@ completion，而不是仅可见文字。
 | Antigravity | event `inputTokens` = uncached | 独立字段 | `outputTokens` **含思考**（`thinkingOutputTokens` 是子集；实测全量事件 100% 满足 `outputTokens == thinking + response`） | catalog `output: .reasoningIncluded`：`Output = rawOutput − thinking`、`Reason = thinking`，四桶守恒（修掉历史思考双重计量）；daily 与 sample 同经 catalog 统一；sample 保留 cache-inclusive input |
 | agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input。agy 在 `TokenAccountingCatalog` 里没有独立条目，计数口径与 `antigravity` 一致，在 reader 层直接映射（见「唯一入口」的例外说明） |
 | OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
-| ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 智谱行由 reader 的 Method A 归类；非智谱分片另有三段式 | daily 先减 cache；sample 保留完整 input；不再二次拆分。智谱行走 Method A 整轮归类；**非智谱分片走字符分摊三段式**：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（day 级聚合 / 行级样本）→ ③ 都没有保持 `Reason=0` |
+| ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 原生 `reasoning_tokens` 列实测 0 行有值；reasoning 来自 part 表字符 | daily 先减 cache；sample 保留完整 input；不再二次拆分。**智谱行与非智谱分片统一字符分摊三段式**（2026-11-08 起，Method A 整轮归类废止——实测思考行 100% 同时含可见 text、`output_tokens` 含思考）：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（智谱行日级聚合 / 行级样本，与分片同公式）→ ③ 都没有保持 `Reason=0` |
 
 ## 字段边界
 

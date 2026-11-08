@@ -339,20 +339,24 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 // 走字符分摊路径；未来 > 0 时直接用账单。详见 MinimaxDailyUsage 注释。
                 //
                 // P1-1 sanity check (v2 only): v2 字符聚合是 per-day 聚合(不 join
-                // token_usage),v2 message_rows.turn_id 100% NULL 无法 per-turn
-                // 配对。如果 message 行数 >> token 行数(>2x),v2 runtime 早期 token
-                // 写入不完整(7/11 实测 3.17x),字符聚合会偏(分母过大稀释 reason)。
+                // token_usage)。如果 message 行数 >> token 行数(>2x),v2 runtime
+                // 早期 token 写入不完整(7/11 实测 3.17x),字符聚合会偏(分母过大
+                // 稀释 reason)。
                 //
                 // 修法: 比较真实 message 行数 vs token 行数(不是字符/rounds — 单位
-                // 不一致会让正常数据也 warn)。仅对 runtime 检查。异常时**跳过当天
-                // 的字符分摊**(per-day 把 chars 移除,scanner 自然走"无字符数据"
-                // 路径,reason=0 输出)。recent days (7/14+) 实测对齐 1.0x,正常。
+                // 不一致会让正常数据也 warn)。仅对 runtime 检查。异常时**移除当天
+                // 的日级字符**(recent days (7/14+) 实测对齐 1.0x,正常)。
+                // v19 起分摊升级为调用级:被过滤的 chars 只约束"未配对残余"的日级
+                // 比例(残余无字符 → 残余 reason 记 0);配对调用逐条通过 token 双
+                // 核对、字符与本行账面 output 一一对应,不受"分母稀释"影响,调用级
+                // 结果照常采用。
                 let safeChars = Self.filterUnsafeV2CharCounts(
                     aggregate: aggregate
                 )
                 let adjustedPerDay = Self.applyReasoningSplit(
                     perDay: aggregate.perDay,
-                    perDayChars: safeChars
+                    perDayChars: safeChars,
+                    pairedSplits: aggregate.perDayPairedSplits
                 )
 
                 var newDaily: [String: MinimaxDailyUsage] = [:]
@@ -364,6 +368,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 var samplesBySource = index.samplesBySource ?? [:]
                 samplesBySource[key] = Self.applyReasoningSplit(
                     samples: aggregate.samples,
+                    perSampleCallSplits: aggregate.perSampleCallSplits,
                     rawPerDay: aggregate.perDay,
                     adjustedPerDay: adjustedPerDay,
                     calendar: calendar
@@ -382,6 +387,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 logInfo(
                     "[minimax-scan] source=\(key) ✓ events=\(aggregate.eventCount) sessions=\(aggregate.sessionCount) "
                         + "days=\(aggregate.perDay.count) charSplitDays=\(aggregate.perDayChars.count)"
+                        + " pairedDays=\(aggregate.perDayPairedSplits.count)"
                         + (aggregate.charAggregationDegraded ? " [charSplitDegraded]" : "")
                 )
             } catch {
@@ -550,6 +556,11 @@ extension MinimaxLocalUsageScanner {
         var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
+            // v19：reasoning 拆分从日级大锅饭升级为调用级——`local_runtime_message_rows`
+            // 的 thinking_content / msg_content 字符随 (session, turn) FIFO 配对逐
+            // 调用分摊（配对样本走 `ReasoningCharSplit` 调用级结果，未配对残余按
+            // 日级字符比例）。旧 daily / samples 的 Reason 是日级统一比例口径，
+            // 必须全量重建才能换成调用级数字。
             // v18：样本 ttftSeconds 改由 `request_duration_ms − decode_duration_ms`
             // 差分推导（总耗时减纯解码 = 首字等待），移除 v17 的显式写 0；decode
             // 缺失或差值为负 → nil。旧 samples 该字段恒为 0，必须全量重建才能
@@ -561,7 +572,7 @@ extension MinimaxLocalUsageScanner {
             // `$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，
             // 供窗口 tok/s 分母）。旧 samples 没有时长字段值，必须全量重建才能
             // 补上，指纹推进不够。
-            version: 18,
+            version: 19,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -667,7 +678,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 18,
+            currentVersion: 19,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"

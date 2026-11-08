@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 18,
+            version: 19,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 18,
+            version: 19,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -268,6 +268,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
 
         let split = MinimaxLocalUsageScanner.applyReasoningSplit(
             samples: [sample],
+            perSampleCallSplits: [],
             rawPerDay: rawPerDay,
             adjustedPerDay: adjustedPerDay,
             calendar: .current
@@ -280,10 +281,189 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(split[0].ttftSeconds, 3.25, "ttftSeconds 必须原样保留（reader 差分推导值，不再写 0）")
     }
 
+    /// v19 调用级拆分：配对样本（`perSampleCallSplits` 非 nil）直接采用调用级
+    /// 结果（不再吃日级大锅饭），未配对样本（nil）维持日级比例路径；诊断字段
+    /// 两条路径都原样透传。
+    func testApplyReasoningSplitSamplesUsesCallLevelSplitForPairedSamples() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func sample(promptID: String, output: Int, duration: Double?) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: day.addingTimeInterval(3_600),
+                modelName: "MiniMax-M3",
+                promptID: promptID,
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: output,
+                reasoningOutputTokens: 0,
+                durationSeconds: duration,
+                ttftSeconds: 1.5
+            )
+        }
+        let samples = [
+            sample(promptID: "s:turn-a", output: 1000, duration: 12.5), // 配对
+            sample(promptID: "s:turn-b", output: 400, duration: nil),   // 未配对
+        ]
+        let rawPerDay = [day: MinimaxDailyUsage(dayStart: day, outputTokens: 1400)]
+        let adjustedPerDay = [day: MinimaxDailyUsage(
+            dayStart: day, outputTokens: 650, reasoningTokens: 750
+        )]
+
+        let split = MinimaxLocalUsageScanner.applyReasoningSplit(
+            samples: samples,
+            perSampleCallSplits: [
+                MinimaxCallSplit(reasoningTokens: 750, outputTokens: 250),
+                nil,
+            ],
+            rawPerDay: rawPerDay,
+            adjustedPerDay: adjustedPerDay,
+            calendar: .current
+        )
+
+        XCTAssertEqual(split[0].reasoningOutputTokens, 750, "配对样本用调用级结果，不走日级比例")
+        XCTAssertEqual(split[0].outputTokens, 250)
+        XCTAssertEqual(split[0].durationSeconds, 12.5, "调用级重建同样必须原样保留 durationSeconds")
+        XCTAssertEqual(split[0].ttftSeconds, 1.5)
+        // 未配对样本：日级比例 750/1400 × 400 ≈ 214。
+        XCTAssertEqual(split[1].reasoningOutputTokens, 214, "未配对样本维持日级比例路径")
+        XCTAssertEqual(split[1].outputTokens, 186)
+        XCTAssertNil(split[1].durationSeconds)
+        XCTAssertEqual(split[1].ttftSeconds, 1.5)
+    }
+
+    /// daily = Σ 调用级 + 未配对残余（残余字符 = 日级字符 − 配对字符），守恒
+    /// reason + output == 当天 raw output；totalTokens 同步重算保持字段和一致。
+    func testApplyReasoningSplitDailyCombinesCallLevelAndResidualWithConservation() throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let usage = MinimaxDailyUsage(
+            dayStart: day, inputTokens: 100, outputTokens: 1500,
+            cacheReadTokens: 20, totalTokens: 1620, turns: 2, rounds: 2
+        )
+        // 日级字符含未配对行：残余 = (4000−3000, 2000−1000) = (1000, 1000)。
+        let chars = MinimaxCharCounts(reason: 4000, output: 2000, messageCount: 2)
+        // 配对调用覆盖账面 output 1000（reason 750 / output 250），字符 3000/1000。
+        let paired = MinimaxPairedSplitDay(
+            reasonTokens: 750, outputTokens: 250, thinkingChars: 3000, visibleChars: 1000
+        )
+
+        let adjusted = try XCTUnwrap(
+            MinimaxLocalUsageScanner.applyReasoningSplit(
+                perDay: [day: usage],
+                perDayChars: [day: chars],
+                pairedSplits: [day: paired]
+            )[day]
+        )
+
+        // 残余 raw 500 × 50% → reason 250 / output 250；合计 750+250 / 250+250。
+        XCTAssertEqual(adjusted.reasoningTokens, 1000)
+        XCTAssertEqual(adjusted.outputTokens, 500)
+        XCTAssertEqual(adjusted.reasoningTokens + adjusted.outputTokens, 1500, "守恒：== 当天 raw output")
+        XCTAssertEqual(adjusted.totalTokens, 1620, "input 100 + cacheRead 20 + 500 + 1000")
+    }
+
+    /// 无字符数据（degraded / 被 P1-1 守门过滤）→ 残余分量记 0：reason 只含
+    /// Σ 配对 reason，残余 raw 全记可见输出，仍然守恒。
+    func testApplyReasoningSplitDailyResidualWithoutCharsKeepsPairedReasonOnly() throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let usage = MinimaxDailyUsage(dayStart: day, outputTokens: 1500, rounds: 2)
+        let paired = MinimaxPairedSplitDay(
+            reasonTokens: 750, outputTokens: 250, thinkingChars: 3000, visibleChars: 1000
+        )
+
+        let adjusted = try XCTUnwrap(
+            MinimaxLocalUsageScanner.applyReasoningSplit(
+                perDay: [day: usage],
+                perDayChars: [:],
+                pairedSplits: [day: paired]
+            )[day]
+        )
+
+        XCTAssertEqual(adjusted.reasoningTokens, 750, "无残余字符 → 残余 reason 记 0，不猜")
+        XCTAssertEqual(adjusted.outputTokens, 750)
+        XCTAssertEqual(adjusted.reasoningTokens + adjusted.outputTokens, 1500, "守恒：== 当天 raw output")
+    }
+
+    /// 整天完全无配对 → 回退既有日级行为（与 v18 的纯日级字符路径逐字段一致）。
+    func testApplyReasoningSplitDailyFallsBackToLegacyDayLevelWithoutPairedCalls() throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let usage = MinimaxDailyUsage(dayStart: day, outputTokens: 1000, rounds: 1)
+        let chars = MinimaxCharCounts(reason: 3000, output: 1000, messageCount: 1)
+
+        let adjusted = try XCTUnwrap(
+            MinimaxLocalUsageScanner.applyReasoningSplit(
+                perDay: [day: usage],
+                perDayChars: [day: chars],
+                pairedSplits: [:]
+            )[day]
+        )
+
+        XCTAssertEqual(adjusted.reasoningTokens, 750, "3000/(3000+1000) × 1000，与旧日级行为一致")
+        XCTAssertEqual(adjusted.outputTokens, 250)
+        XCTAssertEqual(adjusted.reasoningTokens + adjusted.outputTokens, 1000)
+    }
+
+    /// 端到端：同一天里配对调用走调用级拆分、usage 核对不上的调用走未配对残余
+    /// （日级字符差减），daily 守恒；samples 两路并存、时长只跟随配对样本。
+    func testV2ScanSplitsReasoningAtCallLevelWithDayLevelResidual() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 1000, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-b", timestampMs: base + 1_000,
+                         input: 100, output: 500, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // turn-a 配对成功：thinking 3000 / msg 1000 → reason 750 / output 250。
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 100, output: 1000, durationMs: 5_000,
+                                                    thinkingChars: 3000, msgChars: 1000),
+                           turnID: "turn-a"),
+                // turn-b usage 核对不上（999/999）→ 未配对；其字符 1000/1000 留在
+                // 日级聚合，成为残余的字符侧输入。
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 999, output: 999, durationMs: 6_000,
+                                                    thinkingChars: 1000, msgChars: 1000),
+                           turnID: "turn-b"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-callsplit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cacheDir) }
+
+        let result = try MinimaxLocalUsageScanner.performScanPureImpl(
+            runtimeDBURL: databaseURL,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: .current,
+            now: { Date(timeIntervalSince1970: Double(base) / 1000) },
+            shouldSave: true
+        )
+
+        // daily：paired (750/250) + 残余 raw 500 × 字符 (1000,1000) 的 50% = (250/250)
+        // → reason 1000 / output 500，守恒 1000 + 500 == raw 1500。
+        let today = try XCTUnwrap(result.today)
+        XCTAssertEqual(today.reasoningTokens, 1000)
+        XCTAssertEqual(today.outputTokens, 500)
+        XCTAssertEqual(today.inputTokens, 200)
+        XCTAssertEqual(today.totalTokens, 1700, "input 200 + output 500 + reason 1000")
+
+        // samples：turn-a 调用级精确；turn-b 未配对 → 日级比例 1000/1500 × 500 ≈ 333。
+        let samples = try XCTUnwrap(result.recentSamples)
+        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples[0].reasoningOutputTokens, 750)
+        XCTAssertEqual(samples[0].outputTokens, 250)
+        XCTAssertEqual(samples[0].durationSeconds, 5.0, "调用级重建不丢时长")
+        XCTAssertEqual(samples[1].reasoningOutputTokens, 333, "未配对样本维持日级比例路径")
+        XCTAssertEqual(samples[1].outputTokens, 167)
+        XCTAssertNil(samples[1].durationSeconds, "未配对 → 无时长")
+    }
+
     /// MiniMax Code 的 TTFT 由 `$.usage` 的 `request_duration_ms −
     /// decode_duration_ms` 差分推导（总耗时减纯解码 = 首字等待），与
     /// durationSeconds 走同一套 FIFO 配对 + token 核对；decode 缺失或差值为
-    /// 负 → nil（不再显式写 0），字符分摊重建不丢该字段，缓存版本钉 18。
+    /// 负 → nil（不再显式写 0），字符分摊重建不丢该字段，缓存版本钉 19。
     func testMiniMaxSamplesCarryDifferentialTTFT() throws {
         let base = Int64(Date().timeIntervalSince1970 * 1000)
         let databaseURL = try makeV2Database(
@@ -328,6 +508,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         let day = Calendar.current.startOfDay(for: samples[0].completedAt)
         let rebuilt = MinimaxLocalUsageScanner.applyReasoningSplit(
             samples: samples,
+            perSampleCallSplits: [],
             rawPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 130)],
             adjustedPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 100, reasoningTokens: 30)],
             calendar: .current
@@ -336,9 +517,9 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(rebuilt[0].ttftSeconds, 7.778, "重建样本 ttftSeconds 原样保留")
         XCTAssertNil(rebuilt[1].ttftSeconds, "重建样本 ttftSeconds 的 nil 同样保留")
 
-        // 缓存版本钉 18：TTFT 口径变更必须让旧缓存全量重建。
+        // 缓存版本钉 19：调用级 reasoning 拆分口径变更必须让旧缓存全量重建。
         let saved = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: FileManagerBox())
-        XCTAssertEqual(saved.version, 18)
+        XCTAssertEqual(saved.version, 19)
     }
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
@@ -361,7 +542,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 18)
+        XCTAssertEqual(current.version, 19)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

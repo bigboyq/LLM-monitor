@@ -389,7 +389,14 @@ columnar 表待更多样本确认；若不落，只读 db 的 scanner 会漏 bra
 
 ### Reasoning split (output → realOutput + reason)
 
-`MinimaxLocalUsageScanner.applyReasoningSplit(perDay:perDayChars:)` 在 SQL 聚合之上把账单的 `outputTokens` 拆成 (realOutput, reason),per-day 决策:
+**2026-11-08 起拆分粒度：日级大锅饭 → 调用级**（缓存 v19）。2.5.4 的 FIFO 时长配对
+（`(session, turn)` FIFO + input/output tokens 双核对）已把 `local_runtime_message_rows`
+的 assistant 行与 token 行 100% 配对，同一查询顺带取出该行 `$.thinking_content` /
+`$.msg_content`（msg 侧含 tool_call_args，与日级字符聚合同口径）字符，配对成功的调用
+**逐调用**执行 `ReasoningCharSplit.split`（`MinimaxLocalUsageAggregation.callLevelSplit`）；
+按日 Σ 出配对产物（`MinimaxPairedSplitDay`）。
+
+`applyReasoningSplit` 现为三条路径：
 
 ```swift
 if usage.reasoningTokens > 0 {
@@ -397,26 +404,32 @@ if usage.reasoningTokens > 0 {
     // P2-2 钳位: reasoning 超过 output 时截到 output,保证守恒
     reason     = min(usage.reasoningTokens, outputTokens)
     realOutput = outputTokens - reason
+} else if 当天有配对调用 {
+    // 调用级（2026-11-08 起）: reason = Σ配对调用拆分 + 未配对残余按日级比例
+    // （残余 raw = 当天 raw output − 配对覆盖账面 output；残余字符 = 日级字符 − 配对字符，
+    //  差减钳 0，无字符数据/无残余 → 残余分量 0 不猜）
 } else if let chars = perDayChars[day],
           let split = ReasoningCharSplit.split(
             outputTokens: outputTokens,
             reasoningChars: chars.reason,
             visibleChars: chars.output
           ) {
-    // 当前 M3 / M2.7 路径:按 thinking_content 字符比例分摊
-    // (公式与 Dsh M3 / ZCode 分片 / OpenCode minimax 分片 / Agy 共用 `ReasoningCharSplit`)
-    reason     = split.reasoning
-    realOutput = split.output
+    // 整天无配对的回退路径:原日级字符比例（向后兼容，v2 异常 day 等）
 } else {
     // 没字符数据(v2 异常 day / 字符聚合失败 / 表不存在)或字符里没有思考文本
     // → 整个 usage 原样返回(不做 totalTokens 重算)
-    out[day] = usage
-    continue
-}
 ```
 
+samples 侧同理：配对下标直接用调用级结果（`perSampleCallSplits` 与 samples 同下标
+对齐），未配对样本维持日级比例路径；重建构造点 `rebuiltSample` 对
+`sourceProviderID` / `durationSeconds` / `ttftSeconds` 原样透传。
 `outputTokens` itself is clamped with `max(usage.outputTokens, 0)` before the branch, so a
 negative ledger value cannot produce a negative split on any path.
+
+**升级动机**：日级平均抹平同一天内重度推演（思考占比可到 95%+）与轻量确认（≈0）的
+个体差异，调用级配对后每次调用用自己的思考/正文字符比拆分。P1-1 的 v2 字符聚合安全
+守门（`filterUnsafeV2CharCounts`）行为不变——被过滤的字符只约束「未配对残余」的日级
+比例，配对调用逐条 token 双核对、不受分母稀释影响。
 
 **共享公式**: 比例分摊本身收敛到 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`
 的 `split(outputTokens:reasoningChars:visibleChars:)`，行为与本节早前的 `R/(R+C)` 公式一致

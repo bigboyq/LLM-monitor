@@ -5,7 +5,8 @@ import SQLite3
 /// agy（Antigravity CLI 分支）本地 transcript scanner 的回归护栏。
 ///
 /// 全部用临时目录 fixture，禁止依赖本机真实 `~/.gemini` 数据。覆盖：
-/// MODEL 行解析（thinking 分摊守恒）、模型名 join（log 命中 / 兜底）、
+/// MODEL 行解析（thinking 分摊守恒）、reasoning/visible 拆分（gen_metadata f4
+/// 原生真值优先 / 字符估算回退）、模型名 join（log 命中 / 兜底）、
 /// 主文件与分块去重、非 DONE 行跳过、fingerprint 缓存短路、预算截断、
 /// 单次调用时长（方案 A conversations .db 真值 / 方案 B GENERIC 后继降级），
 /// 以及 agy 帧投影到 `.antigravity` 卡的命名空间。
@@ -259,9 +260,14 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     }
 
     /// gen_metadata.data 最小 fixture：f1 事件消息内的 f11 Duration
-    ///（timeToFirstToken，seconds 缺省 = proto3 <1s 形态）与 f20 map 的
-    /// last_step_index 条目（连接键 steps.idx == last_step_index + 1）。
-    private func genData(lastStepIndex: UInt64, ttft: (seconds: UInt64, nanos: UInt64)?) -> Data {
+    ///（timeToFirstToken，seconds 缺省 = proto3 <1s 形态）、f4 usage 子消息
+    ///（f3 raw / f9 reasoning / f10 normalized）与 f20 map 的 last_step_index
+    /// 条目（连接键 steps.idx == last_step_index + 1）。
+    private func genData(
+        lastStepIndex: UInt64,
+        ttft: (seconds: UInt64, nanos: UInt64)?,
+        usage: (raw: UInt64, reasoning: UInt64, normalized: UInt64)? = nil
+    ) -> Data {
         var event: [UInt8] = []
         if let ttft {
             var duration: [UInt8] = []
@@ -269,6 +275,15 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             if ttft.seconds > 0 { duration += [0x08] + varintBytes(ttft.seconds) }
             duration += [0x10] + varintBytes(ttft.nanos)
             event += [0x5A, UInt8(duration.count)] + duration
+        }
+        if let usage {
+            // f4 的 varint 键 = 4 << 3 | 2 = 34 → 0x22；内部 f3 = 0x18、
+            // f9 = 0x48、f10 = 0x50。0 值不写字节（proto3 默认值省略形态）。
+            var usageBytes: [UInt8] = []
+            if usage.raw > 0 { usageBytes += [0x18] + varintBytes(usage.raw) }
+            if usage.reasoning > 0 { usageBytes += [0x48] + varintBytes(usage.reasoning) }
+            if usage.normalized > 0 { usageBytes += [0x50] + varintBytes(usage.normalized) }
+            event += [0x22, UInt8(usageBytes.count)] + usageBytes
         }
         let key = Array("last_step_index".utf8)
         let value = Array(String(lastStepIndex).utf8)
@@ -341,6 +356,8 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
     // MARK: - MODEL 行解析与 thinking 分摊守恒
 
+    /// v5 起本用例同时是原生 usage 的「`.db` 缺失 → 全部回退字符估算」护栏：
+    /// fixture 不建 conversations .db，nativeUsageByStepIndex 为空映射。
     func testModelRowWithThinkingSplitsOutputConservatively() throws {
         let fixture = makeFixture()
         // output=100，thinking 300 字符 / 可见 100 字符 → reasoning 占 75%。
@@ -977,6 +994,95 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         )
     }
 
+    /// gen_metadata f1.f4（f9 reasoning / f10 normalized / f3 raw，与 Antigravity
+    /// 同 schema）经同一连接键逐调用供给原生 usage：守恒行（`f9 + f10 == 账面
+    /// output_tokens`）用原生真值替代 `ReasoningCharSplit` 字符占比估算；不守恒
+    /// 行 / db 无该行的行回退字符估算（2026-11-08 实测 10 库：f9 + f10 == f3
+    /// 守恒 100%（267/267）、与 transcript DONE 行 output_tokens 合计精确相等、
+    /// 1:1 step_index）。daily 与 samples 必须同源（同一 makeUsage 拆分结果）。
+    func testConversationDBNativeUsageReplacesCharSplit() throws {
+        let fixture = makeFixture()
+        // 三行同样的字符形态：300 思考字符 / 100 可见字符 / output=100 →
+        // 字符估算恒为 reasoning 75 / output 25（与原生真值可区分）。
+        func meteredRow(step: Int, at time: Date) -> String {
+            agyLine(
+                createdAt: iso(time), stepIndex: step,
+                input: 1_000, cacheRead: 200, output: 100,
+                thinking: String(repeating: "思", count: 300),
+                content: String(repeating: "答", count: 100)
+            )
+        }
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            meteredRow(step: 1, at: t0),
+            meteredRow(step: 2, at: t0.addingTimeInterval(60)),
+            meteredRow(step: 3, at: t0.addingTimeInterval(120)),
+        ])
+        let dbURL = try writeConversationDB(fixture, sessionID: "session-a", steps: [
+            (idx: 1, stepType: 15, metadata: nil),
+            (idx: 2, stepType: 15, metadata: nil),
+        ], genRows: [
+            // last_step_index 0 → steps.idx 1（== step_index 1）：守恒 → 原生拆分。
+            genData(lastStepIndex: 0, ttft: nil, usage: (raw: 100, reasoning: 30, normalized: 70)),
+            // last_step_index 1 → steps.idx 2：不守恒（40 + 30 ≠ 100）→ 回退字符估算。
+            genData(lastStepIndex: 1, ttft: nil, usage: (raw: 100, reasoning: 40, normalized: 30)),
+            // last_step_index 98 → steps.idx 99 连接不命中 → 不影响任何计量行。
+            genData(lastStepIndex: 98, ttft: nil, usage: (raw: 1, reasoning: 0, normalized: 1)),
+            // proto3 缺省形态：f9 = 0（纯可见输出）与 f10 = 0（纯思考输出）时
+            // 对应字段在 wire 上省略，缺省按 0 计，db 内守恒仍成立。
+            genData(lastStepIndex: 96, ttft: nil, usage: (raw: 90, reasoning: 90, normalized: 0)),
+            genData(lastStepIndex: 97, ttft: nil, usage: (raw: 80, reasoning: 0, normalized: 80)),
+        ])
+
+        // reader 层直测：连接键 == last_step_index + 1，先到先得。
+        let usageMap = try AntigravityStepTimestampReader.llmCallNativeUsageByStepIndex(dbPath: dbURL)
+        XCTAssertEqual(usageMap.count, 5)
+        XCTAssertEqual(
+            usageMap[1],
+            AntigravityStepTimestampReader.LLMCallNativeUsage(reasoning: 30, normalized: 70, raw: 100)
+        )
+        XCTAssertEqual(
+            usageMap[2],
+            AntigravityStepTimestampReader.LLMCallNativeUsage(reasoning: 40, normalized: 30, raw: 100)
+        )
+        XCTAssertEqual(
+            usageMap[97],
+            AntigravityStepTimestampReader.LLMCallNativeUsage(reasoning: 90, normalized: 0, raw: 90),
+            "f10 wire 缺省（纯思考）按 0 计"
+        )
+        XCTAssertEqual(
+            usageMap[98],
+            AntigravityStepTimestampReader.LLMCallNativeUsage(reasoning: 0, normalized: 80, raw: 80),
+            "f9 wire 缺省（纯可见）按 0 计"
+        )
+        XCTAssertEqual(
+            usageMap[99],
+            AntigravityStepTimestampReader.LLMCallNativeUsage(reasoning: 0, normalized: 1, raw: 1)
+        )
+        // step 3（steps.idx 3）无 last_step_index 2 的 gen 行 → 不进映射。
+        XCTAssertNil(usageMap[3])
+
+        let result = try scan(fixture)
+
+        // 守恒行 → 原生真值（30/70，非字符估算的 75/25）。
+        let native = try sample(result, "session-a:step:1")
+        XCTAssertEqual(native.reasoningOutputTokens, 30)
+        XCTAssertEqual(native.outputTokens, 70)
+        // 不守恒行（db/transcript 漂移防线）→ 字符估算回退（行为与 v4 一致）。
+        let nonConserving = try sample(result, "session-a:step:2")
+        XCTAssertEqual(nonConserving.reasoningOutputTokens, 75)
+        XCTAssertEqual(nonConserving.outputTokens, 25)
+        // db 无该行 → 字符估算回退。
+        let unmapped = try sample(result, "session-a:step:3")
+        XCTAssertEqual(unmapped.reasoningOutputTokens, 75)
+        XCTAssertEqual(unmapped.outputTokens, 25)
+        // daily 与 samples 同源：日聚合是同一批拆分结果的直加。
+        let day = try XCTUnwrap(result.dailyTokenUsage.last)
+        XCTAssertEqual(day.outputTokens, 70 + 25 + 25)
+        XCTAssertEqual(day.reasoningTokens, 30 + 75 + 75)
+        XCTAssertEqual(day.totalTokens, 3 * 1_200 + 300, "守恒拆分不改变 totalTokens 口径")
+        XCTAssertEqual(day.rounds, 3)
+    }
+
     /// 方案 A：conversations/<session>.db 的 (step_type=15, idx==step_index) 映射
     /// 直接给出真值时长，且优先于方案 B（同 step 存在 GENERIC 标记也不覆盖）；
     /// .db 无匹配 idx 的计量行保持 nil。
@@ -1169,7 +1275,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     }
 
     /// 缓存失效：v2 旧索引（无样本时长）必须被版本守卫一次性拒绝并全量重建，
-    /// 重建后的索引以 v3 落盘。
+    /// 重建后的索引以当前版本（v5）落盘。
     func testCacheVersionBumpRebuildsStaleV2Index() throws {
         let fixture = makeFixture()
         writeSession(
@@ -1202,7 +1308,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
         XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 4, "重建后的索引以 v4 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 5, "重建后的索引以 v5 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

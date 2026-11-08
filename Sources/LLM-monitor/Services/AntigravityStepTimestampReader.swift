@@ -166,6 +166,70 @@ enum AntigravityStepTimestampReader {
         ttftDurationSeconds(from: data)
     }
 
+    // MARK: - agy 原生 usage：gen_metadata f1.f4（与 Antigravity 会话库同 schema 同字段）
+
+    /// gen_metadata `f1.f4` usage 子消息解出的原生 token 三元组。db 内守恒
+    /// `reasoning + normalized == raw`（2026-11-08 本机 10 库实测全部 100% 守恒，
+    /// 最大库 267/267；合计 f3=147,562 == f9 64,794 + f10 82,768）；raw 含思考，
+    /// 与 transcript DONE 行 `output_tokens` 同口径（同会话实测两侧合计精确相等）。
+    struct LLMCallNativeUsage: Equatable, Sendable {
+        /// `f9`：reasoning tokens（思考输出）
+        let reasoning: Int
+        /// `f10`：normalized output（raw − reasoning，可见输出）
+        let normalized: Int
+        /// `f3`：raw output（含思考）
+        let raw: Int
+    }
+
+    /// agy 本地会话 `conversations/<session>.db` 的 `gen_metadata` 表逐行 `data`
+    /// protobuf 携带的 `f1.f4` usage 子消息（f3 = rawOutputTokens、f9 =
+    /// reasoningTokens、f10 = normalizedOutputTokens）。2026-11-08 实测（10 库）：
+    /// f9 + f10 == f3 全部 100% 守恒，与 transcript DONE 行 `output_tokens` 合计
+    /// 精确相等、DONE 且 output>0 的 step_index 与 gen 行 1:1 —— 可作为
+    /// reasoning/visible 拆分的原生真值（替代 `ReasoningCharSplit` 字符占比估算）。
+    ///
+    /// 连接语义与 `llmCallTTFTSecondsByStepIndex` 一致：`steps.idx ==
+    /// gen.f20.last_step_index + 1`（同号冲突先到先得）。usage 子消息缺失 /
+    /// 不可解析 / last_step_index 缺失 / 加一溢出的行不出现在结果里；proto3
+    /// 缺省字段按 0 计。db 与 transcript 是否守恒（`reasoning + normalized ==
+    /// transcript output_tokens`）由聚合层逐行校验，不守恒回退字符估算。
+    ///
+    /// 必须经 `SQLiteTempCopy.read` 调用（原路径 READONLY + WAL 竞态兜底由外层
+    /// 负责，与 `llmCallTTFTSecondsByStepIndex` 同一纪律）。gen 行解析复用
+    /// `AntigravitySessionDBReader.parseGeneratorMetadataEntry`（f4 字段号与
+    /// proto3 缺省语义单一事实源，不重复造轮子）。
+    static func llmCallNativeUsageByStepIndex(dbPath: URL) throws -> [Int: LLMCallNativeUsage] {
+        let connection = try SQLiteConnection(path: dbPath, readOnly: opensReadOnly(dbPath: dbPath))
+        let rows = try connection.query(
+            sql: "SELECT data FROM gen_metadata ORDER BY idx ASC",
+            map: { statement -> Data? in
+                guard sqlite3_column_type(statement, 0) != SQLITE_NULL,
+                      let blob = sqlite3_column_blob(statement, 0) else {
+                    return nil
+                }
+                let length = Int(sqlite3_column_bytes(statement, 0))
+                return Data(bytes: blob, count: length)
+            }
+        )
+        var result: [Int: LLMCallNativeUsage] = [:]
+        for data in rows {
+            guard let data, !data.isEmpty else { continue }
+            let entry = AntigravitySessionDBReader.parseGeneratorMetadataEntry(idx: 0, data: data)
+            guard let usage = entry.usage, let lastStepIndex = entry.lastStepIndex else { continue }
+            // last_step_index + 1 报告溢出加法：畸形大数值走连接不命中，不 trap。
+            let next = lastStepIndex.addingReportingOverflow(1)
+            guard !next.overflow, result[next.partialValue] == nil else { continue }
+            result[next.partialValue] = LLMCallNativeUsage(
+                reasoning: usage.reasoningTokens,
+                // f10 在 wire 上可缺省（proto3 默认值省略，如纯思考输出时为 0），
+                // 缺省按 0 计，守恒校验仍成立。
+                normalized: usage.normalizedOutputTokens ?? 0,
+                raw: usage.rawOutputTokens
+            )
+        }
+        return result
+    }
+
     /// protobuf Duration（field 1 = seconds varint、field 2 = nanos varint）→ 秒。
     /// proto3 默认值省略：<1s 的时长 seconds 缺省只剩 nanos（按 0 秒处理）；
     /// 两个字段都缺省视为上游未提供 → nil；负值（负 int64 的 varint 解码为巨大

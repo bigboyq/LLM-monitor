@@ -132,8 +132,8 @@
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageAggregation.swift` | minimax reasoning 字符分摊比例回写 sample 与 per-day 聚合纯函数 |
 | `Sources/LLM-monitor/Services/MinimaxSessionModelResolver.swift` | MiniMax 会话模型名解析与映射 |
-| `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、thinking 字符守恒分摊与日聚合纯函数 |
-| `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + Method A reasoning 归类 + per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
+| `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、reasoning 拆分（f4 原生真值优先 + 字符守恒分摊回退）与日聚合纯函数 |
+| `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + reasoning 字符分摊（智谱行与分片统一三段式，native 列优先）+ per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
 | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` | ZCode 本地凭证与设备标识读取（`~/.zcode/v2/telemetry-state.json` 的 deviceMid + `credentials.json` 的 zcodejwttoken AES-256-GCM 解密） |
 | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求；同文件定义 `ZcodePackageProviding` 协议与默认实现 `GlmZcodeAPIPackageProvider`） |
@@ -144,7 +144,7 @@
 | `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v10 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageCache.swift` | `AntigravityLocalUsageScanner` 的缓存与 index 类型 extension（与上面的 scanner 同类型，按职责拆文件） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day 聚合与 sample 组装（`accountCalls`：turns = step14 直计、rounds = 连接命中 Call；纯函数，unit-testable） |
-| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取（agy harness 共用；antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
+| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取 + agy 共用的 gen_metadata 逐调用读取：TTFT（f1.f11）与原生 usage（f1.f4：f9 reasoning / f10 normalized，守恒门控供 agy 拆分）（antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
 | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` | 读取 OpenCode `message` 表并按 provider / day 聚合 |
 | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` | OpenCode DB 指纹、缓存、7 天窗口与 provider slice snapshot |
 | `Sources/LLM-monitor/Services/Infra/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|
