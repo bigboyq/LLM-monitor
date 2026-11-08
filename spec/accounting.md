@@ -172,7 +172,9 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 上游 TTFT 字段可得性（2026-11-08 调研，均**未**进本口径的拆分）：ZCode `model_usage`
 原生 `time_to_first_token_ms`（逐调用，71% 覆盖）、Codex `task_complete` payload 原生
 `time_to_first_token_ms`（turn 级）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
-与 steps 差分亚毫秒吻合）——调研记录见
+与 steps 差分亚毫秒吻合）；DSH 无显式字段但**可推导**——非 v4 文件取首个
+`assistant/chunk.time − step/start.time`（v4 成功调用待更多样本确认，见
+[`harnesses/dsh.md`](harnesses/dsh.md) § TTFT 调研记录）——调研记录见
 [`harnesses/zcode.md`](harnesses/zcode.md) /
 [`harnesses/codex.md`](harnesses/codex.md) /
 [`providers/antigravity.md`](providers/antigravity.md)。

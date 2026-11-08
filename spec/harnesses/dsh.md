@@ -61,6 +61,29 @@ TTFT；工具执行在 `assistant/message` **之后**，事件结构上不混入
 `durationSeconds`（(0, 3600] s 才有效，否则 nil）；`step/end` 清表与「命中即弹出」
 双保险防同一步复用锚点。三代格式（v1 / v3 / v4）的 `step/start` 事件结构一致。
 
+### TTFT / 首字时延可推导（调研记录，2026-11-08）
+
+> 只读调研（非 v4 session 实测 6 轮 + v4 session `a564350c` 全键 diff）。非官方契约，
+> 随版本可能变化；本节只记录发现，不进任何代码路径。
+
+DSH 每个事件都带 `time`（epoch ms）——即上面单次调用时长的差分数据面。在此之上
+**逐调用 TTFT 可推导，无需上游改 schema**：
+
+- **非 v4 文件（`session.jsonl.zstd`）**：`assistant/chunk` 流式事件（单 session 可达
+  3,458 条）每个都带 `time`，`首个 assistant/chunk.time − step/start.time` 即该次调用
+  的首字延迟。实测 6 轮 502–1,241ms（每轮 13–27 条 chunk），数值合理。
+- **v4**（`session.v4.jsonl.zstd`，三代格式中的最新代；scanner 的 `*.jsonl.zstd` 后缀
+  发现谓词天然命中，不漏扫，见 `DshLocalUsageScanner.swift:130-132`）：**无显式 TTFT
+  字段**；chunk 流聚合进 `assistant/attempt.data.stream[]`（每个 chunk 自带 `time`）。
+  已观察样本中 attempt 事件仅出现在**失败** turn（401 错误流，其 chunk 时刻不可当
+  TTFT）；成功 turn 只有 `assistant/message`，仅剩总时长可差分——**v4 成功调用是否
+  保留 chunk 级时间戳待更多样本确认**。
+- 账本格式与 provider 无关（样本 v4 session 的调用实为 `minimax-cn /
+  MiniMax-M3.1-Flash`），结论同样适用于 DeepSeek 分片。
+
+监控现状：scanner 未消费 chunk 时刻；若未来做 sample 级首字延迟，在现有流式解析
+循环里记录首个 `assistant/chunk` 时刻即可（与时长差分同一数据面，纯 L0 增量）。
+
 The UI splits dsh's inclusive `outputTokens` into visible output and reasoning so the
 existing four-category chart stays consistent:
 
@@ -197,5 +220,5 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-08 · 代码 1a4238f
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。
