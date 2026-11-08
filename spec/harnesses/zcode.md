@@ -380,8 +380,19 @@ session 不一定在内）。
 `first_model_start_at` / `first_token_at` / `duration_ms` / `time_to_first_token_ms`。
 
 覆盖率实测（2026-11-08）：`model_usage` 16,434 行中 11,658 行（**71%**）有
-`time_to_first_token_ms`，`duration_ms` 100% 有值；缺口成因未深究（疑为中断调用或
-早期版本行）。
+`time_to_first_token_ms`，`duration_ms` 100% 有值。
+
+**缺口画像（2026-11-08 二次排查，监控口径行 15,092 条）**：NULL 率 27.8%（近 7 天
+29.6%——非历史遗留）；按 model / query_source / provider / task_type / 重试特征分解
+均无显著差异（24.7%~31.6%），但**集中在 turn 内的工具续调**——turn 首调 NULL 率仅
+1.9%，第 2+ 次调用 18~25%；且 NULL 行系统性更短更轻（均值时长 7.1s / 输出 244 tok
+vs 非 NULL 23.7s / 1,013 tok），`finish_reason=stop` 行仅 4.3% NULL、`tool-calls` 行
+29.5%。`first_token_at` 独立列与 ttft 列**同生同灭**（NULL 行 0 行有值，无法互补），
+且两列恒等（`ttft_ms ≡ first_token_at − started_at`，10,893/10,893 差 ≤50ms）。
+**对解码速度的影响已量化**：NULL 行占近 7 天总时长 12.5%；按非 NULL 行的桶均值
+ttft/时长比插补（短调用 TTFT 占比 52%（<4s 桶）~14%（≥32s 桶）），解码速度仅低估
+**约 2.8%**——「无 TTFT 按 0 计」的方向是保守的（低估而非高估），量级可接受，
+不另做插补。
 
 监控现状（2026-11-08 更新）：reader 消费 `duration_ms`（含 TTFT 的总时长，见
 §Local Token Source 列注释与 [`accounting.md`](../accounting.md) §Token/s 速率口径），
