@@ -542,5 +542,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-08 · 代码 3cc7ca7（阶段一：antigravity 凭据探测与刷新节奏；2.4.2：keychain 过期/401 回退本地 RPC 与 auth probe 语义澄清，改动待提交）
+> 核对基线：2026-11-08 · 代码 02a9f30
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

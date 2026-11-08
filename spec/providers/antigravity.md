@@ -1763,4 +1763,4 @@ For raw quota export outside the menu app:
    的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-08 · 代码 3cc7ca7（2.4.2：keychain 过期/401 回退本地 RPC——`AntigravityProcessDiscovery` 复活 + fetch 决策树 + `credentialExpired` 新文案；scanner/`.db` 直读不变；改动待提交）
+> 核对基线：2026-11-08 · 代码 02a9f30
