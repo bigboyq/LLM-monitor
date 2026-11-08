@@ -33,6 +33,13 @@ enum AntigravitySessionDBReader {
     ///
     /// `data` blob 缺失或无法解析时除 `idx` 外全 nil——该行随后被连接条件
     ///（模型名 + last_step_index + steps 命中）自然跳过，不影响其他行。
+    ///
+    /// **f11 已证伪（2026-11-08 实测，勿再接入）**：调研曾把 blob `f1.f11` 当
+    /// TTFT、`f1.f12` 当 streaming 接入；本机 Antigravity 库（201 gen 行）实测
+    /// f11 占 f11+f12 的 97~100%（P50 99%）、f12 仅 0.01~0.18s——对数百 tok 的
+    /// 输出「流式 0.18s」物理不成立。结论：**f11 实为整段调用时长（与 steps
+    /// 差分同义）、f12≈0**，不是 TTFT/streaming 对。本 reader 不解析 f11/f12；
+    /// 单次调用时长一律取 steps.metadata f7−f1（`Call.durationSeconds`）。
     struct GeneratorMetadataEntry: Equatable, Sendable {
         /// usage 子消息（`f1.f4`）。**子消息存在即视为 usage 事件**（即使全零）；
         /// 值为 0 的字段在 wire 上常缺省，缺省按 0 计；cacheWrite 不在其中。
@@ -66,9 +73,6 @@ enum AntigravitySessionDBReader {
         /// `f1.f20` map 的 `last_step_index`（十进制字符串 → Int；缺失 / 不可解析
         /// 为 nil）。连接键 = `steps.idx == lastStepIndex + 1`；nil 的行不产生 Call。
         let lastStepIndex: Int?
-        /// `f1.f11`：timeToFirstToken（protobuf Duration，秒）。字段缺失 / 不可解析 /
-        /// 负值 → nil（上游未提供或非法）。
-        var timeToFirstTokenSeconds: Double? = nil
     }
 
     /// steps 表 `step_type=15` 行（LLM call）的双 Timestamp。metadata 缺失或时间戳
@@ -119,9 +123,6 @@ enum AntigravitySessionDBReader {
         /// 调用方按 (0, 3600] 有效域过滤（与窗口 token 速度过滤同口径，见
         /// `spec/harnesses/agy.md` § 单次调用时长）。
         let durationSeconds: Double?
-        /// gen blob `f1.f11` timeToFirstToken（首字延迟，秒）。gen 行未携带 /
-        /// 不可解析 → nil（步骤时间戳侧无此字段，与 durationSeconds 不同源）。
-        var ttftSeconds: Double? = nil
     }
 
     // MARK: - probe（版本指纹门）
@@ -346,8 +347,7 @@ enum AntigravitySessionDBReader {
                 reasoningTokens: usage.reasoningTokens,
                 startedAt: startedAt,
                 completedAt: completedAt,
-                durationSeconds: duration,
-                ttftSeconds: entry.timeToFirstTokenSeconds
+                durationSeconds: duration
             ))
         }
         return calls
@@ -471,11 +471,9 @@ enum AntigravitySessionDBReader {
         let lastStepIndex = attributes["last_step_index"]
             .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
-        // f1.f11：timeToFirstToken（protobuf Duration：f1=seconds、f2=nanos；
-        // <1s 时 proto3 省略 seconds 只剩 nanos）。与 f1.f4 usage 相互独立——
-        // usage 子消息缺失的行本就不产生 Call，f11 只在连接命中时被消费。
-        let ttftSeconds = firstBytes(event, fieldNumber: 11).flatMap(ttftDurationSeconds(from:))
-
+        // f1.f11 / f1.f12 不解析：f11 经 2026-11-08 实测证伪——其值 ≈ 整段调用
+        // 时长（97~100%）、f12≈0，不是 TTFT/streaming 对（见类型注释），接入会
+        // 把调用时长误当首字延迟、令解码速度分母≈0。
         return GeneratorMetadataEntry(
             idx: idx,
             trajectoryID: trajectoryID,
@@ -483,24 +481,8 @@ enum AntigravitySessionDBReader {
             displayName: firstString(event, fieldNumber: 21),
             usage: usage,
             attributes: attributes,
-            lastStepIndex: lastStepIndex,
-            timeToFirstTokenSeconds: ttftSeconds
+            lastStepIndex: lastStepIndex
         )
-    }
-
-    /// protobuf Duration（field 1 = seconds varint、field 2 = nanos varint）→ 秒。
-    /// proto3 默认值省略：<1s 的时长 seconds 缺省只剩 nanos（按 0 秒处理）；
-    /// 两个字段都缺省视为上游未提供 → nil；负秒（负 int64 varint 解码为巨大无符号
-    /// 数）或 nanos 越界 → nil。不做范围过滤（有效性域归聚合层）。
-    private static func ttftDurationSeconds(from data: Data) -> Double? {
-        guard let fields = protoFields(in: data) else { return nil }
-        let secondsRaw = firstVarint(fields, fieldNumber: 1)
-        let nanosRaw = firstVarint(fields, fieldNumber: 2)
-        guard secondsRaw != nil || nanosRaw != nil else { return nil }
-        let seconds = secondsRaw.map(Int64.init(bitPattern:)) ?? 0
-        let nanos = nanosRaw.map(Int64.init(bitPattern:)) ?? 0
-        guard seconds >= 0, nanos >= 0, nanos <= 999_999_999 else { return nil }
-        return Double(seconds) + Double(nanos) / 1_000_000_000
     }
 
     // MARK: - steps.metadata 解析（纯函数，测试接缝 internal）

@@ -141,14 +141,15 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
         XCTAssertNil(usage.normalizedOutputTokens)
     }
 
-    /// `f1.f11` timeToFirstToken（protobuf Duration）三种 wire 形态 →
-    /// `Call.ttftSeconds`：完整 seconds+nanos、<1s 省略 seconds 只剩 nanos、
-    /// 空子消息（proto3 双默认值缺省）→ nil；gen 行未写 f11 也 → nil。
-    func testGeneratorMetadataTTFTDurationShapesReachCallTTFT() throws {
+    /// **f11 证伪回归（2026-11-08 实测）**：gen blob `f1.f11` 曾被当 TTFT 接入，
+    /// 实测其值 ≈ 整段调用时长（97~100%）、f12≈0，不是首字延迟——reader 不得
+    /// 解析 f11/f12。夹具刻意写入多种 f11 wire 形态，断言调用仍按连接键正常
+    /// 配对、时长一律取 steps 差分、样本 `ttftSeconds` 恒 nil。
+    func testGeneratorMetadataF11FalsifiedAndNotConsumedAsTTFT() throws {
         let base: UInt64 = 1_787_054_898
         let dbURL = try makeSessionDB(
             gen: [
-                // 1.669597334s（spec 实测的 seconds+nanos 完整形状）
+                // 完整 Duration（seconds + nanos；曾实测的形态）照常写入
                 GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
                        attributes: [lsi(0)],
                        ttft: .secondsAndNanos(seconds: 1, nanos: 669_597_334)),
@@ -156,11 +157,10 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
                 GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
                        attributes: [lsi(1)],
                        ttft: .nanosOnly(864_000_000)),
-                // 空子消息：两个默认值字段都缺省 → 视为未提供
+                // 空子消息 / 不写 f11：reader 无视该字段
                 GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
                        attributes: [lsi(2)],
                        ttft: .empty),
-                // 不写 f11：上游未提供 → nil
                 GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
                        attributes: [lsi(3)]),
             ],
@@ -174,13 +174,24 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
         )
 
         let calls = try AntigravitySessionDBReader.readCalls(dbPath: dbURL)
-        XCTAssertEqual(calls.count, 4)
-        XCTAssertEqual(calls[0].ttftSeconds!, 1.669597334, accuracy: 1e-9, "seconds + nanos 完整 Duration")
-        XCTAssertEqual(calls[1].ttftSeconds!, 0.864, accuracy: 1e-9, "<1s 只有 nanos：按 0 秒 + nanos 处理")
-        XCTAssertNil(calls[2].ttftSeconds, "空 Duration 子消息 → 未提供")
-        XCTAssertNil(calls[3].ttftSeconds, "gen 行未写 f11 → 未提供")
-        // TTFT 与 steps 差分时长相互独立：f11 缺失不影响 durationSeconds。
-        XCTAssertEqual(calls[2].durationSeconds!, 6.0, accuracy: 1e-9)
+        XCTAssertEqual(calls.count, 4, "f11 各种形态都不得影响连接配对")
+        // 时长一律来自 steps f7−f1（6s），与 f11 值无关。
+        for call in calls {
+            XCTAssertEqual(call.durationSeconds!, 6.0, accuracy: 1e-9)
+        }
+
+        // 样本不携带 TTFT（f11 证伪后的口径；重新接入即红）。
+        let accounting = AntigravityLocalUsageScanner.accountCalls(
+            sessionID: trajectoryID,
+            calls: calls,
+            turnStepIndexes: [],
+            calendar: testCalendar
+        )
+        XCTAssertEqual(accounting.samples.count, 4)
+        XCTAssertTrue(
+            accounting.samples.allSatisfy { $0.ttftSeconds == nil },
+            "f11 ≈ 整段调用时长而非 TTFT（2026-11-08 实测评议），样本不得携带 ttftSeconds"
+        )
     }
 
     // MARK: - steps 读取

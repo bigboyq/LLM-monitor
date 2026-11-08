@@ -144,7 +144,7 @@
 | `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v10 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageCache.swift` | `AntigravityLocalUsageScanner` 的缓存与 index 类型 extension（与上面的 scanner 同类型，按职责拆文件） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day 聚合与 sample 组装（`accountCalls`：turns = step14 直计、rounds = 连接命中 Call；纯函数，unit-testable） |
-| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取 + agy 共用的 gen_metadata 逐调用读取：TTFT（f1.f11）与原生 usage（f1.f4：f9 reasoning / f10 normalized，守恒门控供 agy 拆分）（antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
+| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取 + agy 共用的 gen_metadata 原生 usage 读取（f1.f4：f9 reasoning / f10 normalized，守恒门控供 agy 拆分；f1.f11 曾误作 TTFT 接入，已证伪回退）（antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
 | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` | 读取 OpenCode `message` 表并按 provider / day 聚合 |
 | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` | OpenCode DB 指纹、缓存、7 天窗口与 provider slice snapshot |
 | `Sources/LLM-monitor/Services/Infra/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|

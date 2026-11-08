@@ -157,7 +157,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
     /// 建一个 `conversations/<sessionID>.db`（steps 表形态与真实 schema 的读取
     /// 面一致：idx / step_type / metadata BLOB）。`genRows` 非空时一并建
-    /// `gen_metadata` 表并写入逐行 data blob（TTFT 用例）。
+    /// `gen_metadata` 表并写入逐行 data blob（原生 usage / f11 证伪回归用例）。
     @discardableResult
     private func writeConversationDB(
         _ fixture: Fixture,
@@ -260,9 +260,10 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     }
 
     /// gen_metadata.data 最小 fixture：f1 事件消息内的 f11 Duration
-    ///（timeToFirstToken，seconds 缺省 = proto3 <1s 形态）、f4 usage 子消息
-    ///（f3 raw / f9 reasoning / f10 normalized）与 f20 map 的 last_step_index
-    /// 条目（连接键 steps.idx == last_step_index + 1）。
+    ///（**仅作证伪回归夹具**——f11 经 2026-11-08 实测评议证伪，其值 ≈ 整段
+    /// 调用时长、不是 TTFT，reader 不得解析；seconds 缺省 = proto3 <1s 形态）、
+    /// f4 usage 子消息（f3 raw / f9 reasoning / f10 normalized）与 f20 map 的
+    /// last_step_index 条目（连接键 steps.idx == last_step_index + 1）。
     private func genData(
         lastStepIndex: UInt64,
         ttft: (seconds: UInt64, nanos: UInt64)?,
@@ -931,32 +932,11 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(AntigravityStepTimestampReader.streamDurationNanosForTest(from: Data([0x08, 0x01])))
     }
 
-    /// reader 层：gen_metadata `f1.f11` Duration（timeToFirstToken）的解析——
-    /// 完整 seconds+nanos、<1s 时 proto3 省略 seconds 只剩 nanos、空子消息
-    /// （双默认值缺省）→ nil、坏 blob → nil。
-    func testStepTimestampReaderParsesTTFTDurationFields() {
-        let full = Data([0x08] + varintBytes(1) + [0x10] + varintBytes(669_597_334))
-        XCTAssertEqual(
-            AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: full) ?? 0,
-            1.669_597_334, accuracy: 1e-9,
-            "seconds + nanos 完整 Duration"
-        )
-        // <1s：wire 上只剩 nanos → 按 0 秒 + nanos 处理。
-        let nanosOnly = Data([0x10] + varintBytes(864_000_000))
-        XCTAssertEqual(
-            AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: nanosOnly) ?? 0,
-            0.864, accuracy: 1e-9
-        )
-        // 空子消息（两字段都缺省）→ 视为上游未提供；坏 blob（group wire type）→ nil。
-        XCTAssertNil(AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: Data()))
-        XCTAssertNil(AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: Data([0x0B])))
-    }
-
-    /// gen_metadata f1.f11（与 Antigravity 同 schema 同字段）经
-    /// `steps.idx == last_step_index + 1` 连接后按 step_index 逐调用供给 TTFT；
-    /// <1s 只有 nanos 的 proto3 形态照常换算；连接不命中 / gen 行未写 f11 的
-    /// 计量行保持 nil。
-    func testConversationDBProvidesTTFTPerCall() throws {
+    /// **f11 证伪回归（2026-11-08 实测）**：gen_metadata `f1.f11` 曾被当 TTFT
+    /// 接入，实测其值 ≈ 整段调用时长（97~100%）、f12≈0，不是首字延迟——夹具
+    /// 刻意写入多种 f11 wire 形态，断言样本 `ttftSeconds` 恒 nil、方案 A 时长
+    /// 仍取 steps 差分、连接不命中的计量行不受影响。
+    func testConversationDBF11NotConsumedAsTTFT() throws {
         let fixture = makeFixture()
         let epoch = UInt64(t0.timeIntervalSince1970)
         writeSession(fixture, sessionID: "session-a", mainLines: [
@@ -972,25 +952,27 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             genData(lastStepIndex: 0, ttft: (seconds: 1, nanos: 669_597_334)),
             // last_step_index 1 → steps.idx 2；<1s 只有 nanos（864ms）
             genData(lastStepIndex: 1, ttft: (seconds: 0, nanos: 864_000_000)),
-            // last_step_index 2 → steps.idx 3，但 gen 行未写 f11 → 不进映射
+            // last_step_index 2 → steps.idx 3，gen 行未写 f11
             genData(lastStepIndex: 2, ttft: nil),
-            // last_step_index 99 → steps.idx 100 连接不命中 → 不进映射
+            // last_step_index 99 → steps.idx 100 连接不命中
             genData(lastStepIndex: 99, ttft: (seconds: 9, nanos: 0)),
         ])
 
         let result = try scan(fixture)
 
+        // f11 证伪后的口径：样本一律不携带 TTFT（重新接入即红）。
+        for promptID in ["session-a:step:1", "session-a:step:2", "session-a:step:3"] {
+            XCTAssertNil(
+                try sample(result, promptID).ttftSeconds,
+                "\(promptID)：f11 ≈ 整段调用时长而非 TTFT，样本不得携带 ttftSeconds"
+            )
+        }
+        // 方案 A 时长不受影响：仍来自 steps f7−f1。
         XCTAssertEqual(
-            try sample(result, "session-a:step:1").ttftSeconds ?? 0, 1.669_597_334, accuracy: 1e-9,
-            "f11 完整 Duration → 秒"
+            try sample(result, "session-a:step:1").durationSeconds ?? 0, 5, accuracy: 1e-9
         )
         XCTAssertEqual(
-            try sample(result, "session-a:step:2").ttftSeconds ?? 0, 0.864, accuracy: 1e-9,
-            "<1s 只有 nanos → 按 0 秒 + nanos 处理"
-        )
-        XCTAssertNil(
-            try sample(result, "session-a:step:3").ttftSeconds,
-            "gen 行未写 f11 / 连接不命中 → 样本 ttftSeconds 保持 nil"
+            try sample(result, "session-a:step:2").durationSeconds ?? 0, 6, accuracy: 1e-9
         )
     }
 
@@ -1275,7 +1257,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     }
 
     /// 缓存失效：v2 旧索引（无样本时长）必须被版本守卫一次性拒绝并全量重建，
-    /// 重建后的索引以当前版本（v5）落盘。
+    /// 重建后的索引以当前版本（v6）落盘。
     func testCacheVersionBumpRebuildsStaleV2Index() throws {
         let fixture = makeFixture()
         writeSession(
@@ -1308,7 +1290,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
         XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 5, "重建后的索引以 v5 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 6, "重建后的索引以 v6 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

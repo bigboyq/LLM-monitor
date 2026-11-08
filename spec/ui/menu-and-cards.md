@@ -388,13 +388,13 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `testTreeSectionGeometryAnchors`）；圆角卡片底与段头下划线已随树形化移除。
 - **字段级对齐指标簇（`HarnessMetricColumns`，2026-11-07 用户裁定）**：harness 汇总行
   与模型行共用同一组**定宽右对齐列**，纵向跨行对齐；列序与英文标题
-  **Turns · Token · Hit · Think · Speed · TTFT · Value · Update**（2026-11-07 裁定：Pmt 更名
-  Turns，Value 移到 Speed 后，扫描时间以 Update 加入标题行；2026-11-08 TTFT 插在
-  Speed 与 Value 之间，34pt 定宽 `HarnessMetricColumns.ttft`，`clusterWidth` 的间距
-  系数随之 5→6）。宽度预算按「够并集取
+  **Turns · Token · Hit · Think · TTFT · Speed · Value · Update**（2026-11-07 裁定：Pmt 更名
+  Turns，Value 移到 Speed 后，扫描时间以 Update 加入标题行；2026-11-08 TTFT 插入
+  指标簇（初版在 Speed 与 Value 之间，同日晚间按用户裁定改到 Speed 之前），34pt 定宽
+  `HarnessMetricColumns.ttft`，`clusterWidth` 的间距系数随之 5→6）。宽度预算按「够并集取
   并集、不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集，
   故取**并集**（量测锚 `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下
-  则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/Speed/TTFT = 段级
+  则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/TTFT/Speed = 段级
   聚合（Turns 用段 `promptSpeedStatistics.totalPromptCount`、Think 用段 buckets），
   模型行用行级值；速度均为完整 Prompt P50，TTFT 为**调用级 P50**
   （`LocalUsageSummaryBuilder.callTTFTStatistics`，样本批与速度同源）。**Speed 格的
@@ -409,7 +409,7 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `MixedCurrencyEstimate`（客户端可横跨多 provider 分片多币种），模型行价值是
   单 provider 单币种原额。
 - **指标列标题（`HarnessMetricColumns.columnHeader`，2026-11-07 补）**：客户端段列表
-  上方整表一次渲染一行列标题 `Turns · Token · Hit · Think · Speed · TTFT · Value · Update`
+  上方整表一次渲染一行列标题 `Turns · Token · Hit · Think · TTFT · Speed · Value · Update`
   ——列宽与 `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；
   标题行带**弹性名称占位**（与数据行同构）撑满行宽，把标题簇推到与数据相同的列位
   （缺占位时标题挤行首、数据贴右缘，2.3.10 修复）；名称列留空占位，整行弱化

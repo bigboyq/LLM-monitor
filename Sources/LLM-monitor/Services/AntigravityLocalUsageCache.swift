@@ -59,13 +59,16 @@ extension AntigravityLocalUsageScanner {
         /// cached day buckets until this source completes one current-calendar scan.
         var calendarSignature: String? = nil
 
-        /// v10：样本新增 `ttftSeconds`（gen blob `f1.f11` timeToFirstToken）。
-        /// v9 快照该字段恒为 nil，升版一次性重扫补齐。
+        /// v11（2026-11-08）：gen blob `f1.f11` 经实测证伪——其值 ≈ 整段调用时长
+        /// （97~100%）、f12≈0，不是 TTFT；清除 v10 误读出的伪 `ttftSeconds`
+        /// （解码速度分母≈0、窗口速度虚高），升版一次性重扫。
+        /// v10：样本新增 `ttftSeconds`（gen blob `f1.f11` timeToFirstToken）——
+        /// 已被 v11 证伪清除。
         /// v9：`.db` 直读数据源（阶段二b）。v8 及更早索引自带 RPC 增量状态机字段，
         /// 不做字段级迁移——加载时整体重置为空缓存，首个扫描轮对全部 session
         /// 全量重读（本地读毫秒级）。
         static let empty = CacheIndex(
-            version: 10,
+            version: 11,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sessions: [:],
             dailyBySession: [:],

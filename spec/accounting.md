@@ -177,9 +177,11 @@ TTFT）的读数介于解码速度与含 TTFT 速度之间，tooltip 已注明�
 
 上游 TTFT 字段可得性（2026-11-08 调研、同日接入 sample `ttftSeconds`，见下节）：ZCode `model_usage`
 原生 `time_to_first_token_ms`（逐调用，71% 覆盖，缺口行 nil）、Codex `task_complete` payload 原生
-`time_to_first_token_ms`（turn 级，回填 turn 首调）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
-与 steps 差分亚毫秒吻合）；agy 与 Antigravity 同 schema 同字段（`steps.idx == f20.last_step_index + 1`
-连接，2026-11-08 本机 91 库实测 2012/2012 = 100% 命中）；DSH 无显式字段、**三代账本均可
+`time_to_first_token_ms`（turn 级，回填 turn 首调）；~~Antigravity `gen_metadata` blob
+`f1.f11`~~ **证伪回退**——初版调研误把 f11 当 TTFT（其验证只证明 f11+f12 ≈ 时长），
+同日全量复核发现 **f11 ≈ 整段调用时长（97~100%）、f12 ≈ 0**，非首字延迟，Antigravity
+与 agy 的 f11 接入已回退（样本恒 nil，见
+[`providers/antigravity.md`](providers/antigravity.md) § TTFT 的证伪记录）；DSH 无显式字段、**三代账本均可
 推导**——v1 取首个独立 `assistant/chunk.time − step/start.time`，v3 / v4 取
 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（初版调研漏看
 message.data.stream 误判 v3 / v4 不可得，同日复核修订；实测 v3 1094/1094、
@@ -212,8 +214,8 @@ TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内
 |---|---|
 | ZCode | `model_usage.time_to_first_token_ms` 显式列 ÷ 1000（主表与非智谱分片同口径；NULL-aware 读取，NULL → nil；缓存 v12 重建） |
 | Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
-| Antigravity | gen_metadata blob `f1.f11` protobuf Duration（seconds 可缺省只剩 nanos；缓存 v10 重建） |
-| agy | 同一 `conversations/<session>.db` 的 `f1.f11`，经 `AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 按 steps.idx 连接（缓存 v4 重建） |
+| Antigravity | **无（回退）**——`f1.f11` 实为整段调用时长而非 TTFT（证伪记录见 `providers/antigravity.md` § TTFT），样本恒 nil；缓存 v11 重建 |
+| agy | **无（回退）**——同 Antigravity 的 f11 证伪；样本恒 nil；缓存 v6 重建 |
 | DSH | 双路径：v1 首个独立 `assistant/chunk.time − step/start.time` ÷ 1000（字节级预过滤 + 每 step 首 chunk 节流解码）；v3 / v4 取 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（缓存 v7 重建。见 `harnesses/dsh.md` § TTFT 调研记录） |
 | MiniMax | `(request_duration_ms − decode_duration_ms) / 1000`（同一时长守门窗口查询补取 decode 键、同一 `(session, turn)` FIFO 配对；decode 缺失 / 差值 < 0 → nil。缓存 v18 重建。见 `harnesses/minimaxcode.md` § TTFT 调研记录） |
 | OpenCode | 无（恒 nil） |

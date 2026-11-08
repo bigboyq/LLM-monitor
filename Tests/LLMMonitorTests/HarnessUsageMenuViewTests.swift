@@ -30,9 +30,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 并集簇的宽度预算（2026-11-07 用户裁定：够并集取并集，不够取交集）。
     ///
     /// 内容区实为 460pt（484 面板 − 2×12 内边距），实测装得下并集
-    /// {Turns, Token, Hit, Think, Speed, TTFT, Value, Update}（2026-11-08 Speed
-    /// 与 Value 之间加 TTFT 34pt 列）→ 取并集。若未来收窄面板使并集装不下，
-    /// 本测试先失败——届时按裁定反转回交集并同步 spec。
+    /// {Turns, Token, Hit, Think, TTFT, Speed, Value, Update}（2026-11-08 加
+    /// TTFT 34pt 列，同日换位至 Speed 之前）→ 取并集。若未来收窄面板使并集
+    /// 装不下，本测试先失败——届时按裁定反转回交集并同步 spec。
     func testMetricClusterUsesUnionWithinBudget() {
         let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
         let cluster = HarnessMetricColumns.clusterWidth
@@ -53,7 +53,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(
             HarnessMetricColumns.clusterWidth,
             HarnessMetricColumns.prompts + HarnessMetricColumns.token + HarnessMetricColumns.hitRate
-                + HarnessMetricColumns.thinking + HarnessMetricColumns.speed + HarnessMetricColumns.ttft
+                + HarnessMetricColumns.thinking + HarnessMetricColumns.ttft + HarnessMetricColumns.speed
                 + HarnessMetricColumns.value + HarnessMetricColumns.spacing * 6,
             "clusterWidth 必须覆盖全部 7 根数据列 + 6 个间距"
         )
@@ -368,6 +368,21 @@ final class HarnessUsageMenuViewTests: XCTestCase {
                                     "标题行必须撑满行宽（名称占位把列标题推到数据侧）")
     }
 
+    /// 列序钉子（2026-11-08 换位裁定）：表头与共用簇里 **TTFT 在 Speed 之前**。
+    ///
+    /// SwiftUI 视图结构没有可寻址的测试缝，用 Mirror 按 HStack 的 TupleView
+    /// 子视图**声明顺序**抽每列 `.frame(width:)` 的定宽来辨认列（TTFT=34、
+    /// Speed=58，全行唯一）。SDK 内部结构改名会让本测试失败报警——届时按新
+    /// 结构改抽取逻辑，不许只放宽断言。
+    func testMetricClusterPinsTTFTBeforeSpeed() {
+        let cluster = HarnessMetricColumns.cluster(
+            prompts: "1", token: "1", hitRate: "1", thinking: "1",
+            ttft: "1", speed: "1", speedHelp: "1", value: "1"
+        )
+        Self.assertTTFTComesBeforeSpeed(in: cluster, context: "共用簇")
+        Self.assertTTFTComesBeforeSpeed(in: HarnessMetricColumns.columnHeader, context: "表头")
+    }
+
     /// 折叠段 = 一行（汇总上 harness 行后不再有独立摘要行）。
     @MainActor
     func testCollapsedSectionIsASingleHarnessLine() {
@@ -634,6 +649,72 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    /// 断言视图里 TTFT 列（定宽 34）出现在 Speed 列（定宽 58）之前。
+    private static func assertTTFTComesBeforeSpeed<V: View>(in view: V, context: String) {
+        let widths = orderedFrameWidths(of: view)
+        guard let ttft = widths.firstIndex(of: 34), let speed = widths.firstIndex(of: 58) else {
+            XCTFail("\(context)：Mirror 抽到的列宽序列 \(widths) 里找不到 TTFT(34)/Speed(58)——视图结构或抽取逻辑变了")
+            return
+        }
+        XCTAssertLessThan(
+            ttft, speed,
+            "\(context)列序必须是 TTFT 在 Speed 之前（2026-11-08 换位裁定）；实际序列 \(widths)"
+        )
+    }
+
+    /// 按 HStack 的 TupleView 子视图声明顺序抽每个子视图的 `.frame(width:)`
+    /// 定宽：剥掉外层 modifier 链（`.font`/`.lineLimit`/`.padding` →
+    /// ModifiedContent）找到 HStack（特征属性 `_tree`），沿 `content` 下钻到
+    /// 元组后逐子视图深度优先找第一处 `width`。占位 `Color.clear` 只有
+    /// `maxWidth`，无定宽，自然缺席。
+    private static func orderedFrameWidths<V: View>(of view: V) -> [CGFloat] {
+        guard let hstack = findHStack(in: view, depth: 0) else { return [] }
+        guard let tree = Mirror(reflecting: hstack)
+            .children.first(where: { $0.label == "_tree" })?.value else { return [] }
+        var cursor = tree
+        for _ in 0..<4 {
+            let mirror = Mirror(reflecting: cursor)
+            if mirror.displayStyle == .tuple {
+                return mirror.children.compactMap { firstFrameWidth(in: $0.value, depth: 0) }
+            }
+            // 容器随语言模式而异：新 SDK 是 `TupleContent<Pack{...}>`（元组挂
+            // `content` 下），5.10 语言模式是 `TupleView<(...)>`（元组挂 `_view`
+            // 下，容器只此一个子属性）。
+            guard let next = mirror.children.first(where: { $0.label == "content" })?.value
+                ?? (mirror.children.count == 1 ? mirror.children.first?.value : nil) else { break }
+            cursor = next
+        }
+        return []
+    }
+
+    /// 剥 ModifiedContent（`.content` 属性）找到 HStack（唯一带 `_tree` 属性的层）。
+    private static func findHStack(in value: Any, depth: Int) -> Any? {
+        guard depth < 12 else { return nil }
+        let mirror = Mirror(reflecting: value)
+        if mirror.children.contains(where: { $0.label == "_tree" }) { return value }
+        guard let content = mirror.children.first(where: { $0.label == "content" })?.value else { return nil }
+        return findHStack(in: content, depth: depth + 1)
+    }
+
+    /// 深度优先找子视图链上第一个 `.frame(width:)` 的定宽（`_FrameLayout.width`）。
+    private static func firstFrameWidth(in value: Any, depth: Int) -> CGFloat? {
+        guard depth < 10 else { return nil }
+        for child in Mirror(reflecting: value).children {
+            if child.label == "width", let width = unwrapped(child.value) as? CGFloat {
+                return width
+            }
+            if let nested = firstFrameWidth(in: child.value, depth: depth + 1) {
+                return nested
+            }
+        }
+        return nil
+    }
+
+    private static func unwrapped(_ value: Any) -> Any? {
+        let mirror = Mirror(reflecting: value)
+        return mirror.displayStyle == .optional ? mirror.children.first?.value : value
+    }
 
     @MainActor
     private func height<V: View>(of view: V) -> CGFloat {

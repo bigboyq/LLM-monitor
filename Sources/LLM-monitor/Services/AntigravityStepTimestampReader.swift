@@ -99,73 +99,6 @@ enum AntigravityStepTimestampReader {
         streamDurationNanos(from: metadata)
     }
 
-    // MARK: - agy TTFT：gen_metadata f1.f11（与 Antigravity 会话库同 schema 同字段）
-
-    /// agy 本地会话 `conversations/<session>.db` 的 `gen_metadata` 表逐行 `data`
-    /// protobuf 携带的 `f1.f11` timeToFirstToken（protobuf Duration：f1=seconds、
-    /// f2=nanos；<1s 时 proto3 省略 seconds 只剩 nanos）。agy 与 Antigravity 会话
-    /// 库同 schema 同字段（`spec/providers/antigravity.md` § TTFT / streaming
-    /// 时长字段，`spec/harnesses/agy.md` § 单次调用时长 实测注明；本机 91 库实测
-    /// 2012/2012 行连接命中且全部可解出 f11）。
-    ///
-    /// 连接语义与 `AntigravitySessionDBReader.pair` 一致：`steps.idx ==
-    /// gen.f20.last_step_index + 1`（同号冲突先到先得）。返回值以连接命中的
-    /// steps.idx 为键——agy transcript 计量行用 `step_index == steps.idx` 查
-    /// 方案 A 时长（同一映射键），scanner 用同一映射供给逐调用 TTFT；
-    /// 连接不命中 / f11 缺失 / 不可解析 / 负值的行不出现在结果里。
-    ///
-    /// 必须经 `SQLiteTempCopy.read` 调用（原路径 READONLY + WAL 竞态兜底由外层
-    /// 负责，与 `llmStepStreamDurationNanos` 同一纪律）。protobuf 遍历复用
-    /// `AntigravitySessionDBReader.protoFields`（同一 L0 解码器，不重复造轮子）。
-    static func llmCallTTFTSecondsByStepIndex(dbPath: URL) throws -> [Int: Double] {
-        let connection = try SQLiteConnection(path: dbPath, readOnly: opensReadOnly(dbPath: dbPath))
-        let rows = try connection.query(
-            sql: "SELECT data FROM gen_metadata ORDER BY idx ASC",
-            map: { statement -> Data? in
-                guard sqlite3_column_type(statement, 0) != SQLITE_NULL,
-                      let blob = sqlite3_column_blob(statement, 0) else {
-                    return nil
-                }
-                let length = Int(sqlite3_column_bytes(statement, 0))
-                return Data(bytes: blob, count: length)
-            }
-        )
-        var result: [Int: Double] = [:]
-        for data in rows {
-            guard let data, !data.isEmpty,
-                  let top = AntigravitySessionDBReader.protoFields(in: data),
-                  let eventBytes = top.first(where: { $0.fieldNumber == 1 && $0.wireType == 2 })?.bytes,
-                  let event = AntigravitySessionDBReader.protoFields(in: eventBytes) else {
-                continue
-            }
-            // f1.f20 repeated string→string map：取 last_step_index（十进制字符串）。
-            var lastStepIndex: Int?
-            for field in event where field.fieldNumber == 20 && field.wireType == 2 {
-                guard let entryBytes = field.bytes,
-                      let mapEntry = AntigravitySessionDBReader.protoFields(in: entryBytes) else { continue }
-                let key = mapEntry.first(where: { $0.fieldNumber == 1 && $0.wireType == 2 })?.bytes
-                let value = mapEntry.first(where: { $0.fieldNumber == 2 && $0.wireType == 2 })?.bytes
-                guard let key, String(data: key, encoding: .utf8) == "last_step_index",
-                      let value,
-                      let parsed = Int(String(data: value, encoding: .utf8) ?? "") else { continue }
-                lastStepIndex = parsed
-            }
-            guard let lastStepIndex else { continue }
-            // last_step_index + 1 报告溢出加法：畸形大数值走连接不命中，不 trap。
-            let next = lastStepIndex.addingReportingOverflow(1)
-            guard !next.overflow, result[next.partialValue] == nil else { continue }
-            guard let ttftBytes = event.first(where: { $0.fieldNumber == 11 && $0.wireType == 2 })?.bytes,
-                  let seconds = ttftDurationSeconds(from: ttftBytes) else { continue }
-            result[next.partialValue] = seconds
-        }
-        return result
-    }
-
-    /// Test surface：单条 f11 Duration blob 的解析（seconds/nanos 形态覆盖）。
-    nonisolated static func ttftDurationSecondsForTest(from data: Data) -> Double? {
-        ttftDurationSeconds(from: data)
-    }
-
     // MARK: - agy 原生 usage：gen_metadata f1.f4（与 Antigravity 会话库同 schema 同字段）
 
     /// gen_metadata `f1.f4` usage 子消息解出的原生 token 三元组。db 内守恒
@@ -188,14 +121,14 @@ enum AntigravityStepTimestampReader {
     /// 精确相等、DONE 且 output>0 的 step_index 与 gen 行 1:1 —— 可作为
     /// reasoning/visible 拆分的原生真值（替代 `ReasoningCharSplit` 字符占比估算）。
     ///
-    /// 连接语义与 `llmCallTTFTSecondsByStepIndex` 一致：`steps.idx ==
+    /// 连接语义与 `AntigravitySessionDBReader.pair` 一致：`steps.idx ==
     /// gen.f20.last_step_index + 1`（同号冲突先到先得）。usage 子消息缺失 /
     /// 不可解析 / last_step_index 缺失 / 加一溢出的行不出现在结果里；proto3
     /// 缺省字段按 0 计。db 与 transcript 是否守恒（`reasoning + normalized ==
     /// transcript output_tokens`）由聚合层逐行校验，不守恒回退字符估算。
     ///
     /// 必须经 `SQLiteTempCopy.read` 调用（原路径 READONLY + WAL 竞态兜底由外层
-    /// 负责，与 `llmCallTTFTSecondsByStepIndex` 同一纪律）。gen 行解析复用
+    /// 负责，与 `llmStepStreamDurationNanos` 同一纪律）。gen 行解析复用
     /// `AntigravitySessionDBReader.parseGeneratorMetadataEntry`（f4 字段号与
     /// proto3 缺省语义单一事实源，不重复造轮子）。
     static func llmCallNativeUsageByStepIndex(dbPath: URL) throws -> [Int: LLMCallNativeUsage] {
@@ -228,21 +161,6 @@ enum AntigravityStepTimestampReader {
             )
         }
         return result
-    }
-
-    /// protobuf Duration（field 1 = seconds varint、field 2 = nanos varint）→ 秒。
-    /// proto3 默认值省略：<1s 的时长 seconds 缺省只剩 nanos（按 0 秒处理）；
-    /// 两个字段都缺省视为上游未提供 → nil；负值（负 int64 的 varint 解码为巨大
-    /// 无符号数）或 nanos 越界 → nil。不做范围过滤（有效性域归聚合层）。
-    private static func ttftDurationSeconds(from data: Data) -> Double? {
-        guard let fields = AntigravitySessionDBReader.protoFields(in: data) else { return nil }
-        let secondsRaw = fields.first { $0.fieldNumber == 1 && $0.wireType == 0 }?.varint
-        let nanosRaw = fields.first { $0.fieldNumber == 2 && $0.wireType == 0 }?.varint
-        guard secondsRaw != nil || nanosRaw != nil else { return nil }
-        let seconds = secondsRaw.map(Int64.init(bitPattern:)) ?? 0
-        let nanos = nanosRaw.map(Int64.init(bitPattern:)) ?? 0
-        guard seconds >= 0, nanos >= 0, nanos <= 999_999_999 else { return nil }
-        return Double(seconds) + Double(nanos) / 1_000_000_000
     }
 
     /// 解析 metadata protobuf 信封里的 field 1（发起）与 field 7（流式完成）两个

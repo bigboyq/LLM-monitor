@@ -104,17 +104,17 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 
 ## TTFT（ttftSeconds）
 
-与时长同一 `.db` 数据面（2026-11-08 接入）：gen_metadata blob 事件主消息 `f1.f11`
-是 timeToFirstToken 的 protobuf Duration（与
+**2026-11-08 回退：无 TTFT 数据源。** 初版（同日早些时候）曾把 gen_metadata blob
+`f1.f11` 当 timeToFirstToken 接入（`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex`，
+连接键与 f4 原生拆分同款）；随后全量复核证伪——**f11 占 f11+f12 的 97~100%、f12 仅
+0.01~0.18s**（对 590 tok 输出「流式 0.18s」物理不成立），即 **f11 实为整段调用时长
+而非首字延迟**（详见
 [`providers/antigravity.md`](../providers/antigravity.md) § TTFT / streaming 时长字段
-同一字段、同 schema；seconds 缺省只剩 nanos、双缺省 → nil）。
-`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 按方案 A 同一连接键
-`steps.idx == f20.last_step_index + 1` 收成 `steps.idx → 秒` 映射（91 库全扫实测
-连接 2012/2012 = 100% 命中、无负值），scanner 在 `AgySessionDurationContext` 里与
-计量行按 `idx == step_index` 配对供给样本；连接不上 / 读失败（`SQLiteTempCopy`
-纪律同款）降级为空映射，样本 `ttftSeconds` 保持 nil。无方案 B 降级——transcript
-无首字时刻。缓存 v5（v3→v4 为 TTFT 接入、v4→v5 为 f4 原生拆分接入，均一次性失效
-重建）。聚合口径见
+的证伪记录）。接入期间 agy 样本的「TTFT」读数实为时长，解码速度分母 ≈0。
+
+现状：`llmCallTTFTSecondsByStepIndex` 与相关透传已删除，样本 `ttftSeconds` 恒 nil
+（UI 显示 `—`；解码速度按时长全额计入）；f4 原生 token 拆分不受影响。缓存 v6
+（v5 是伪 TTFT 结果，一次性失效重建）。聚合口径见
 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 ## Provider mapping

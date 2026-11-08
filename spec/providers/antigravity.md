@@ -1362,38 +1362,37 @@ id/hash 字段**。模型归因的本地文件来源只有 `gen_metadata`；db �
 `.pb` 会话（2026-11-08 本机 3/361）非 SQLite、无此表；阶段二b起完全忽略（RPC 退役后
 无可用数据源，不发现、不指纹、不进 session 集）。
 
-#### TTFT / streaming 时长字段（`f1.f11` / `f1.f12`，2026-11-08 调研记录）
+#### TTFT / streaming 时长字段（`f1.f11` / `f1.f12`，2026-11-08 调研记录；**同日二次排查证伪，监控已回退**）
 
 > 无 schema protobuf 遍历实测（本机 6 个会话库、28 行含 usage 的行逐行核对，
-> IDE 2.29.0）。非官方契约，随版本可能变化；本节只记录发现，不进任何代码路径。
+> IDE 2.29.0）。非官方契约，随版本可能变化。
 
 事件主消息（`f1`）除上表字段外还携带两个 **protobuf Duration**（`f1`=seconds、
-`f2`=nanos；时长 <1s 时 proto3 省略 seconds 只剩 `f2`）：
+`f2`=nanos；时长 <1s 时 proto3 省略 seconds 只剩 `f2`）。初版调研将其映射为
+TTFT / streaming（对应已退役 RPC `chatModel.timeToFirstToken` / `streamingDuration`）。
 
-| 字段 | 含义 | 与已退役 RPC 的对应 |
-|---|---|---|
-| `f1.f11` | **timeToFirstToken**（首字延迟） | `chatModel.timeToFirstToken` |
-| `f1.f12` | **streamingDuration**（首字后的流式时长） | `chatModel.streamingDuration` |
+**二次排查证伪（同日）**：初版验证只证明了「`f11 + f12` ≈ steps 时长」，从未独立
+证明 f11 本身是 TTFT。全量复核（单会话 201 gen 行逐行解出 f11 / f12）：
 
-RPC `GetCascadeTrajectoryGeneratorMetadata` 返回的 `chatModel` 两时延与本字段**完全同源**
-（RPC 服务端读的就是这张表；§ GetCascadeTrajectoryGeneratorMetadata 历史节实测的
-`"11.669597334s"` 形状即此处的 seconds+nanos）。
+- `f11` 占 `f11 + f12` 的 **97~100%（P50 99%）**，即 **f11 ≈ 整段调用时长**；
+- `f12` 仅 0.01~0.18s——对 f3=590 tok 的输出「流式 0.18s」= 3,278 tok/s，物理不成立，
+  故 `f12` 也不是可用的流式时长。
 
-**数值验证**：`f11 + f12` 与 steps（`step_type=15`）metadata `f7 − f1` 差分的偏差
-−0.00ms ~ −0.7ms（28/28 行；覆盖 `gemini-3.8-flash(-n)` 与 `claude-sonnet-4-6`；
-agy 的 `~/.gemini/antigravity-cli/conversations/*.db` 同 schema 同字段，见
-[`harnesses/agy.md`](../harnesses/agy.md) § 单次调用时长）。
+结论：**这两个字段的真实语义不是 TTFT / streaming**（更接近「整段时长 / 极小余量」），
+不得作为首字延迟数据源。缓存侧佐证：接入期间 antigravity 样本 ttft/时长 P50=99%、
+P90=100%，解码速度分母 ≈0 被撑到 432 tok/s（真实约 78）。
+
+**数值验证（历史记录，保留）**：`f11 + f12` 与 steps（`step_type=15`）metadata
+`f7 − f1` 差分的偏差 −0.00ms ~ −0.7ms（28/28 行）——该恒等式依然成立，但它只约束
+两者之和。
 
 **假候选排除**：`f4` / `f17.f2`（请求信息子消息，`f1=1319`、`f2=9936` 非纳秒量级的伪
 Duration）、`f9.f10`（14238s 起单调递增——累计型计时器）。
 
-监控现状（2026-11-08 更新）：`AntigravitySessionDBReader.readCalls` 已解析 **f11**
-（timeToFirstToken，protobuf Duration：seconds 缺省按 0、双缺省 → nil、负值 /
-nanos 越界 → nil），经 `accountCalls` → sample `ttftSeconds`（缓存 v10 重建）；
-`f12`（streamingDuration）仍未读取——`durationSeconds` 维持 steps 差分（= 两者之和，
-见 § Per-event field count 与 [`accounting.md`](../accounting.md) §TTFT 口径 /
-§Token/s 速率口径）。agy 的同 schema 库经
-`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 消费同一字段（见
+监控现状（2026-11-08 回退）：`AntigravitySessionDBReader` 的 f11 解析与
+`Call.ttftSeconds` **已移除**，样本 `ttftSeconds` 恒 nil（UI 显示 `—`；解码速度按
+时长全额计入）；f4 原生 token 拆分与 f20 连接逻辑不受影响。缓存 v11 重建（清除
+v10 误读出的伪 TTFT）。agy 同 schema 同字段，同步回退（见
 [`harnesses/agy.md`](../harnesses/agy.md) § TTFT）。
 
 ### Lazy .db write — sessions don't flush while open

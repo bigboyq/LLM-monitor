@@ -109,11 +109,13 @@ class AntigravityTestCase: XCTestCase {
         var rawData: [UInt8]? = nil
         /// `f1.f4` usage 子消息存在但为**空消息**（0 字节）——presence 口径用例
         var emptyUsageSubmessage: Bool = false
-        /// `f1.f11` timeToFirstToken（protobuf Duration）的写入形态；nil = 不写该字段。
+        /// `f1.f11` Duration 的写入形态（**仅作证伪回归夹具**：f11 经 2026-11-08
+        /// 实测评议证伪——其值 ≈ 整段调用时长（97~100%）、f12≈0，不是 TTFT，
+        /// reader 不得解析；nil = 不写该字段）。
         var ttft: TTFTShape? = nil
     }
 
-    /// `f1.f11` timeToFirstToken Duration 的 fixture 形态。
+    /// `f1.f11` Duration 的 fixture 形态（仅用于证伪回归：断言 reader 忽略该字段）。
     enum TTFTShape {
         /// 完整 Duration（seconds + nanos 两个 varint 都在 wire 上）
         case secondsAndNanos(seconds: UInt64, nanos: UInt64)

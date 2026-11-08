@@ -359,7 +359,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             )
             try saveIndex(
                 AgyCacheIndex(
-                    version: 5,
+                    version: 6,
                     files: [],
                     snapshot: empty,
                     calendarSignature: currentCalendarSignature
@@ -439,7 +439,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         )
         try saveIndex(
             AgyCacheIndex(
-                version: 5,
+                version: 6,
                 files: outcome.processedFingerprints,
                 snapshot: snapshot,
                 calendarSignature: currentCalendarSignature,
@@ -581,16 +581,11 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                 conversationsDirectory: conversationsDirectory,
                 fileManager: fileManager
             )
-            // 同一 .db 的逐调用 TTFT（gen_metadata f1.f11，连接键与方案 A 同构）。
-            // 无方案 B 降级：transcript 侧没有首字时刻，连接不命中保持 nil。
-            let planTTFT = loadPlanATTFTSeconds(
-                sessionID: session,
-                conversationsDirectory: conversationsDirectory,
-                fileManager: fileManager
-            )
             // 同一 .db 的原生 usage（gen_metadata f1.f4，f9/f10/f3）：reasoning/
             // visible 拆分的真值来源；连接不命中 / 不守恒的行由 makeUsage 回退
             // 字符估算。
+            // （gen_metadata f1.f11 不接入：2026-11-08 实测评议证伪——其值 ≈ 整段
+            // 调用时长（97~100%）、f12≈0，不是 TTFT/streaming 对，勿再接。）
             let planNativeUsage = loadPlanANativeUsage(
                 sessionID: session,
                 conversationsDirectory: conversationsDirectory,
@@ -598,7 +593,6 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             )
             var context = AgyLocalUsageAggregation.AgySessionDurationContext(
                 planADurations: planA,
-                planATTFTSeconds: planTTFT,
                 nativeUsageByStepIndex: planNativeUsage
             )
             var sessionUsages: [AgyParsedUsage] = []
@@ -676,34 +670,6 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         } catch {
             logWarn(
                 "[agy-scan] 读取会话步骤时长失败（该会话走 GENERIC 后继降级）: "
-                    + "\(dbURL.path), error: \(errorSummary(error))"
-            )
-            return [:]
-        }
-    }
-
-    /// 方案 A 同源：读取 `conversations/<session>.db` gen_metadata 逐行 f1.f11
-    /// 的 TTFT（秒），按 `steps.idx == last_step_index + 1` 连接后以 steps.idx
-    /// （= 计量行 step_index）为键返回。负值 / 缺失已在 reader 层剔除，范围
-    /// 过滤归聚合层。任何失败只降级为空映射（该会话样本 TTFT 保持 nil），
-    /// 记录警告，绝不抛出阻断扫描。
-    private nonisolated static func loadPlanATTFTSeconds(
-        sessionID: String,
-        conversationsDirectory: URL,
-        fileManager: FileManagerBox
-    ) -> [Int: Double] {
-        let dbURL = conversationsDirectory.appendingPathComponent("\(sessionID).db")
-        guard fileManager.fileExists(atPath: dbURL.path) else { return [:] }
-        do {
-            return try SQLiteTempCopy.read(
-                dbPath: dbURL,
-                logTag: "[agy-scan] step ttft"
-            ) { dbPath in
-                try AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex(dbPath: dbPath)
-            }
-        } catch {
-            logWarn(
-                "[agy-scan] 读取会话 TTFT 失败（该会话样本 ttftSeconds 保持 nil）: "
                     + "\(dbURL.path), error: \(errorSummary(error))"
             )
             return [:]
@@ -884,7 +850,6 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                 timeline: timeline
             ),
             planADurationSeconds: context.planADuration(stepIndex: row.stepIndex),
-            planATTFTSeconds: context.planATTFT(stepIndex: row.stepIndex),
             nativeUsage: context.nativeUsage(stepIndex: row.stepIndex)
         ))
     }
@@ -959,14 +924,16 @@ private struct AgyCacheIndex: Codable, Equatable, Sendable {
     var timelineSignature: String? = nil
 
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        // v5：reasoning/visible 拆分改用同一 .db gen_metadata f1.f4 原生真值
-        // （f9/f10，守恒校验通过时），v4 快照存的是字符占比估算结果，版本不
-        // 匹配即整体重建。
+        // v6（2026-11-08）：gen_metadata f1.f11 经实测证伪——其值 ≈ 整段调用时长
+        // （97~100%）、f12≈0，不是 TTFT。清除 v5 样本里误读出的伪 ttftSeconds，
+        // 版本不匹配即整体重建。
+        // （v5：reasoning/visible 拆分改用同一 .db gen_metadata f1.f4 原生真值
+        // （f9/f10，守恒校验通过时），v4 快照存的是字符占比估算结果。
         // （v4：样本新增 ttftSeconds（同一 .db gen_metadata f1.f11，连接键与方案 A
-        // 同构）；v3 快照该字段恒为 nil，版本不匹配即整体重建。
+        // 同构）——已被 v6 证伪清除；v3 快照该字段恒为 nil。
         // （v3：样本新增 durationSeconds（方案 A .db 真值 + 方案 B GENERIC 后继
-        // 降级）。））
-        version == 5
+        // 降级）。）））
+        version == 6
             && files == fingerprint.files
             && timelineSignature == fingerprint.timelineSignature
     }
@@ -980,8 +947,8 @@ private extension AgyLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 5,
-            empty: AgyCacheIndex(version: 5, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 6,
+            empty: AgyCacheIndex(version: 6, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[agy-scan]"
         )
