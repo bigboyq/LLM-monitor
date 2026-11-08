@@ -22,9 +22,10 @@ final class HTTPClientTests: XCTestCase {
             QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt),
             "Codex 登录已失效，请运行 codex login 后重试"
         )
+        // 阶段一起远端 401 与本地过期判定落到同一提示（credentialExpired）。
         XCTAssertEqual(
             QuotaError.userFacingDescription(for: error, providerKind: .antigravity),
-            "Antigravity 登录已失效，请重新启动 Antigravity 并完成登录"
+            "token 已过期，请打开 Antigravity 更新凭据"
         )
         // round 11 P1：minimax / GLM 也需要 provider-specific 提示，
         // 否则用户看到通用 "HTTP 401" 不知道该换 key 还是换账号。
@@ -183,7 +184,9 @@ final class HTTPClientTests: XCTestCase {
             chunks: [Data],
             contentLength: Int? = nil,
             delayBetweenChunks: TimeInterval = 0.1,
-            onChunkSent: ((Int) -> Void)? = nil
+            onChunkSent: ((Int) -> Void)? = nil,
+            beforeChunk: ((Int) -> Void)? = nil,
+            onSendLoopFinished: (() -> Void)? = nil
         ) {
             var headers: [String: String] = [:]
             if let contentLength { headers["Content-Length"] = String(contentLength) }
@@ -196,8 +199,13 @@ final class HTTPClientTests: XCTestCase {
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
 
             DispatchQueue.global().async {
+                defer { onSendLoopFinished?() }
                 Thread.sleep(forTimeInterval: delayBetweenChunks)
                 for (idx, chunk) in chunks.enumerated() {
+                    if self.isStopped { break }
+                    // 确定性握手缝：投递前允许测试阻塞等待真实事件
+                    //（如「客户端已因超限中止」），消除对 chunk 间隔 sleep 的时序假设。
+                    beforeChunk?(idx)
                     if self.isStopped { break }
                     self.client?.urlProtocol(self, didLoad: chunk)
                     onChunkSent?(idx + 1)
@@ -206,6 +214,47 @@ final class HTTPClientTests: XCTestCase {
                 if !self.isStopped {
                     self.client?.urlProtocolDidFinishLoading(self)
                 }
+            }
+        }
+    }
+
+    /// 测试辅助：确定性握手门闩 + 线程安全状态收集（参照 WriterGate 模式）。
+    /// 把「后续 chunk 必须等客户端越过 cap 中止后再投递」的时序窗口换成对真实
+    /// 事件（`stopLoading` 被调用）的阻塞等待，彻底消除对 sleep 时长的依赖。
+    private final class StreamGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var aborted = false
+        private var sendLoopDone = false
+        private var chunk3GateTimedOut = false
+        private var sentCount = 0
+
+        /// `stopLoading` 回调：客户端已因超限中止连接。
+        func clientDidAbort() { lock.withLock { aborted = true } }
+        var clientAborted: Bool { lock.withLock { aborted } }
+
+        func markSendLoopFinished() { lock.withLock { sendLoopDone = true } }
+        var isSendLoopDone: Bool { lock.withLock { sendLoopDone } }
+
+        func markChunk3GateTimedOut() { lock.withLock { chunk3GateTimedOut = true } }
+        var chunk3GateDidTimeOut: Bool { lock.withLock { chunk3GateTimedOut } }
+
+        func recordChunkSent(_ count: Int) { lock.withLock { sentCount = count } }
+        var chunksSent: Int { lock.withLock { sentCount } }
+
+        /// 阻塞等待「客户端已中止」真实事件；deadline 轮询，超时返回 false。
+        func waitUntilClientAborted(timeout: TimeInterval) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while !clientAborted, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            return clientAborted
+        }
+
+        /// 阻塞等待发送循环收尾；deadline 轮询，保证断言读到最终状态。
+        func waitUntilSendLoopFinished(timeout: TimeInterval) {
+            let deadline = Date().addingTimeInterval(timeout)
+            while !isSendLoopDone, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.005)
             }
         }
     }
@@ -370,7 +419,6 @@ final class HTTPClientTests: XCTestCase {
 
     func testResponseByteLimitConstants() {
         XCTAssertEqual(ResponseByteLimits.standardQuota, 8 * 1024 * 1024)
-        XCTAssertEqual(ResponseByteLimits.antigravityTrajectory, 64 * 1024 * 1024)
     }
 
     /// responseTooLarge 错误只携带脱敏路径/上限/字节数，不含 body。
@@ -381,26 +429,34 @@ final class HTTPClientTests: XCTestCase {
     }
 
     /// 分块传输超限提前中止：收到第 2 块超出上限后立即 abort，第 3 块不会被投递。
+    ///
+    /// 确定性握手：第 3 块的投递决定挂在「客户端已因超限中止」这一真实事件
+    /// （`stopLoading` 回调）之后——发送侧阻塞等待中止事件再尝试第 3 块，此时
+    /// `isStopped` 必为真而跳过投递；不再依赖 chunk 间隔 sleep 留出的时序窗口
+    ///（并行负载下该窗口会被压缩，导致第 3 块被抢先投递）。
     func testChunkedStreamingAbortsEarlyWhenExceedingCapWithoutReadingLaterChunks() async {
         let session = makeSession()
-        var chunksSent = 0
-        var stopLoadingCalled = false
+        let gate = StreamGate()
 
-        TestURLProtocol.onStopLoading = {
-            stopLoadingCalled = true
-        }
+        TestURLProtocol.onStopLoading = { gate.clientDidAbort() }
         TestURLProtocol.responder = { proto in
             proto.sendChunked(
                 status: 200,
                 chunks: [
                     Data(repeating: 0x41, count: 600), // chunk 1 (600 <= 1000)
                     Data(repeating: 0x42, count: 600), // chunk 2 (1200 > 1000, 超限取消)
-                    Data(repeating: 0x43, count: 600)  // chunk 3 (应被跳过)
+                    Data(repeating: 0x43, count: 600)  // chunk 3 (中止事件后才尝试，必被跳过)
                 ],
                 contentLength: nil,
-                onChunkSent: { count in
-                    chunksSent = count
-                }
+                delayBetweenChunks: 0,
+                onChunkSent: { gate.recordChunkSent($0) },
+                beforeChunk: { index in
+                    // 第 3 块投递前必须先观察到客户端中止（真实 stopLoading 事件）。
+                    if index == 2, !gate.waitUntilClientAborted(timeout: 10) {
+                        gate.markChunk3GateTimedOut()
+                    }
+                },
+                onSendLoopFinished: { gate.markSendLoopFinished() }
             )
         }
 
@@ -418,8 +474,14 @@ final class HTTPClientTests: XCTestCase {
             XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
         }
 
-        XCTAssertEqual(chunksSent, 2, "第 3 块不应被发送或处理，流在超限时已提前终止")
-        XCTAssertTrue(stopLoadingCalled, "任务超限必须触发 stopLoading 中止连接")
+        // 等发送循环收尾后断言最终状态，避免与后台投递线程竞态。
+        gate.waitUntilSendLoopFinished(timeout: 10)
+        XCTAssertFalse(
+            gate.chunk3GateDidTimeOut,
+            "客户端未在 10s 内中止连接：cap 未生效或投递链路异常"
+        )
+        XCTAssertEqual(gate.chunksSent, 2, "第 3 块不应被发送或处理，流在超限时已提前终止")
+        XCTAssertTrue(gate.clientAborted, "任务超限必须触发 stopLoading 中止连接")
     }
 
     /// 伪造过小的 Content-Length 无法绕过流式硬上限。

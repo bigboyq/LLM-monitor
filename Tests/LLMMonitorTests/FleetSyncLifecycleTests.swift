@@ -148,7 +148,37 @@ final class FleetSyncLifecycleTests: XCTestCase {
         return coordinator
     }
 
-    private func port() -> Int { Int.random(in: 49_152...65_000) }
+    /// 让内核预留一个当前空闲的临时端口（bind 0 → getsockname → close）。
+    /// 取代盲选随机端口：并行测试进程同时跑本套件时随机端口可能撞车导致监听失败；
+    /// 内核分配时已避开在用端口，残留竞态窗口极小。独立 `HubServer` 的用例则直接
+    /// 用 `start(port: 0)` + 读 `boundPort`，完全无竞态。
+    private func port() -> Int {
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        precondition(descriptor >= 0, "fixture socket should be created")
+        defer { Darwin.close(descriptor) }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: in_addr_t(INADDR_ANY.bigEndian))
+        let bindResult = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        precondition(bindResult == 0, "fixture should bind an ephemeral TCP port")
+        var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let portResult = withUnsafeMutablePointer(to: &address) { addressPointer in
+            withUnsafeMutablePointer(to: &addressLength) { lengthPointer in
+                addressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.getsockname(descriptor, $0, lengthPointer)
+                }
+            }
+        }
+        precondition(portResult == 0, "fixture should read back the bound port")
+        return Int(UInt16(bigEndian: address.sin_port))
+    }
 
     private func config(
         hubURL: String = "",
@@ -165,8 +195,12 @@ final class FleetSyncLifecycleTests: XCTestCase {
         return value
     }
 
+    /// deadline 轮询真实状态：条件成立即返回，超时后在调用点报错。
+    /// timeout 给足 10s 级余量——并行负载下测试进程 CPU 打满时固定 5s 不够；
+    /// 轮询间隔 10ms 与参照实现（TrafficRefreshTests.waitUntil）一致。
     private func waitUntil(
-        timeout: TimeInterval = 5,
+        timeout: TimeInterval = 10,
+        description: String = "condition",
         file: StaticString = #filePath,
         line: UInt = #line,
         _ condition: @MainActor () -> Bool
@@ -174,9 +208,14 @@ final class FleetSyncLifecycleTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if condition() { return }
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertTrue(condition(), "condition did not become true", file: file, line: line)
+        XCTAssertTrue(
+            condition(),
+            "等待超时（\(Int(timeout))s）：\(description)",
+            file: file,
+            line: line
+        )
     }
 
     private func startHub(_ coordinator: FleetSyncCoordinator, port: Int) async throws {
@@ -191,13 +230,13 @@ final class FleetSyncLifecycleTests: XCTestCase {
         let node = try makeCoordinator(name: "node")
         node.start(config: config(hubURL: "http://127.0.0.1:\(hubPort)"), statuses: [])
 
-        try await waitUntil(timeout: 5) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq ?? 0) >= 1
         }
         let firstSeq = try XCTUnwrap(
             hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq
         )
-        try await waitUntil(timeout: 4) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq ?? 0) > firstSeq
         }
         XCTAssertNotNil(node.latestSnapshot)
@@ -220,7 +259,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
         let node = try makeCoordinator(name: "node", store: nodeStore, deviceID: nodeID)
         let upstream = "http://127.0.0.1:\(hubPort)"
         node.start(config: config(hubURL: upstream, port: hubPort), statuses: [])
-        try await waitUntil(timeout: 8) {
+        try await waitUntil {
             node.status.online && (node.status.snapshotGeneration ?? 0) > 500
                 && oldHub.latestSnapshot?.nodes.first(where: { $0.nodeID == nodeID })?.dailyBuckets.count == 7
         }
@@ -233,11 +272,11 @@ final class FleetSyncLifecycleTests: XCTestCase {
         replacementHub.start(config: config(port: hubPort), statuses: [])
         try await waitUntil { replacementHub.status.online && replacementHub.listeningPort.map(Int.init) == hubPort }
 
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             guard let acceptedGeneration = try? nodeStore.cachedSnapshotGeneration(upstreamScope: scope) else { return false }
             return acceptedGeneration < oldGeneration
         }
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             replacementHub.latestSnapshot?.nodes.first(where: { $0.nodeID == nodeID })?.dailyBuckets.count == 7
         }
         XCTAssertLessThan(try replacementStore.generation(scope: hubID.uuidString), oldGeneration)
@@ -246,7 +285,6 @@ final class FleetSyncLifecycleTests: XCTestCase {
 
     func testLowerGenerationWrongSequenceAndGETFallbackRemainRejected() async throws {
         let hubID = UUID()
-        let hubPort = port()
         let responder = SnapshotResponder(hubID: hubID)
         let server = HubServer(handlers: HubServerHandlers(
             processReport: { data in responder.post(data) },
@@ -256,23 +294,32 @@ final class FleetSyncLifecycleTests: XCTestCase {
                 return .json(200, "OK", (try? FleetCodec.encode(health)) ?? Data())
             }
         ))
-        try server.start(port: UInt16(hubPort), loopbackOnly: true)
+        // 端口 0 = 系统分配（HubServer 原生支持），彻底消除固定端口撞车。
+        try server.start(port: 0, loopbackOnly: true)
         defer { server.stop() }
-        try await waitUntil { server.boundPort.map(Int.init) == hubPort }
+        try await waitUntil(description: "standalone hub server 完成端口绑定") {
+            server.boundPort != nil
+        }
+        let hubPort = try XCTUnwrap(
+            server.boundPort.map(Int.init),
+            "hub server 绑定后必须回报实际端口"
+        )
 
         let nodeID = UUID()
         let store = try FleetStore(url: directory.appendingPathComponent("gated-node.sqlite"))
         let node = try makeCoordinator(name: "gated-node", store: store, deviceID: nodeID)
         let upstream = "http://127.0.0.1:\(hubPort)"
         node.start(config: config(hubURL: upstream, port: hubPort), statuses: [])
-        try await waitUntil(timeout: 6) { node.latestSnapshot?.generation == 100 }
+        try await waitUntil { node.latestSnapshot?.generation == 100 }
         let scope = upstream + "|" + hubID.uuidString
         let baselinePosts = responder.posts()
 
         responder.setMode(.wrongSequence)
-        try await Task.sleep(nanoseconds: 1_300_000_000)
-        let wrongSequencePosts = responder.posts()
-        XCTAssertGreaterThan(wrongSequencePosts, baselinePosts)
+        // 固定 sleep 换成真实状态轮询：节点串行推送，等下一次 POST 到达时
+        // 上一条响应必已处理完，再校验回滚拒绝语义。
+        try await waitUntil(description: "wrongSequence 模式下继续收到新的 POST") {
+            responder.posts() > baselinePosts + 1
+        }
         XCTAssertEqual(node.latestSnapshot?.generation, 100, "a mismatched own.seq cannot authorize a generation rollback")
         XCTAssertEqual(try store.cachedSnapshotGeneration(upstreamScope: scope), 100)
 
@@ -280,10 +327,10 @@ final class FleetSyncLifecycleTests: XCTestCase {
         responder.setMode(.postFailure)
         responder.setGetGeneration(100)
         let previousGets = responder.gets()
-        try await Task.sleep(nanoseconds: 1_300_000_000)
-        let fallbackPosts = responder.posts()
-        XCTAssertGreaterThan(fallbackPosts, beforeGet)
-        try await waitUntil(timeout: 3) { responder.gets() > previousGets && node.status.lastError != nil }
+        try await waitUntil(description: "postFailure 模式下继续收到新的 POST") {
+            responder.posts() > beforeGet
+        }
+        try await waitUntil { responder.gets() > previousGets && node.status.lastError != nil }
         XCTAssertEqual(node.latestSnapshot?.generation, 100, "GET fallback has no submitted-seq proof")
         XCTAssertEqual(try store.cachedSnapshotGeneration(upstreamScope: scope), 100)
         XCTAssertTrue(node.status.lastError?.contains("HTTP 500") == true,
@@ -292,7 +339,6 @@ final class FleetSyncLifecycleTests: XCTestCase {
 
     func testPOST500IsVisibleWhenGETFallbackFirstAcceptsSnapshot() async throws {
         let hubID = UUID()
-        let hubPort = port()
         let responder = SnapshotResponder(hubID: hubID)
         responder.setMode(.postFailure)
         let server = HubServer(handlers: HubServerHandlers(
@@ -303,13 +349,19 @@ final class FleetSyncLifecycleTests: XCTestCase {
                 return .json(200, "OK", (try? FleetCodec.encode(health)) ?? Data())
             }
         ))
-        try server.start(port: UInt16(hubPort), loopbackOnly: true)
+        try server.start(port: 0, loopbackOnly: true)
         defer { server.stop() }
-        try await waitUntil { server.boundPort.map(Int.init) == hubPort }
+        try await waitUntil(description: "standalone hub server 完成端口绑定") {
+            server.boundPort != nil
+        }
+        let hubPort = try XCTUnwrap(
+            server.boundPort.map(Int.init),
+            "hub server 绑定后必须回报实际端口"
+        )
 
         let node = try makeCoordinator(name: "http-500-node")
         node.start(config: config(hubURL: "http://127.0.0.1:\(hubPort)", port: hubPort), statuses: [])
-        try await waitUntil(timeout: 6) { node.latestSnapshot?.generation == 1 && node.status.lastSyncAt != nil }
+        try await waitUntil { node.latestSnapshot?.generation == 1 && node.status.lastSyncAt != nil }
 
         XCTAssertTrue(node.status.online, "GET fallback still proves the HTTP link is reachable")
         XCTAssertTrue(node.status.lastError?.contains("HTTP 500") == true,
@@ -318,7 +370,6 @@ final class FleetSyncLifecycleTests: XCTestCase {
 
     func test409SequenceRecoveryMessagePersistsUntilNextSuccessfulPOST() async throws {
         let hubID = UUID()
-        let hubPort = port()
         let responder = SnapshotResponder(hubID: hubID)
         responder.setMode(.staleSequence)
         let server = HubServer(handlers: HubServerHandlers(
@@ -329,26 +380,30 @@ final class FleetSyncLifecycleTests: XCTestCase {
                 return .json(200, "OK", (try? FleetCodec.encode(health)) ?? Data())
             }
         ))
-        try server.start(port: UInt16(hubPort), loopbackOnly: true)
+        try server.start(port: 0, loopbackOnly: true)
         defer { server.stop() }
-        try await waitUntil { server.boundPort.map(Int.init) == hubPort }
+        try await waitUntil(description: "standalone hub server 完成端口绑定") {
+            server.boundPort != nil
+        }
+        let hubPort = try XCTUnwrap(
+            server.boundPort.map(Int.init),
+            "hub server 绑定后必须回报实际端口"
+        )
 
         let node = try makeCoordinator(name: "http-409-node")
         node.start(config: config(hubURL: "http://127.0.0.1:\(hubPort)", port: hubPort), statuses: [])
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             node.status.online && node.status.lastError?.contains("已重建本机序号") == true
         }
         let postsBeforeRecovery = responder.posts()
 
         responder.setMode(.aligned)
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             responder.posts() > postsBeforeRecovery && node.status.lastError == nil
         }
     }
 
     func testLateSuccessfulFallbackFromOldHubCannotReplaceNewRuntime() async throws {
-        let oldPort = port()
-        let newPort = port()
         let oldHubID = UUID()
         let fallbackStarted = AsyncGate()
         let releaseFallback = AsyncGate()
@@ -356,7 +411,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
             processReport: { _ in .error(500, "Internal Server Error", "old hub failure") },
             currentSnapshot: {
                 await fallbackStarted.open()
-                _ = await releaseFallback.waitUntilOpen(timeout: 5)
+                _ = await releaseFallback.waitUntilOpen(timeout: 10)
                 let snapshot = makeLifecycleSnapshot(hubID: oldHubID, nodeID: UUID(), seq: 999, generation: 900)
                 return .json(200, "OK", (try? FleetCodec.encode(snapshot)) ?? Data())
             },
@@ -365,23 +420,31 @@ final class FleetSyncLifecycleTests: XCTestCase {
                 return .json(200, "OK", (try? FleetCodec.encode(health)) ?? Data())
             }
         ))
-        try oldServer.start(port: UInt16(oldPort), loopbackOnly: true)
+        // 端口 0 = 系统分配（HubServer 原生支持），彻底消除固定端口撞车。
+        try oldServer.start(port: 0, loopbackOnly: true)
         defer { oldServer.stop() }
-        try await waitUntil { oldServer.boundPort.map(Int.init) == oldPort }
+        try await waitUntil(description: "old hub server 完成端口绑定") { oldServer.boundPort != nil }
+        let oldPort = try XCTUnwrap(
+            oldServer.boundPort.map(Int.init),
+            "old hub server 绑定后必须回报实际端口"
+        )
+        // 新 hub 端口在旧 server 已占位后再预留，内核保证分配不同端口。
+        let newPort = port()
 
         let newHub = try makeCoordinator(name: "late-response-new-hub")
         try await startHub(newHub, port: newPort)
         let node = try makeCoordinator(name: "late-response-node")
         var nodeConfig = config(hubURL: "http://127.0.0.1:\(oldPort)", interval: 60)
         node.start(config: nodeConfig, statuses: [])
-        let fallbackDidStart = await fallbackStarted.waitUntilOpen(timeout: 5)
-        XCTAssertTrue(fallbackDidStart)
+        let fallbackDidStart = await fallbackStarted.waitUntilOpen(timeout: 10)
+        XCTAssertTrue(fallbackDidStart, "旧上游 fallback GET 应在 deadline 内启动")
 
         nodeConfig.sync?.hubURL = "http://127.0.0.1:\(newPort)"
         node.update(config: nodeConfig, statuses: [])
         await releaseFallback.open()
-        try await waitUntil(timeout: 6) { node.latestSnapshot?.hubUUID == newHub.localNodeID && node.status.online }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitUntil { node.latestSnapshot?.hubUUID == newHub.localNodeID && node.status.online }
+        // 负向窗口：给迟到的旧上游响应留出处理时间，随后断言它没有覆盖新 runtime。
+        try await Task.sleep(nanoseconds: 1_000_000_000)
 
         XCTAssertEqual(node.latestSnapshot?.hubUUID, newHub.localNodeID)
         XCTAssertNil(node.status.lastError, "a late success from the old upstream must be discarded before identity validation")
@@ -401,7 +464,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
         defer { state.stop() }
         state.start()
         let coordinator = try XCTUnwrap(state.fleetSync)
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             coordinator.localNodeID != nil && coordinator.status.online
         }
         let deviceID = try XCTUnwrap(coordinator.localNodeID)
@@ -462,11 +525,11 @@ final class FleetSyncLifecycleTests: XCTestCase {
         let hubPort = port()
         let node = try makeCoordinator(name: "node")
         node.start(config: config(hubURL: "http://127.0.0.1:\(hubPort)"), statuses: [])
-        try await waitUntil(timeout: 5) { node.status.lastError != nil && !node.status.online }
+        try await waitUntil { node.status.lastError != nil && !node.status.online }
 
         let hub = try makeCoordinator(name: "hub")
         try await startHub(hub, port: hubPort)
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             node.status.online && hub.latestSnapshot?.nodes.contains { $0.nodeID == node.localNodeID } == true
         }
     }
@@ -486,14 +549,14 @@ final class FleetSyncLifecycleTests: XCTestCase {
         // 修正首次启动时的非法 URL；同角色、同身份也必须建立消费循环和 ticker。
         nodeConfig.sync?.hubURL = "http://127.0.0.1:\(hubPort)"
         node.update(config: nodeConfig, statuses: [])
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID }?.seq ?? 0) >= 1
                 && node.status.online
         }
         let firstSeq = try XCTUnwrap(
             hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID }?.seq
         )
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID }?.seq ?? 0) > firstSeq
         }
 
@@ -509,7 +572,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
 
         nodeConfig.sync?.hubURL = "http://127.0.0.1:\(hubPort)"
         node.update(config: nodeConfig, statuses: [])
-        try await waitUntil(timeout: 6) {
+        try await waitUntil {
             node.status.online
                 && (hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID }?.seq ?? 0)
                     > acceptedSeqBeforeSecondRecovery
@@ -555,7 +618,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
         nodeConfig.refreshIntervalSeconds = 30
         node.start(config: nodeConfig, statuses: [])
 
-        try await waitUntil(timeout: 5) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq ?? 0) >= 1
         }
         let firstSeq = try XCTUnwrap(
@@ -566,13 +629,14 @@ final class FleetSyncLifecycleTests: XCTestCase {
         nodeConfig.refreshIntervalSeconds = 10 // effectiveGlobalRefreshInterval 的最小值
         node.update(config: nodeConfig, statuses: [])
 
-        try await waitUntil(timeout: 5) {
+        try await waitUntil {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq ?? 0) > firstSeq
         }
         let afterUpdateSeq = try XCTUnwrap(
             hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq
         )
-        try await waitUntil(timeout: 12) {
+        // 周期推送间隔为 10s，deadline 须超过一个完整周期并留足负载余量。
+        try await waitUntil(timeout: 20) {
             (hub.latestSnapshot?.nodes.first { $0.nodeID == node.localNodeID }?.seq ?? 0) > afterUpdateSeq
         }
     }
@@ -584,14 +648,14 @@ final class FleetSyncLifecycleTests: XCTestCase {
         let node = try makeCoordinator(name: "identity-node")
         var nodeConfig = config(hubURL: "http://127.0.0.1:\(hubPort)")
         node.start(config: nodeConfig, statuses: [])
-        try await waitUntil(timeout: 5) {
+        try await waitUntil {
             node.localNodeID != nil && hub.latestSnapshot?.nodes.contains { $0.nodeID == node.localNodeID } == true
         }
         let stableID = try XCTUnwrap(node.localNodeID)
 
         nodeConfig.sync?.nodeName = "renamed"
         node.update(config: nodeConfig, statuses: [])
-        try await waitUntil(timeout: 5) {
+        try await waitUntil {
             node.localNodeID == stableID
                 && hub.latestSnapshot?.nodes.contains { $0.nodeID == stableID } == true
         }
@@ -605,8 +669,6 @@ final class FleetSyncLifecycleTests: XCTestCase {
     }
 
     func testOldUpstreamFallbackFailureCannotOverwriteNewRuntime() async throws {
-        let oldPort = port()
-        let newPort = port()
         let oldHubID = UUID()
         let fallbackStarted = AsyncGate()
         let releaseFallback = AsyncGate()
@@ -614,7 +676,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
             processReport: { _ in .error(500, "Internal Server Error", "old upstream failure") },
             currentSnapshot: {
                 await fallbackStarted.open()
-                let released = await releaseFallback.waitUntilOpen(timeout: 5)
+                let released = await releaseFallback.waitUntilOpen(timeout: 10)
                 return .error(500, "Internal Server Error", released ? "old fallback failure" : "fallback gate timeout")
             },
             health: {
@@ -622,22 +684,29 @@ final class FleetSyncLifecycleTests: XCTestCase {
                 return .json(200, "OK", (try? FleetCodec.encode(health)) ?? Data())
             }
         ))
-        try oldHub.start(port: UInt16(oldPort), loopbackOnly: true)
+        // 端口 0 = 系统分配（HubServer 原生支持），彻底消除固定端口撞车。
+        try oldHub.start(port: 0, loopbackOnly: true)
         defer { oldHub.stop() }
-        try await waitUntil { oldHub.boundPort.map(Int.init) == oldPort }
+        try await waitUntil(description: "old upstream server 完成端口绑定") { oldHub.boundPort != nil }
+        let oldPort = try XCTUnwrap(
+            oldHub.boundPort.map(Int.init),
+            "old upstream server 绑定后必须回报实际端口"
+        )
+        // 新 hub 端口在旧 server 已占位后再预留，内核保证分配不同端口。
+        let newPort = port()
 
         let newHub = try makeCoordinator(name: "new-upstream-hub")
         try await startHub(newHub, port: newPort)
         let node = try makeCoordinator(name: "switching-node")
         var nodeConfig = config(hubURL: "http://127.0.0.1:\(oldPort)")
         node.start(config: nodeConfig, statuses: [])
-        let fallbackDidStart = await fallbackStarted.waitUntilOpen(timeout: 5)
+        let fallbackDidStart = await fallbackStarted.waitUntilOpen(timeout: 10)
         XCTAssertTrue(fallbackDidStart, "旧上游fallback GET应启动")
 
         nodeConfig.sync?.hubURL = "http://127.0.0.1:\(newPort)"
         node.update(config: nodeConfig, statuses: [])
         await releaseFallback.open()
-        try await waitUntil(timeout: 8) {
+        try await waitUntil {
             node.status.online && node.latestSnapshot?.hubUUID == newHub.localNodeID
         }
         XCTAssertNil(node.status.lastError, "旧上游 POST 与 fallback 的失败不得覆盖新 runtime")
@@ -700,7 +769,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
 
         let hub = try makeCoordinator(name: "conflicted-hub")
         hub.start(config: config(port: occupiedPort), statuses: [])
-        try await waitUntil(timeout: 3) { !hub.status.online && hub.status.lastError != nil }
+        try await waitUntil { !hub.status.online && hub.status.lastError != nil }
     }
 
     func testContentTypeRequiresExactJSONMediaTypeAndAllowsCharset() async throws {
