@@ -181,7 +181,7 @@ Supported provider fields:
 token 过期（本地时钟 `now >= expiry`）或远端 401 时，卡片显示：
 
 ```text
-token 已过期，请打开 Antigravity 更新凭据
+token 已过期：在 Antigravity 中发起一次对话即可刷新凭据
 ```
 
 **Local-usage path**（阶段二b：直读 `~/.gemini/antigravity/conversations/*.db`）不再要求本地后端运行：
@@ -1535,7 +1535,7 @@ provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取�
 | Situation | Current behavior |
 |---|---|
 | Keychain 条目不存在 / 不可解析 | `网络错误：未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录`（auth probe 亦判 false → `.notConfigured`） |
-| 本地过期判定 `now >= expiry` | 直接抛 `QuotaError.credentialExpired`（`token 已过期，请打开 Antigravity 更新凭据`），**不发任何网络请求** |
+| 本地过期判定 `now >= expiry` | 直接抛 `QuotaError.credentialExpired`（`token 已过期：在 Antigravity 中发起一次对话即可刷新凭据`），**不发任何网络请求** |
 | 远端配额/tier 接口返回 401 | 回退链立即终止，抛 `credentialExpired`——与本地过期落到同一提示 |
 | 非 401 的非 2xx | 换下一主机（Daily → cloudcode-pa → sandbox）；全部失败抛最后一台的 `HTTP <status>: 响应 <N> bytes`（body 只按大小摘要，不回显内容） |
 | 传输层失败（超时 / 连接失败等） | 同上换下一主机（HTTPClient 包装为 networkError，可回退） |
@@ -1701,7 +1701,7 @@ base64 → JSON：`token.{access_token, token_type, refresh_token, expiry(ISO �
 
 **刷新语义**：access_token 有效期约 1 小时，由客户端在 Keychain 内自行续期；监控侧不做
 refresh_token 流程——读到 `token.expiry` 已过期即抛 `credentialExpired`
-（「token 已过期，请打开 Antigravity 更新凭据」），远端 401 落到同一提示。
+（「token 已过期：在 Antigravity 中发起一次对话即可刷新凭据」），远端 401 落到同一提示。
 
 ## Helper Script
 

@@ -25,7 +25,7 @@ final class HTTPClientTests: XCTestCase {
         // 阶段一起远端 401 与本地过期判定落到同一提示（credentialExpired）。
         XCTAssertEqual(
             QuotaError.userFacingDescription(for: error, providerKind: .antigravity),
-            "token 已过期，请打开 Antigravity 更新凭据"
+            "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据"
         )
         // round 11 P1：minimax / GLM 也需要 provider-specific 提示，
         // 否则用户看到通用 "HTTP 401" 不知道该换 key 还是换账号。

@@ -2,6 +2,12 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.4.1] - 2026-11-08
+
+### Fixed
+
+- Antigravity token 过期提示改为「token 已过期：在 Antigravity 中发起一次对话即可刷新凭据」——Antigravity 的 token 是懒刷新，仅在 IDE 实际发起模型调用时才续期写回钥匙串，「打开但闲置」不会刷新；在 Antigravity 里发一条消息，下一个刷新周期（≤5 分钟）额度卡自动恢复。`export-antigravity-quota.sh` 的过期提示同步。
+
 ## [2.4.0] - 2026-11-08
 
 ### Changed

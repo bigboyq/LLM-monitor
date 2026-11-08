@@ -188,7 +188,7 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
             // 远端 401 与本地过期判定落到同一提示。
-            XCTAssertEqual(error.errorDescription, "token 已过期，请打开 Antigravity 更新凭据")
+            XCTAssertEqual(error.errorDescription, "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据")
             // 仅 401 终止：不做主机回退。
             let calls = await stub.recorded()
             XCTAssertEqual(calls.map(\.host), [Self.dailyHost])
@@ -210,7 +210,7 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            XCTAssertEqual(error.errorDescription, "token 已过期，请打开 Antigravity 更新凭据")
+            XCTAssertEqual(error.errorDescription, "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据")
             // 过期时不发任何网络请求（mock 证伪）。
             let calls = await stub.recorded()
             XCTAssertTrue(calls.isEmpty, "过期凭据不应发起任何网络请求，实际 \(calls.count) 次")

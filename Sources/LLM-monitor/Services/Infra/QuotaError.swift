@@ -35,7 +35,7 @@ enum QuotaError: LocalizedError, Equatable {
         case .apiError(let msg):
             return "接口错误：\(msg)"
         case .credentialExpired:
-            return "token 已过期，请打开 Antigravity 更新凭据"
+            return "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据"
         case .responseTooLarge(let limit, _, let redactedPath):
             return "响应过大（上限 \(limit) bytes）：\(redactedPath)"
         }

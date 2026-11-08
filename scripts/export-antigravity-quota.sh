@@ -72,7 +72,7 @@ if expiry.tzinfo is None:
     sys.exit(1)
 
 if datetime.now(timezone.utc) >= expiry:
-    print("token 已过期，请打开 Antigravity 更新凭据", file=sys.stderr)
+    print("token 已过期：在 Antigravity 中发起一次对话即可刷新凭据", file=sys.stderr)
     sys.exit(1)
 
 print(access_token)
@@ -116,7 +116,7 @@ for host in "${hosts[@]}"; do
     break
   fi
   if [[ "${http_code}" == "401" ]]; then
-    echo "token 已过期，请打开 Antigravity 更新凭据" >&2
+    echo "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据" >&2
     exit 1
   fi
   if [[ -z "${http_code}" || "${http_code}" == "000" ]]; then
