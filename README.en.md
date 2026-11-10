@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **2.5.2** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
+> Current version: **2.7.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-2.5.2.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-2.7.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -35,7 +35,7 @@ guessed into a card. All client-local usage can be inspected under Settings → 
 ## Highlights
 
 - Quota, balance, health, reset time, and manual refresh in one menu.
-- The menu bar icon can use a standard SF Symbol or the `quotaLogo` live dashboard: 5-hour and weekly quota arcs, a center remaining-quota sector, three model-health dots, and a sleep-health dot above it.
+- The menu bar supports system symbols, the classic App Icon, and Icon Duo. Icon Duo uses one ring for a single quota window or two arcs for 5-hour/weekly quotas, with a centered remaining-quota number and a sleep indicator in the top notch. Numbers omit `%`; 100% appears as `00`. Pin a provider or select a main plan, API credit key, or activity entitlement using the eye buttons.
 - Quota notifications split into four events (5-hour / weekly × restored / exhausted), each with an independent channel: system notification or Bark push. Restored fires on a rise above 5 pp or climbing back above 98%; exhausted is edge-triggered. Detection baselines persist across relaunches.
 - Bark push supports the official or self-hosted server (POST JSON, overwrite IDs, serial queue with cooldown and retry) plus an optional "skip while you are at the Mac" policy (display awake and session unlocked); notification permission is checked at app launch.
 - Local token totals and seven-day charts for supported clients.
@@ -75,7 +75,7 @@ guessed into a card. All client-local usage can be inspected under Settings → 
   <img src="docs/images/edge-dock.png" alt="LLM Monitor edge status dock" width="110">
 </p>
 
-<p align="center"><sub>Edge status dock: one ring per provider — the outer ring reads the effective 5h quota; hover pops the full card.</sub></p>
+<p align="center"><sub>Edge status dock: one ring per provider — single-window plans use one ring, dual-window plans use two, and DeepSeek uses an account-status ring; hover pops the full card.</sub></p>
 
 ## Documentation
 
@@ -110,7 +110,7 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 2.5.2
+./scripts/build-release.sh 2.7.0
 ```
 
 `build-app.sh` controls whether the repository's `.build_number` changes:
