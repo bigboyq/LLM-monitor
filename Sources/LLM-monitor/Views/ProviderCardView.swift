@@ -1,6 +1,12 @@
 import SwiftUI
 import AppKit
 
+typealias CardQuotaRefreshAction = @MainActor @Sendable (String) -> Void
+typealias CardUsageRefreshAction = @MainActor @Sendable () -> Void
+typealias CardPinStatusBarAction = @MainActor @Sendable (String) -> Void
+typealias CardStatusBarQuotaOptionsAction = @MainActor @Sendable (String) -> [StatusBarQuotaOption]
+typealias CardSelectStatusBarQuotaAction = @MainActor @Sendable (String, StatusBarQuotaSource) -> Void
+
 /// PopWindow 卡片两处时间戳的点击动作，**按数据种类拆成两个键**：标题行的
 /// `ProviderStateLabel` 是**额度**的新鲜度，点击只重抓该 provider 的额度
 /// （`AppState.refreshOne(providerID:)`，参数是 `status.id`）；段3 的
@@ -11,47 +17,47 @@ import AppKit
 /// 传递而不是存储属性：`ProviderCardView` 是 `Equatable` 值语义视图，不能携带
 /// 闭包成员。
 private struct CardQuotaRefreshActionKey: EnvironmentKey {
-    static let defaultValue: ((String) -> Void)? = nil
+    static let defaultValue: CardQuotaRefreshAction? = nil
 }
 
 private struct CardUsageRefreshActionKey: EnvironmentKey {
-    static let defaultValue: (() -> Void)? = nil
+    static let defaultValue: CardUsageRefreshAction? = nil
 }
 
 private struct CardPinStatusBarActionKey: EnvironmentKey {
-    static let defaultValue: ((String) -> Void)? = nil
+    static let defaultValue: CardPinStatusBarAction? = nil
 }
 
 private struct CardStatusBarQuotaOptionsKey: EnvironmentKey {
-    static let defaultValue: ((String) -> [StatusBarQuotaOption])? = nil
+    static let defaultValue: CardStatusBarQuotaOptionsAction? = nil
 }
 
 private struct CardSelectStatusBarQuotaKey: EnvironmentKey {
-    static let defaultValue: ((String, StatusBarQuotaSource) -> Void)? = nil
+    static let defaultValue: CardSelectStatusBarQuotaAction? = nil
 }
 
 extension EnvironmentValues {
-    var cardQuotaRefreshAction: ((String) -> Void)? {
+    var cardQuotaRefreshAction: CardQuotaRefreshAction? {
         get { self[CardQuotaRefreshActionKey.self] }
         set { self[CardQuotaRefreshActionKey.self] = newValue }
     }
 
-    var cardUsageRefreshAction: (() -> Void)? {
+    var cardUsageRefreshAction: CardUsageRefreshAction? {
         get { self[CardUsageRefreshActionKey.self] }
         set { self[CardUsageRefreshActionKey.self] = newValue }
     }
 
-    var cardPinStatusBarAction: ((String) -> Void)? {
+    var cardPinStatusBarAction: CardPinStatusBarAction? {
         get { self[CardPinStatusBarActionKey.self] }
         set { self[CardPinStatusBarActionKey.self] = newValue }
     }
 
-    var cardStatusBarQuotaOptions: ((String) -> [StatusBarQuotaOption])? {
+    var cardStatusBarQuotaOptions: CardStatusBarQuotaOptionsAction? {
         get { self[CardStatusBarQuotaOptionsKey.self] }
         set { self[CardStatusBarQuotaOptionsKey.self] = newValue }
     }
 
-    var cardSelectStatusBarQuota: ((String, StatusBarQuotaSource) -> Void)? {
+    var cardSelectStatusBarQuota: CardSelectStatusBarQuotaAction? {
         get { self[CardSelectStatusBarQuotaKey.self] }
         set { self[CardSelectStatusBarQuotaKey.self] = newValue }
     }
@@ -880,14 +886,22 @@ struct ProviderCardView: View, Equatable {
                 localSamples: projection.recentSamples,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                betweenBarAndColumns: between
+                betweenBarAndColumns: between,
+                selectedQuotaSource: selectedStatusBarSource,
+                onSelectQuotaSource: cardSelectStatusBarQuota.map { action in
+                    { source in action(status.id, source) }
+                }
             )
             let hasBalances = !status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty
             if status.kind == .glmCodingPlan && hasBalances {
                 GlmActivityPlanBalancesView(
                     balances: status.glmActivityPlanBalances,
                     previews: status.glmActivityPlanPreviews,
-                    tint: accentColor
+                    tint: accentColor,
+                    selectedSource: selectedStatusBarSource,
+                    onSelectSource: cardSelectStatusBarQuota.map { action in
+                        { source in action(status.id, source) }
+                    }
                 )
             }
         }
@@ -1018,13 +1032,42 @@ struct QuotaSummary: View {
     /// 夹在进度条块下方的**卡片级**信息（高峰期倒计时），由
     /// `ProviderCardView.planModules` 组装。
     var betweenBarAndColumns: AnyView = AnyView(EmptyView())
+    var selectedQuotaSource: StatusBarQuotaSource? = nil
+    var onSelectQuotaSource: ((StatusBarQuotaSource) -> Void)? = nil
 
     private var displayedModels: [ModelQuota] {
         info.activeModels
     }
 
+    private var mainPlanTitle: String {
+        let label = info.planLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return label.isEmpty ? "主套餐" : label
+    }
+
+    private var hasMainQuotaModels: Bool {
+        displayedModels.contains { $0.hasIntervalWindow || $0.hasWeeklyWindow }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if hasMainQuotaModels, providerKind != .deepseek {
+                HStack(spacing: 4) {
+                    Text(mainPlanTitle)
+                        .font(MenuTypography.metricLabel.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(mainPlanTitle)
+                    if ProviderKind.windowedKinds.contains(providerKind), let onSelectQuotaSource {
+                        StatusBarQuotaSourcePinButton(
+                            isSelected: selectedQuotaSource == .plan,
+                            title: mainPlanTitle
+                        ) {
+                            onSelectQuotaSource(.plan)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             ForEach(Array(displayedModels.enumerated()), id: \.offset) { index, model in
                 // 卡片级信息（高峰期倒计时）只在**第一个** model 行上出现一次：
                 // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
@@ -1078,7 +1121,9 @@ struct QuotaSummary: View {
                         credits: credits,
                         tint: .chatgptBrand,
                         error: credits.errorMessage ?? info.openAIApiCreditsError,
-                        keyNumber: index + 1
+                        keyNumber: index + 1,
+                        selectedQuotaSource: selectedQuotaSource,
+                        onSelectQuotaSource: onSelectQuotaSource
                     )
                 }
             } else if info.openAIApiCreditsError != nil {

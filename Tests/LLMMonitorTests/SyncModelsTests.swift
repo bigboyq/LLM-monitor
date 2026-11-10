@@ -149,6 +149,18 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertTrue(text.contains("T"), "iso8601 字符串应带 T 分隔")
     }
 
+    func testISO8601StorageKeysKeepLegacyWholeSecondWireFormat() throws {
+        let legacy = ISO8601DateFormatter()
+        legacy.formatOptions = [.withInternetDateTime]
+        for timestamp in [1_700_000_000.9, 0, -0.5] {
+            let date = Date(timeIntervalSince1970: timestamp)
+            let encoded = try FleetCodec.encode(date)
+            let wireString = try JSONDecoder().decode(String.self, from: encoded)
+            XCTAssertEqual(FleetISO8601.dateString(date), legacy.string(from: date))
+            XCTAssertEqual(FleetISO8601.dateString(date), wireString)
+        }
+    }
+
     // MARK: - 角色派生
 
     func testSyncRoleDerivesFromHubURL() {

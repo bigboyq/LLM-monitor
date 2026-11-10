@@ -86,7 +86,7 @@ The DeepSeek balance endpoint returns per-currency entries. The fetcher uses the
 `healthLevel` 走 interval 分支：余额可用 → 100% → healthy，不可用 → 0% → critical。
 0/100% 的"百分比"不会被当作进度条展示：`ProviderCardView.shouldUseDeepseekBalanceRow`
 对 `.deepseek` 直接路由到 `DeepseekBalanceRow`（余额金额行），绕过百分比进度条。
-该 model 的 interval 字段仍为 `.present` 仅为了既有额度状态与 100/0 可用性语义；不能将它显示为「5h」或展示重置日期。边缘状态窗用单个完整状态环表达可用性健康档（已知时按健康色绘制低透明度满环，未知时仅显示中性底槽），保留圈下「可用」/「不可用」/「—」标签；不把该字段解释为剩余比例，也不绘制第二个周环。共享 Plan 的余额行是唯一金额明细来源，显示账户总余额以及真实充值 / 赠金；菜单折叠摘要显示总余额与赠金。额度窗口历史分析表对 DeepSeek 隐藏，不重复解释本地 token 消耗为额度窗口，也不另画一份余额表。
+该 model 的 interval 字段仍为 `.present` 仅为了既有额度状态与 100/0 可用性语义；不能将它显示为「5h」或展示重置日期。边缘状态窗用单个完整状态环表达可用性健康档（已知时按健康色绘制完整强度的满环，未知时仅显示中性底槽），保留圈下「可用」/「不可用」/「—」标签；不把该字段解释为剩余比例，也不绘制第二个周环。共享 Plan 的余额行是唯一金额明细来源，显示账户总余额以及真实充值 / 赠金；菜单折叠摘要显示总余额与赠金。额度窗口历史分析表对 DeepSeek 隐藏，不重复解释本地 token 消耗为额度窗口，也不另画一份余额表。
 
 ### Aggregation & notification semantics（纯余额口径）
 

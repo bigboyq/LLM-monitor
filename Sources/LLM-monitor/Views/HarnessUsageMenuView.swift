@@ -960,7 +960,7 @@ enum MenuQuotaPresentation {
 /// 不复制额度计算，也不依赖 edge dock 是否可见。
 struct MenuQuotaOverviewView: View {
     @ObservedObject var state: AppState
-    let onRefreshProvider: (String) -> Void
+    let onRefreshProvider: CardQuotaRefreshAction
     let onOpenSettings: (ProviderKind) -> Void
     let onOpenDetails: (String) -> Void
     @State private var revision: UInt64 = 0
@@ -1029,8 +1029,8 @@ private struct MenuQuotaProviderRow: View {
     var configStore: ConfigStore? = nil
     var onTogglePin: (() -> Void)? = nil
     var onSelectStatusBarQuota: ((StatusBarQuotaSource) -> Void)? = nil
-    let onRefresh: () -> Void
-    let onUsageRefresh: () -> Void
+    let onRefresh: CardUsageRefreshAction
+    let onUsageRefresh: CardUsageRefreshAction
     let onSettings: () -> Void
     let onOpenDetails: () -> Void
     @State private var isPlanExpanded = false

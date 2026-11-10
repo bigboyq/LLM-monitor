@@ -14,6 +14,8 @@ struct GlmActivityPlanBalancesView: View {
     var previews: [GlmActivityPlanPreview] = []
     /// 卡片主题色，默认 GLM 品牌色
     var tint: Color = .glmBrand
+    var selectedSource: StatusBarQuotaSource? = nil
+    var onSelectSource: ((StatusBarQuotaSource) -> Void)? = nil
 
     @Environment(\.displayDate) private var displayDate
 
@@ -61,6 +63,22 @@ struct GlmActivityPlanBalancesView: View {
                     .font(MenuTypography.hoverRowEmphasis)
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
+                    if let onSelectSource {
+                        StatusBarQuotaSourcePinButton(
+                            isSelected: selectedSource == .activityPlan(
+                                planID: balance.planID, entitlementID: balance.entitlementID
+                            ),
+                            title: Self.displayTitle(
+                                planName: balance.planName,
+                                showName: balance.showName,
+                                entitlementID: balance.entitlementID
+                            )
+                        ) {
+                            onSelectSource(.activityPlan(
+                                planID: balance.planID, entitlementID: balance.entitlementID
+                            ))
+                        }
+                    }
                 }
 
                 Spacer(minLength: 4)
@@ -132,6 +150,22 @@ struct GlmActivityPlanBalancesView: View {
                     ))
                     .font(MenuTypography.hoverRowEmphasis)
                     .lineLimit(1)
+                    if let onSelectSource {
+                        StatusBarQuotaSourcePinButton(
+                            isSelected: selectedSource == .activityPlan(
+                                planID: preview.planID, entitlementID: preview.entitlementID
+                            ),
+                            title: Self.displayTitle(
+                                planName: preview.planName,
+                                showName: preview.showName,
+                                entitlementID: preview.entitlementID
+                            )
+                        ) {
+                            onSelectSource(.activityPlan(
+                                planID: preview.planID, entitlementID: preview.entitlementID
+                            ))
+                        }
+                    }
                     Text("未生效")
                         .font(MenuTypography.hint)
                         .padding(.horizontal, 4)

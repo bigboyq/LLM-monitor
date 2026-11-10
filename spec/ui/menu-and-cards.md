@@ -61,6 +61,9 @@ that opens left and right from the bottom (6 o'clock) as quota depletes (full 36
 180° dome semicircle at 50%, empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow
 the circle's arc to show active-model health prioritized strictly as red > yellow > green (if 3 reds,
 yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy module's sleep-health state (green / yellow / red, gray while unknown).
+Both quota arcs leave a net clearance of 0.75 lamp diameters to this dot on each side,
+including their round caps. `energyHalfGapDegrees(lampRadius:)` derives the end angles
+from the chord distance (lamp radius + half stroke width + clearance).
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
 All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
@@ -83,19 +86,21 @@ the center sector and the single-window percentage gauge are exempt.
 When a single-window quota source is selected (for example a weekly-only ChatGPT plan, one API
 credit key, or one GLM Start Plan entitlement), `StatusBarQuotaMetrics.singleQuota` selects
 the one-source gauge. It draws one circular track and remaining arc with a **12 o'clock notch**, a centered
-numeric percentage (`—` while the chosen source has no current data), and only the Energy
-sleep-health indicator at 12 o'clock. Font sizes follow the **displayed integer's digit count**
-after rounding: 0–9 use 280 / 120 units (number / `%`), 10–99 use 210 / 100,
-and 100 uses 145 / 70 on the 704-unit canvas. Each size uses its own font cap-height
-to center the visible number vertically; the complete label stays horizontally centered.
+numeric remaining value (`—` while the chosen source has no current data), and only the Energy
+sleep-health indicator at 12 o'clock. Only this menu-bar label omits the `%` symbol:
+rounded 0–99 appear as their ordinary digits, and 100% appears as `00` (distinct from
+empty `0`). All known values use a fixed 280-unit font on the 704-unit canvas.
+Its font cap-height centers the visible number vertically; the label stays horizontally
+centered. Arc length, color, accessibility and card percentages retain the real value.
 The old split 5h / weekly arcs, center sector and
-three quota-health dots are omitted. Zero is shown as a critical-colored `0%` with an empty
+three quota-health dots are omitted. Zero is shown as a critical-colored `0` with an empty
 track; absent data is gray. The gauge arc follows the same time-aware `AlertThresholdConfig`
 color rule as the other quota elements. The sleep indicator sits **on the ring's circumference**,
-inside the top notch, with a small gap to each round cap. Ring and lamp form one circular
+inside the top notch, with a net gap of 0.75 lamp diameters to each round cap. Ring and lamp form one circular
 silhouette, matching the dual-window dashboard's radius (270 on the 704-unit canvas).
-The lamp diameter equals the 56-unit ring width. The arc runs from −74° to 254° (328°);
-the remaining angle accommodates the lamp, the rounded ends and the two clearances rather
+The lamp diameter equals the 56-unit ring width; each clearance is 42 units. The arc runs
+from approximately −69.09° to 249.09° (318.18°), derived from the same chord rule as the
+dual-window gauge. The remaining angle accommodates the lamp, the rounded ends and the two clearances rather
 than forcing a literal 350° arc and moving the lamp above the circle. The value is centered
 at the ring's center (352, 352).
 The global aggregate also uses this gauge when only one window category is present,
@@ -192,7 +197,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧放置状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键可选具体额度，写入 `config.statusBarQuotaSelection`）与额度更新时间，贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
+右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」），眼睛紧随其后；每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -666,7 +671,9 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
 - **状态栏锚定小眼睛**（窗口型 Provider 标题行刷新胶囊左侧，`eye.fill` / `eye.slash`）：经环境键
   `\.cardPinStatusBarAction`（`((String) -> Void)?`，参数 `status.id`）→
   `AppState.toggleStatusBarPinnedProvider(_:)`：单击选择该 Provider 的主套餐，再点同一卡片取消选择（置 `nil` 回到全 Provider 聚合）。
-  `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`，
+  `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`。
+  主套餐额度组标题旁的 `StatusBarQuotaSourcePinButton` 一击选择 Provider 主套餐；重复点击保持所选，取消锚定仍由 Provider 行眼睛完成。ChatGPT 每个 API Key、
+  GLM 每个生效中或待生效活动套餐的标题旁同一按钮一击选择对应独立额度池，已选项以实心眼睛标记。
   用 `setStatusBarQuotaSelection` 选择独立来源。详情卡经 `\.cardStatusBarQuotaOptions` /
   `\.cardSelectStatusBarQuota` 注入选项和动作。`selectedStatusBarSource` 参与卡片 Equatable，
   同 Provider 切换 Key / 权益时也会更新，菜单勾选与 help 指向具体来源。
@@ -680,6 +687,9 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
 旧菜单 strip 的用量重扫与 hover 注入链路随 strip 移除而消失；当前额度页的单 Provider
 刷新走 `MenuContentView.refreshProviderFromMenu`，仅刷新目标 Provider。卡片手势不进入
 `ProviderStateLabel` 内部，dock 卡时间戳仍由宿主注入动作。
+
+EnvironmentKey 的动作闭包采用 `@MainActor @Sendable` 类型：它们只由 UI 点击回调调用，
+实际状态读写仍留在 MainActor；只读预览可继续使用 `nil` 缺省值。
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行 / 「免 / 速 / 它」今日动态行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`

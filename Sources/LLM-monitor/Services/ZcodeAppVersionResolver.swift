@@ -13,17 +13,35 @@ import AppKit
 enum ZcodeAppVersionResolver {
     static let zcodeBundleIdentifier = "dev.zcode.app"
 
-    private static let lock = NSLock()
-    private static var cachedVersion: String?
+    /// A lock-owned reference keeps the mutable cache out of static global storage.
+    private final class VersionCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: String?
+
+        func read() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func store(_ version: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = version
+        }
+
+        func clear() {
+            lock.lock()
+            defer { lock.unlock() }
+            value = nil
+        }
+    }
+
+    private static let cache = VersionCache()
 
     /// 当前应使用的 ZCode app 版本号：优先返回缓存，未缓存时解析并缓存。
     static var currentAppVersion: String {
-        lock.lock()
-        if let cached = cachedVersion {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
+        if let cached = cache.read() { return cached }
         return refreshCachedAppVersion()
     }
 
@@ -37,17 +55,13 @@ enum ZcodeAppVersionResolver {
     ) -> String {
         let plistURL = infoPlistURL ?? Self.infoPlistURL(forBundleIdentifier: bundleIdentifier)
         let version = resolveAppVersion(infoPlistURL: plistURL, fallback: fallback)
-        lock.lock()
-        cachedVersion = version
-        lock.unlock()
+        cache.store(version)
         return version
     }
 
     /// 清空缓存，下次访问 `currentAppVersion` 时重新解析（测试辅助）。
     static func invalidateCache() {
-        lock.lock()
-        cachedVersion = nil
-        lock.unlock()
+        cache.clear()
     }
 
     /// 定位本机安装应用的 `Contents/Info.plist`；未安装返回 nil。

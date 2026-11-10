@@ -23,6 +23,14 @@ enum IconDuoSVGBuilder {
     private static let strokeWidth = 56.0
     private static let innerRadius = 135.0
 
+    /// Net space between the lamp's edge and each round arc cap is 0.75 lamp diameters.
+    /// Both centers lie on the same circle, so convert their required chord distance to an angle.
+    private static func energyHalfGapDegrees(lampRadius: Double) -> Double {
+        let clearance = 0.75 * 2 * lampRadius
+        let chord = lampRadius + strokeWidth / 2 + clearance
+        return 2 * asin(chord / (2 * outerRadius)) * 180 / .pi
+    }
+
     private static func point(degree: Double, radius: Double) -> (x: Double, y: Double) {
         let rad = degree * Double.pi / 180.0
         return (
@@ -70,15 +78,17 @@ enum IconDuoSVGBuilder {
             topEnergyPoint.x, topEnergyPoint.y, energyColor
         )
 
-        // 2. 左弧（5h 额度）：从 140° (底) 到 244° (顶)，顺时针跨度 104°
+        // 2. 左弧（5h 额度）：顶部端点为灯与圆端帽预留统一净空。
+        let halfGap = energyHalfGapDegrees(lampRadius: 48)
+        let quotaArcSpan = 270 - halfGap - 140
         let leftTrackStart = point(degree: 140, radius: outerRadius)
-        let leftTrackEnd = point(degree: 244, radius: outerRadius)
+        let leftTrackEnd = point(degree: 270 - halfGap, radius: outerRadius)
         let leftTrack = String(
             format: "<path id=\"interval-track\" d=\"M %.2f %.2f A %.2f %.2f 0 0 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
             leftTrackStart.x, leftTrackStart.y, outerRadius, outerRadius, leftTrackEnd.x, leftTrackEnd.y, trackColor, strokeWidth
         )
 
-        let leftSpan = 104.0 * metrics.interval.avgAvailable
+        let leftSpan = quotaArcSpan * metrics.interval.avgAvailable
         let leftAvail: String
         if metrics.interval.isAvailable && leftSpan > 0.5 {
             let leftAvailEnd = point(degree: 140.0 + leftSpan, radius: outerRadius)
@@ -90,15 +100,15 @@ enum IconDuoSVGBuilder {
             leftAvail = ""
         }
 
-        // 3. 右弧（周额度）：从 40° (底) 到 296° (顶)，逆时针跨度 104°
+        // 3. 右弧（周额度）：与左弧镜像，保持相同灯边净空。
         let rightTrackStart = point(degree: 40, radius: outerRadius)
-        let rightTrackEnd = point(degree: 296, radius: outerRadius)
+        let rightTrackEnd = point(degree: 270 + halfGap, radius: outerRadius)
         let rightTrack = String(
             format: "<path id=\"weekly-track\" d=\"M %.2f %.2f A %.2f %.2f 0 0 0 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
             rightTrackStart.x, rightTrackStart.y, outerRadius, outerRadius, rightTrackEnd.x, rightTrackEnd.y, trackColor, strokeWidth
         )
 
-        let rightSpan = 104.0 * metrics.weekly.avgAvailable
+        let rightSpan = quotaArcSpan * metrics.weekly.avgAvailable
         let rightAvail: String
         if metrics.weekly.isAvailable && rightSpan > 0.5 {
             let rightAvailEnd = point(degree: 40.0 - rightSpan, radius: outerRadius)
@@ -153,10 +163,11 @@ enum IconDuoSVGBuilder {
     ) -> String {
         let ringRadius = outerRadius
         let ringWidth = strokeWidth
-        // The lamp replaces part of the ring on the same circumference. Account
-        // for both round caps and the lamp diameter, leaving a small gap per side.
-        let startDegrees = -74.0
-        let trackEndDegrees = 254.0
+        // The lamp replaces part of the ring on the same circumference; include
+        // its radius and the round cap when reserving 0.75 lamp diameters per side.
+        let halfGap = energyHalfGapDegrees(lampRadius: ringWidth / 2)
+        let startDegrees = -90 + halfGap
+        let trackEndDegrees = 270 - halfGap
         let trackSpan = trackEndDegrees - startDegrees
         let trackStart = point(degree: startDegrees, radius: ringRadius)
         let trackEnd = point(degree: trackEndDegrees, radius: ringRadius)
@@ -181,17 +192,14 @@ enum IconDuoSVGBuilder {
             )
             let displayedPercent = Int(percent.rounded())
             valueLabel = "\(displayedPercent)%"
-            let numberSize: Int
-            let symbolSize: Int
-            switch displayedPercent {
-            case 0...9: (numberSize, symbolSize) = (280, 120)
-            case 10...99: (numberSize, symbolSize) = (210, 100)
-            default: (numberSize, symbolSize) = (145, 70)
-            }
+            // Only the menu-bar label uses this compact notation: full = "00",
+            // empty = "0". Keep the real percentage for color, arc and accessibility.
+            let compactValue = displayedPercent == 100 ? "00" : String(displayedPercent)
+            let numberSize = 280
             // AppKit's SVG renderer does not honor dominant-baseline consistently.
             // Place the text baseline using the font's visible capital height.
             let textBaseline = center + Double(NSFont.systemFont(ofSize: CGFloat(numberSize), weight: .semibold).capHeight) / 2
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(displayedPercent)<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" aria-label=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(compactValue)</text>"
             if clamped > 0 {
                 let end = point(degree: startDegrees + trackSpan * clamped, radius: ringRadius)
                 let largeArc = clamped * trackSpan > 180 ? 1 : 0

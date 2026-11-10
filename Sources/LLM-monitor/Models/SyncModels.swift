@@ -409,14 +409,12 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
 
 /// ISO8601 时刻的统一格式化入口：wire / 存储键共用，避免两处格式漂移。
 enum FleetISO8601 {
-    static let formatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
+    /// An immutable, Sendable style replaces the shared mutable formatter while
+    /// retaining the same UTC, whole-second representation as FleetCodec.
+    private static let outputStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 
     static func dateString(_ date: Date) -> String {
-        formatter.string(from: date)
+        outputStyle.format(date)
     }
 
     /// Wire/storage ISO8601 dates carry whole-second precision. Match boundaries at

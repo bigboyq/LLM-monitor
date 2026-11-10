@@ -121,7 +121,7 @@ A provider with only one quota window draws that reading in one full-size ring i
 both expanded and compact forms; the second, smaller ring is reserved for actual
 weekly quota data on dual-window providers. A provider with no quota window
 (balance-only DeepSeek or no successful fetch yet) also draws one ring only. For
-DeepSeek, known account availability uses a dimmed full ring in its health colour,
+DeepSeek, known account availability uses a full ring in its health colour,
 reading as "availability is known, remaining quantity is not"; unknown availability
 shows only the neutral track. No percent, arc, or denominator is invented. Other
 providers with no successful data likewise show one neutral track.

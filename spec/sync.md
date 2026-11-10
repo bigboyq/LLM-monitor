@@ -45,7 +45,9 @@ ATS 拦截、系统限制网络、超时及无法连接应显示各自的脱敏�
 不能断言是权限问题。安装新包后仍需在副节点实际验证权限与跨机 health 请求。
 
 编解码统一走 `FleetCodec.encode/decode`（`dateEncodingStrategy = .iso8601`
-只写一次；漏设会把 `Date` 静默错成 2001 基准 Double）。时刻一律 ISO8601、
+只写一次；漏设会把 `Date` 静默错成 2001 基准 Double）。`FleetISO8601.dateString`
+使用不可变、Sendable 的 `Date.ISO8601FormatStyle`，保持与 codec 相同的 UTC 全秒格式，
+避免跨线程共享可变 formatter。时刻一律 ISO8601、
 日历日键用 `yyyy-MM-dd` 字符串 `dayKey`（单时区前提，用户裁定；`timezoneID`
 仅诊断元数据，不产生换算分支）。
 `dayKey` 校验要求 ASCII 数字、固定 `yyyy-MM-dd` 格式且对应真实 Gregorian 日期
@@ -387,7 +389,8 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
     `LANAddressResolver`：采集用 `getifaddrs`（排除回环、未 UP 的接口、虚拟
     接口前缀 `lo/bridge/utun/gif/stf/anpi/ap/awdl/llw`，以及与 `bridge0` 同
     MAC 的雷雳桥腿），硬件类型由 Network.framework 判定（`LANInterfaceKindResolver`
-    用 `NWPathMonitor` 缓存 Wi-Fi / 有线接口名供同步读——`sysctl` 的 `ifi_type`
+    用三个共用串行队列的 `NWPathMonitor` 缓存 Wi-Fi / 有线接口名；`NSCondition`
+    保护启动状态与全部缓存，供同步快照读取——`sysctl` 的 `ifi_type`
     在 macOS 上对 Wi-Fi 与有线都是 `IFT_ETHER`，区分不出来），挑选是纯函数
     `preferredLANAddress`（Wi-Fi → 有线 → 其它；同类先到先得）。
     旧口径「只认 en0」假设 `en0` = Wi-Fi，碰到「`en0` = 有线口、Wi-Fi 落在
@@ -418,7 +421,7 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 
 ## 测试
 
-`SyncModelsTests`（codec 往返 / 校验 / 合并 / 选举 / 指纹 / 角色派生、跨日历
+`SyncModelsTests`（codec 往返与存储键全秒格式兼容 / 校验 / 合并 / 选举 / 指纹 / 角色派生、跨日历
 Gregorian 日键、不完整日桶拒收与部分计价保留）、
 `FleetStoreTests`（重放拒绝、通道独立、窗口 upsert 与清理、坏行清理的 generation、
 快照缓存隔离）、`UsageReportBuilderTests`（七桶权威 totals、同样本计价、

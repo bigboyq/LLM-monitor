@@ -178,7 +178,11 @@ enum LANAddressResolver {
 ///
 /// 为什么不用 `sysctl NET_RT_IFLIST2` 的 `ifi_type`：macOS 上 Wi-Fi 与有线
 /// 都是 `IFT_ETHER`（0x06），区分不出来——只能走 Network.framework。
-final class LANInterfaceKindResolver {
+/// `NWPathMonitor` callbacks run on the resolver's serial queue. Every mutable field,
+/// including the one-time `started` transition, is guarded by `condition`; snapshots
+/// take the same lock. The monitors are configured once and then only emit callbacks.
+/// This is the synchronization contract that makes sharing the process-wide resolver safe.
+final class LANInterfaceKindResolver: @unchecked Sendable {
     static let shared = LANInterfaceKindResolver()
     static let didUpdateNotification = Notification.Name("LANInterfaceKindResolver.didUpdate")
 

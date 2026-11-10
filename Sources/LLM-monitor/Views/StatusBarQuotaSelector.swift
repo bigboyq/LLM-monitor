@@ -13,9 +13,11 @@ struct StatusBarQuotaSelector: View {
     private var isSelected: Bool { selectedSource != nil }
 
     private var helpText: String {
-        guard let selectedSource else { return "在状态栏显示主套餐；右键选择具体额度" }
+        guard let selectedSource else {
+            return "在状态栏显示该 Provider 主套餐；如需锁定单个 Plan、API Key 或活动套餐，请点额度标题旁的眼睛"
+        }
         let title = options.first { $0.source == selectedSource }?.title ?? selectedSource.fallbackTitle
-        return "状态栏显示：\(title)；点击取消，右键切换额度"
+        return "状态栏显示：\(title)；点击取消，点额度标题旁的眼睛可锁定单个额度"
     }
 
     var body: some View {
@@ -46,5 +48,29 @@ struct StatusBarQuotaSelector: View {
                 }
             }
         }
+    }
+}
+
+/// Visible one-click pin for a specific Plan/API/entitlement row.
+struct StatusBarQuotaSourcePinButton: View {
+    let isSelected: Bool
+    let title: String
+    let action: () -> Void
+
+    private var helpText: String {
+        isSelected ? "状态栏当前显示：\(title)" : "在状态栏显示：\(title)"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isSelected ? "eye.fill" : "eye")
+                .font(.system(size: 9, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.primaryLabel : Color.secondaryLabel.opacity(0.75))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(helpText)
     }
 }

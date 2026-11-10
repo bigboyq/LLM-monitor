@@ -121,11 +121,13 @@ final class ChallengerM2StressTests: StateTestCase {
 
     @MainActor
     private func makeStressAppState(
-        descriptors: [FetcherDescriptor]
+        descriptors: [FetcherDescriptor],
+        edgeDockConfig: EdgeDockConfig? = nil
     ) async -> (AppState, ConfigStore) {
         let store = makeIsolatedConfigStore()
         var config = store.config
         config.refreshIntervalSeconds = 300
+        config.edgeDock = edgeDockConfig
         for desc in descriptors {
             config.providers[desc.id] = ProviderConfig(
                 enabled: true,
@@ -419,8 +421,21 @@ final class ChallengerM2StressTests: StateTestCase {
             FetcherDescriptor(id: "prov_midclose", displayName: "MidClose", kind: .codexChatGpt, iconSystemName: "m.circle", accentColor: .chatgpt, makeFetcher: { _ in fetcher })
         ]
 
-        let (state, store) = await makeStressAppState(descriptors: descriptors)
+        let (state, store) = await makeStressAppState(
+            descriptors: descriptors,
+            edgeDockConfig: EdgeDockConfig(
+                mode: .statusWindow,
+                edge: .right,
+                offset: 0.5,
+                hideInFullscreen: false
+            )
+        )
         defer { state.stop() }
+
+        // Real desktop state can leak from earlier tests: the process-wide dock singleton may
+        // still report a fullscreen Space (for example Chrome fullscreen on the test host).
+        // This test exercises popover dismissal during fetch, so pin the dock to a visible,
+        // fullscreen-independent mode before attach performs its real fullscreen probe.
 
         let controller = EdgeDockController.shared
         let dummyPanel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)

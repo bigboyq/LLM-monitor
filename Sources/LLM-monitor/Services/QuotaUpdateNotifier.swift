@@ -684,7 +684,7 @@ final class SystemQuotaUpdateNotifier: NSObject,
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+        withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void
     ) {
         // 菜单窗口当前处于前台时也显示恢复提示；声音遵循本机设置。
         Task { @MainActor [weak self] in

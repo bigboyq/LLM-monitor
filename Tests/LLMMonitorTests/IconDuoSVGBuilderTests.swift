@@ -133,8 +133,8 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertTrue(svg.contains("id=\"single-quota-track\""))
         XCTAssertTrue(svg.contains("id=\"single-quota-available\" data-value=\"72\""))
         XCTAssertTrue(svg.contains("id=\"single-quota-value\" data-value=\"72%\""))
-        XCTAssertTrue(svg.contains("font-size=\"210\""))
-        XCTAssertTrue(svg.contains("<tspan font-size=\"100\">%</tspan>"))
+        XCTAssertTrue(svg.contains("font-size=\"280\""))
+        XCTAssertFalse(svg.contains("<tspan"))
         XCTAssertTrue(svg.contains("id=\"energy-dot\""), "单环仍保留12点位置的睡眠状态灯")
         XCTAssertFalse(svg.contains("interval-track"))
         XCTAssertFalse(svg.contains("weekly-track"))
@@ -145,6 +145,51 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertNotNil(image)
         XCTAssertEqual(image?.size.width, 22)
         XCTAssertEqual(image?.size.height, 22)
+    }
+
+    func testSingleQuotaCompactLabelKeepsAStableSizeAndRealValue() throws {
+        for (percent, label) in [(0, "0"), (9, "9"), (10, "10"), (99, "99"), (100, "00")] {
+            var metrics = StatusBarQuotaMetrics.full
+            metrics.singleQuota = StatusBarSingleQuota(remainingFraction: Double(percent) / 100, timeRemainingFraction: 1)
+            let document = try XMLDocument(xmlString: IconDuoSVGBuilder.buildSVG(metrics: metrics))
+            let text = try XCTUnwrap(document.nodes(forXPath: "//*[@id='single-quota-value']").first as? XMLElement)
+            XCTAssertEqual(text.stringValue, label)
+            XCTAssertEqual(text.attribute(forName: "font-size")?.stringValue, "280")
+            XCTAssertEqual(text.attribute(forName: "aria-label")?.stringValue, "\(percent)%")
+        }
+    }
+
+    func testSleepLampHasThreeQuarterDiameterClearanceToRoundCaps() throws {
+        var single = StatusBarQuotaMetrics.full
+        single.singleQuota = StatusBarSingleQuota(remainingFraction: 1, timeRemainingFraction: 1)
+        for metrics in [StatusBarQuotaMetrics.full, single] {
+            let document = try XMLDocument(xmlString: IconDuoSVGBuilder.buildSVG(metrics: metrics))
+            let lamp = try XCTUnwrap(document.nodes(forXPath: "//*[@id='energy-dot']").first as? XMLElement)
+            func number(_ element: XMLElement, _ name: String) throws -> Double {
+                try XCTUnwrap(element.attribute(forName: name)?.stringValue.flatMap(Double.init))
+            }
+            let lampX = try number(lamp, "cx")
+            let lampY = try number(lamp, "cy")
+            let radius = try number(lamp, "r")
+            let ids = metrics.singleQuota == nil
+                ? ["interval-track", "weekly-track"] : ["single-quota-track"]
+            for id in ids {
+                let track = try XCTUnwrap(document.nodes(forXPath: "//*[@id='\(id)']").first as? XMLElement)
+                let path = try XCTUnwrap(track.attribute(forName: "d")?.stringValue).split(separator: " ")
+                let end = CGPoint(x: try XCTUnwrap(Double(path[path.count - 2])),
+                                  y: try XCTUnwrap(Double(path[path.count - 1])))
+                var endpoints = [end]
+                if metrics.singleQuota != nil {
+                    endpoints.append(CGPoint(x: try XCTUnwrap(Double(path[1])),
+                                             y: try XCTUnwrap(Double(path[2]))))
+                }
+                let capRadius = try number(track, "stroke-width") / 2
+                for endpoint in endpoints {
+                    let clearance = hypot(endpoint.x - lampX, endpoint.y - lampY) - radius - capRadius
+                    XCTAssertEqual(clearance, radius * 2 * 0.75, accuracy: 0.02, id)
+                }
+            }
+        }
     }
 
     func testSelectedSingleQuotaDistinguishesEmptyFromUnknown() {

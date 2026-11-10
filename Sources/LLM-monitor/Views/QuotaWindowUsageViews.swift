@@ -239,15 +239,15 @@ struct QuotaWindowUsageSection: View {
     /// 「闲」行的行标签（GLM 今日闲时任务用量，从独立脚注迁入表格）。
     /// 行本身由 `ProviderCardDerivedValues` 产出；与「5h」「周」「今」同一长度档。
     /// 测试钉住，改文案必须连测试一起改。
-    static let offPeakRowLabel = "闲"
+    nonisolated static let offPeakRowLabel = "闲"
 
     /// 「免 / 速 / 它」三条 GLM 今日动态行的行标签（Start Plan 体验套餐 /
     /// 加速卡 / 其他智谱任务的今日切片）。行本身由
     /// `ProviderCardDerivedValues.glmCategoryUsageRows` 产出；单字，与
     /// 「5h」「周」「今」「闲」同一长度档。测试钉住，改文案必须连测试一起改。
-    static let startPlanRowLabel = "免"
-    static let highSpeedRowLabel = "速"
-    static let otherPlanRowLabel = "它"
+    nonisolated static let startPlanRowLabel = "免"
+    nonisolated static let highSpeedRowLabel = "速"
+    nonisolated static let otherPlanRowLabel = "它"
 
     /// segment 持久化 key。
     static let segmentStorageKey = "quotaWindowUsageSegment"

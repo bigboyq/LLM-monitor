@@ -117,7 +117,8 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 - `threadIdentifier = "quota-update-{providerID}-{modelName}"`（provider 维度，
   不同 provider 同名模型不串线程）；每条通知的 `userInfo` 带 `providerID` 与
   `modelName`，默认点击打开该 Provider 的完整详情卡，并只标注模型上下文，不声称
-  自动筛选或滚动到模型。前台 `willPresent` 总显示 banner，声音遵循本机设置。
+  自动筛选或滚动到模型。前台 `willPresent` 总显示 banner，声音遵循本机设置；
+  completion handler 声明为 `@Sendable`，在 MainActor 读取声音设置后安全回调。
 - `systemNotificationSoundEnabled` 为本机 config.json 设置，缺省开启；通知的
   `content.sound` 与前台 `willPresent` 声音选项都遵循此值。测试通知也遵循当前设置草稿。
 - 点击路由交给 `AppState` 内存态，由菜单栏常驻 label 的公开 `openWindow` bridge

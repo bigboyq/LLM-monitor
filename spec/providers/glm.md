@@ -318,7 +318,7 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 | 项 | 值 |
 |---|---|
 | 数据源 | 直连 API：`GlmZcodeAPIClient.fetchBalance()` / `fetchResetCards()` / `fetchMarketingTouch()`（经 `ZcodePackageProviding` 协议注入，默认 `GlmZcodeAPIPackageProvider` 转发） |
-| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM Provider 生效刷新间隔一致；`app_version` query 与两条请求的 `X-ZCode-App-Version` header 由 `ZcodeAppVersionResolver` 运行时从本机 ZCode.app 的 Info.plist（`CFBundleShortVersionString`）动态读取，读取失败回退 `3.17.1`，进程内缓存一次） |
+| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM Provider 生效刷新间隔一致；`app_version` query 与两条请求的 `X-ZCode-App-Version` header 由 `ZcodeAppVersionResolver` 运行时从本机 ZCode.app 的 Info.plist（`CFBundleShortVersionString`）动态读取，读取失败回退 `3.17.1`，进程内缓存一次；缓存访问由私有锁保护） |
 | 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（按次要信息频率轮询，仅 `.full` 模式查询） |
 | 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，通知按 delivery 做 1h 防抖） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |

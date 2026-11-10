@@ -224,7 +224,7 @@ extension EdgeDockController {
         }
     }
 
-    private var cardPinStatusBarAction: ((String) -> Void)? {
+    private var cardPinStatusBarAction: CardPinStatusBarAction? {
         guard let state else { return nil }
         return { [weak self, weak state] id in
             state?.toggleStatusBarPinnedProvider(id)
@@ -234,12 +234,12 @@ extension EdgeDockController {
         }
     }
 
-    private var cardStatusBarQuotaOptions: ((String) -> [StatusBarQuotaOption])? {
+    private var cardStatusBarQuotaOptions: CardStatusBarQuotaOptionsAction? {
         guard let state else { return nil }
         return { [weak state] id in state?.statusBarQuotaOptions(providerID: id) ?? [] }
     }
 
-    private var cardSelectStatusBarQuota: ((String, StatusBarQuotaSource) -> Void)? {
+    private var cardSelectStatusBarQuota: CardSelectStatusBarQuotaAction? {
         guard let state else { return nil }
         return { [weak self, weak state] id, source in
             state?.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: id, source: source))
@@ -249,7 +249,7 @@ extension EdgeDockController {
 
     /// 点击刷新动作（额度 / 本地用量各一条）。每次 `updatePopover` 重建 popover
     /// 内容时重新求值，弱持有 self 保证在刷新完成后主动驱动可见 popover 更新。
-    private var cardQuotaRefreshAction: ((String) -> Void)? {
+    private var cardQuotaRefreshAction: CardQuotaRefreshAction? {
         guard let state else { return nil }
         return { [weak self] id in
             Task {
@@ -263,7 +263,7 @@ extension EdgeDockController {
         }
     }
 
-    private var cardUsageRefreshAction: (() -> Void)? {
+    private var cardUsageRefreshAction: CardUsageRefreshAction? {
         guard let state else { return nil }
         return { [weak self] in
             Task {

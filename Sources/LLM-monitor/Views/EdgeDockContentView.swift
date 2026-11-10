@@ -380,12 +380,10 @@ struct EdgeDockContentView: View {
         ZStack {
             Circle()
                 .stroke(EdgeDockTheme.ringTrack, lineWidth: lineWidth)
-                .frame(width: diameter, height: diameter)
 
             if fraction == nil, let emptyTint {
                 Circle()
-                    .stroke(emptyTint.opacity(0.34), lineWidth: lineWidth)
-                    .frame(width: diameter, height: diameter)
+                    .stroke(emptyTint, lineWidth: lineWidth)
             } else if let range = EdgeDockGeometry.arcTrimRange(fraction: fraction) {
                 Circle()
                     .trim(from: range.lowerBound, to: range.upperBound)
@@ -393,10 +391,10 @@ struct EdgeDockContentView: View {
                         tint,
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                     )
-                    .frame(width: diameter, height: diameter)
                     .rotationEffect(.degrees(-90))
             }
         }
+        .frame(width: diameter, height: diameter)
     }
 
     // MARK: - 取值

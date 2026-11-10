@@ -6,6 +6,8 @@ struct ChatGPTApiCreditsRow: View {
     let tint: Color
     let error: String?
     var keyNumber: Int = 1
+    var selectedQuotaSource: StatusBarQuotaSource? = nil
+    var onSelectQuotaSource: ((StatusBarQuotaSource) -> Void)? = nil
 
     @Environment(\.displayDate) private var displayDate
 
@@ -18,6 +20,16 @@ struct ChatGPTApiCreditsRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(titleText)
+
+                if let keyID = credits?.keyId, let onSelectQuotaSource {
+                    let source = StatusBarQuotaSource.apiCredit(keyID: keyID)
+                    StatusBarQuotaSourcePinButton(
+                        isSelected: selectedQuotaSource == source,
+                        title: titleText
+                    ) {
+                        onSelectQuotaSource(source)
+                    }
+                }
 
                 Spacer(minLength: 4)
 
