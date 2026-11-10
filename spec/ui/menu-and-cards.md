@@ -84,8 +84,11 @@ When a single-window quota source is selected (for example a weekly-only ChatGPT
 credit key, or one GLM Start Plan entitlement), `StatusBarQuotaMetrics.singleQuota` selects
 the one-source gauge. It draws one circular track and remaining arc with a **12 o'clock notch**, a centered
 numeric percentage (`—` while the chosen source has no current data), and only the Energy
-sleep-health indicator at 12 o'clock. The centered numeric value uses a reduced-size `%`
-glyph so a 100% label still fits at the menu-bar icon size. The old split 5h / weekly arcs, center sector and
+sleep-health indicator at 12 o'clock. Font sizes follow the **displayed integer's digit count**
+after rounding: 0–9 use 280 / 120 units (number / `%`), 10–99 use 210 / 100,
+and 100 uses 145 / 70 on the 704-unit canvas. Each size uses its own font cap-height
+to center the visible number vertically; the complete label stays horizontally centered.
+The old split 5h / weekly arcs, center sector and
 three quota-health dots are omitted. Zero is shown as a critical-colored `0%` with an empty
 track; absent data is gray. The gauge arc follows the same time-aware `AlertThresholdConfig`
 color rule as the other quota elements. The sleep indicator sits **on the ring's circumference**,

@@ -179,20 +179,25 @@ enum IconDuoSVGBuilder {
                 ),
                 colors: healthColors
             )
-            valueLabel = "\(Int(percent.rounded()))%"
-            let isThreeDigitPercent = Int(percent.rounded()) >= 100
-            let numberSize = isThreeDigitPercent ? 145 : 190
-            let symbolSize = isThreeDigitPercent ? 70 : 90
+            let displayedPercent = Int(percent.rounded())
+            valueLabel = "\(displayedPercent)%"
+            let numberSize: Int
+            let symbolSize: Int
+            switch displayedPercent {
+            case 0...9: (numberSize, symbolSize) = (280, 120)
+            case 10...99: (numberSize, symbolSize) = (210, 100)
+            default: (numberSize, symbolSize) = (145, 70)
+            }
             // AppKit's SVG renderer does not honor dominant-baseline consistently.
             // Place the text baseline using the font's visible capital height.
             let textBaseline = center + Double(NSFont.systemFont(ofSize: CGFloat(numberSize), weight: .semibold).capHeight) / 2
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(Int(percent.rounded()))<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(displayedPercent)<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
             if clamped > 0 {
                 let end = point(degree: startDegrees + trackSpan * clamped, radius: ringRadius)
                 let largeArc = clamped * trackSpan > 180 ? 1 : 0
                 available = String(
                     format: "<path id=\"single-quota-available\" data-value=\"%d\" d=\"M %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
-                    Int(percent.rounded()), trackStart.x, trackStart.y, ringRadius, ringRadius,
+                    displayedPercent, trackStart.x, trackStart.y, ringRadius, ringRadius,
                     largeArc, end.x, end.y, quotaColor, ringWidth
                 )
             } else {
