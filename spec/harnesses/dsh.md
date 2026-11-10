@@ -254,5 +254,5 @@ usage；窗口归属仍使用 call 起始时间。触发次数来自实际去重
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-11-10 · 代码 91f6cd4
+> 核对基线：2026-11-10 · 代码 abcf932
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。
