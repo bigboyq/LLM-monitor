@@ -1178,4 +1178,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-10 · 代码 91f6cd4
+> 核对基线：2026-11-10 · 代码 871db54

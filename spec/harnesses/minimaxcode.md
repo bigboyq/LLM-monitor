@@ -795,4 +795,4 @@ reasoning maximum, character aggregation, and output conservation.
 
 
 > 本文由 `spec/providers/minimax.md` 拆分；内容沿用该文件已核对的代码基线，本次未重新逐项核对全部代码。
-> 核对基线：2026-11-10 · 代码 abcf932
+> 核对基线：2026-11-10 · 代码 871db54

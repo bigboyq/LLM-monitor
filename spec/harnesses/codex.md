@@ -352,4 +352,4 @@ After normalization, cross-provider sum, average, and chart rendering can treat 
 > 拆分来源：由原 `spec/providers/codex.md` 按 Codex 本地 harness / client 职责拆分；本文件主要沿用其对应章节。
 当前持久化缓存版本 **v3**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
-> 核对基线：2026-11-10 · 代码 b89b867
+> 核对基线：2026-11-10 · 代码 871db54

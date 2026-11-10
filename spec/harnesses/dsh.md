@@ -273,5 +273,5 @@ Python 3.14 `compression.zstd`（旧环境可安装 `zstandard`）；每次重�
 
 当前持久化缓存版本 **v8**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
-> 核对基线：2026-11-10 · 代码 abcf932
+> 核对基线：2026-11-10 · 代码 871db54
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。

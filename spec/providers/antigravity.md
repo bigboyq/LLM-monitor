@@ -1909,4 +1909,4 @@ For raw quota export outside the menu app:
    的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-08 · 代码 9b3ad0f
+> 核对基线：2026-11-10 · 代码 871db54

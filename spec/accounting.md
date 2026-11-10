@@ -353,4 +353,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-10 · 代码 abcf932
+> 核对基线：2026-11-10 · 代码 871db54
