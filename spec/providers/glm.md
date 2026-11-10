@@ -478,4 +478,4 @@ by shared `PeakWindowTests.swift` and `HolidayCalendarTests.swift`.
 ZCode SQLite reader, scanner, accounting, and category tests are listed in the
 [ZCode harness spec](../harnesses/zcode.md#test-coverage).
 
-> 核对基线：2026-11-07 · 代码 9b102b5
+> 核对基线：2026-11-10 · 代码 1d06cb4
