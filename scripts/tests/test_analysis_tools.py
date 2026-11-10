@@ -61,6 +61,18 @@ class AnalysisToolsTests(unittest.TestCase):
         self.assertEqual(ns['last_day_total']['input'], 30)
         self.assertEqual(ns['last_window_total']['input'], 30)
 
+    def test_later_usage_from_same_call_is_not_visible_at_earlier_retry(self):
+        events = [call(0, 1, 100), retry(1000, 'a', 1),
+                  call(2000, 1, 200), retry(3000, 'b', 1)]
+        _, output = self.run_log_script('summary.py', events)
+        rows = [line for line in output.splitlines() if line.startswith(('| 1 |', '| 2 |'))]
+        self.assertTrue(rows[0].endswith('| 100 | 100 |'), rows)
+        self.assertTrue(rows[1].endswith('| 300 | 300 |'), rows)
+        ns, output = self.run_log_script('analyze.py', events)
+        self.assertEqual(ns['total_for_range'](BASE, BASE + 1001)['input'], 100)
+        first_row = next(line for line in output.splitlines() if line.startswith('  1  '))
+        self.assertEqual(first_row.count('in=100 '), 3, first_row)
+
     def test_cost_empty_all_hit_all_miss_zero_and_retry_only(self):
         for events in ([], [call(0, 1, 100)], [call(0, 2, 100), retry(1, 'a')],
                        [call(0, 1, 0)], [retry(0, 'a')]):

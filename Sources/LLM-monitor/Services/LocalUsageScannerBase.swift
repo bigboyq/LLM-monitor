@@ -276,10 +276,9 @@ class LocalUsageScannerBase<Usage: Equatable & Sendable>: ObservableObject, @unc
             latestGeneration: { self.latestGeneration },
             work: work,
             applyResult: { result in
-                self.lastResult = result
-                self.lastError = nil
                 self.sourceLifecycle?.refreshHotFiles()
-                if !self.scanResultIsComplete(result) {
+                let isComplete = self.scanResultIsComplete(result)
+                if !isComplete {
                     // Keep the applied last-good/partial view visible, but do
                     // not acknowledge freshness until the retryable source
                     // work succeeds in a later reconcile.
@@ -287,6 +286,12 @@ class LocalUsageScannerBase<Usage: Equatable & Sendable>: ObservableObject, @unc
                     self.lastError = "扫描结果不完整，等待下一轮重试"
                     self.onFailed?()
                 } else {
+                    self.lastError = nil
+                }
+                // Coordinator applies publications inline. Mark a partial
+                // source unavailable before exposing its partial snapshot.
+                self.lastResult = result
+                if isComplete {
                     self.onValidatedResult?()
                     if self.dirtyRevision == startedDirtyRevision {
                         self.markFresh()

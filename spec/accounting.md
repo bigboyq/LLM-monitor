@@ -102,7 +102,7 @@ agy 的 transcript 行复用，字符桶口径一致：思考取 reasoning part�
 分片行级样本（daily 同源累计）、OpenCode 行级样本（daily 同源累计）、agy 行级样本。
 
 OpenCode 与 MiniMax Code 的 daily output/reasoning 必须与同窗口样本按日累计逐桶
-一致（缓存分别 v3 / v20）。投影的 `includingCurrentDay` 逐桶 max 只修补真实滞后，
+一致（缓存分别 v3 / v21）。MiniMax 同日原生 reasoning 只固定对应调用，不能短路其他调用的字符回退；原生与字符配对调用的账面 output 及已知字符先从日预算扣除，未配对调用仅分配残余。投影的 `includingCurrentDay` 逐桶 max 只修补真实滞后，
 不能用于协调两套不同的拆分；否则它会分别挑出偏大的 output 与 reasoning、凭空增量。
 
 ### 唯一入口：raw → 桶

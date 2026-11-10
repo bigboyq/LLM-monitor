@@ -153,16 +153,20 @@ extension MinimaxLocalUsageScanner {
     ///
     /// 抽成 static + 纯函数,方便测试在 XCTestCase sync context 直接调
     /// (不需要构造完整 scanner)。
+    /// v21：reader 的 nativeSplits 按原生调用固定桶及已知字符，和 paired 一起
+    /// 扣除后才估算未配对残余；不能因同日一个原生值而关闭其他调用的估算。
+    /// 只提供日汇总、未传 nativeSplits 的兼容调用仍保留历史原生日桶语义。
     nonisolated static func applyReasoningSplit(
         perDay: [Date: MinimaxDailyUsage],
         perDayChars: [Date: MinimaxCharCounts],
-        pairedSplits: [Date: MinimaxPairedSplitDay] = [:]
+        pairedSplits: [Date: MinimaxPairedSplitDay] = [:],
+        nativeSplits: [Date: MinimaxPairedSplitDay] = [:]
     ) -> [Date: MinimaxDailyUsage] {
         var out: [Date: MinimaxDailyUsage] = [:]
         for (day, usage) in perDay {
             let (reasonTokens, realOutput): (Int, Int)
             let outputTokens = max(usage.outputTokens, 0)
-            if usage.reasoningTokens > 0 {
+            if usage.reasoningTokens > 0, nativeSplits[day] == nil {
                 // 未来 thinking model 路径(per-day reasoningTokens > 0):
                 // 账单已经分了 reasoning,output = output - reason
                 //
@@ -175,22 +179,27 @@ extension MinimaxLocalUsageScanner {
                 }
                 reasonTokens = min(usage.reasoningTokens, outputTokens)
                 realOutput = outputTokens - reasonTokens
-            } else if let paired = pairedSplits[day], paired.rawOutputTokens > 0 {
+            } else if nativeSplits[day] != nil || (pairedSplits[day]?.rawOutputTokens ?? 0) > 0 {
                 // v19 调用级路径：配对调用精确分摊 + 未配对残余日级比例。
-                let residualRaw = max(outputTokens - paired.rawOutputTokens, 0)
+                let paired = pairedSplits[day] ?? .zero
+                let native = nativeSplits[day] ?? .zero
+                let fixedRaw = SaturatingArithmetic.add(paired.rawOutputTokens, native.rawOutputTokens)
+                let residualRaw = max(outputTokens - fixedRaw, 0)
                 let chars = perDayChars[day]
                 // 残余字符 = 当日字符聚合 − 配对行字符（午夜跨日边缘差减可能为负
                 // → 钳 0）。无字符数据 / 无残余时 `split` 返回 nil，残余 reason 记
                 // 0（不猜），残余 output 全记可见。
-                let residualThinking = max((chars?.reason ?? 0) - paired.thinkingChars, 0)
-                let residualVisible = max((chars?.output ?? 0) - paired.visibleChars, 0)
+                let fixedThinking = SaturatingArithmetic.add(paired.thinkingChars, native.thinkingChars)
+                let fixedVisible = SaturatingArithmetic.add(paired.visibleChars, native.visibleChars)
+                let residualThinking = max((chars?.reason ?? 0) - fixedThinking, 0)
+                let residualVisible = max((chars?.output ?? 0) - fixedVisible, 0)
                 let residualSplit = ReasoningCharSplit.split(
                     outputTokens: residualRaw,
                     reasoningChars: residualThinking,
                     visibleChars: residualVisible
                 )
                 var combinedReason = SaturatingArithmetic.add(
-                    paired.reasonTokens,
+                    SaturatingArithmetic.add(paired.reasonTokens, native.reasonTokens),
                     residualSplit?.reasoning ?? 0
                 )
                 // 守恒兜底（P2-2 同款）：理论上配对调用 ⊆ 当天账本行，reason 不会

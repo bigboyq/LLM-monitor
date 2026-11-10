@@ -66,9 +66,6 @@ fi
 if [ ! -f "$VERSION_FILE" ]; then
     echo "1.0.1" > "$VERSION_FILE"
 fi
-if [ ! -f "$BUILD_FILE" ]; then
-    echo "1" > "$BUILD_FILE"
-fi
 
 if [ $# -gt 2 ]; then
     fail "用法: $0 [version] [build-number]"
@@ -80,12 +77,10 @@ if [ $# -ge 1 ]; then
     if [ $# -ge 2 ]; then
         BUILD_NUMBER="$2"
     else
-        CURRENT_BUILD_NUMBER=$(tr -d '\n\r ' < "$BUILD_FILE")
         INCREMENT_BUILD=1
     fi
 else
     VERSION=$(tr -d '\n\r ' < "$VERSION_FILE")
-    CURRENT_BUILD_NUMBER=$(tr -d '\n\r ' < "$BUILD_FILE")
     INCREMENT_BUILD=1
 fi
 
@@ -100,6 +95,11 @@ if ! "$ROOT_DIR/scripts/sync-icon-assets.sh" --check; then
 fi
 
 if [ "$INCREMENT_BUILD" = "1" ]; then
+    if [ -f "$BUILD_FILE" ]; then
+        CURRENT_BUILD_NUMBER=$(tr -d '\n\r ' < "$BUILD_FILE")
+    else
+        CURRENT_BUILD_NUMBER=1
+    fi
     validate_build_number "$CURRENT_BUILD_NUMBER"
     BUILD_NUMBER=$((10#$CURRENT_BUILD_NUMBER + 1))
 fi

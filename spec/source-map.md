@@ -249,6 +249,9 @@
 | `scripts/sync-icon-assets.sh` | 图标资产唯一同步入口：IconPreview 副本 + 回退 icns 重生成 + sidecar 新鲜度记录；`--check` 供构建前置校验 |
 | `scripts/sync-holiday-data.sh` | 法定节假日快照唯一同步入口：拉取上游 chinese-days JSON，抽取 `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A）生成 ChinaHolidays.json，幂等 + `--check` 只读校验 |
 | `Tests/LLMMonitorTests/DataSourceRegressionTests.swift` | OpenCode/MiniMax 分拆守恒、Agy 耗时排除与数据库变更、数值极值、DSH 流式输出上限回归 |
+| `Tests/LLMMonitorTests/CrossReviewDataTests.swift` | 计量交叉复核：同窗守恒、原生/配对/残余分配、DB 删除、数值边界及子进程 EOF 超时/取消 |
+| `Tests/LLMMonitorTests/CrossReviewRuntimeTests.swift` | 运行时交叉复核：停止/重启、排队配置、取消后成功、扫描代际原子应用与不完整结果发布顺序 |
+| `Tests/LLMMonitorTests/CrossReviewUITests.swift` | UI 交叉复核：节假日缓存恢复、设置目标重入、来源等价失效与悬停目标替换 |
 | `Tests/LLMMonitorTests/RuntimeLifecycleRegressionTests.swift` | 配置重建、启动收敛、取消恢复、Fleet 首扫保护与 Bark 队列冷却回归 |
 | `Tests/LLMMonitorTests/HolidaySourceLifecycleTests.swift` | 节假日草稿/已保存源隔离、旧请求拒收与新请求刷新状态回归 |
 | `Tests/LLMMonitorTests/SettingsNavigationTests.swift` | 实际消费设置页发布目标并清理导航请求 |

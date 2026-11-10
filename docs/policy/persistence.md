@@ -1,9 +1,9 @@
 # 持久化布局（Persistence Layout）
 
 应用自管的运行时数据**集中在 `~/Library/Application Support/LLM-monitor/`**（配置、日志、
-最近刷新状态、通知基线、scanner 缓存、节假日缓存），SQLite 临时副本另落在
-`NSTemporaryDirectory()`。权限策略统一 **0600 文件 / 0700 目录**，写入走
-`O_EXCL | O_CLOEXEC` 原子模式。
+最近刷新状态、通知基线、scanner 缓存、节假日缓存），SQLite 临时副本与 DSH 解压产物另落在
+`$TMPDIR/llm-monitor-sqlite/`。私有 JSON 文件使用 **0600 文件 / 0700 目录**，写入走
+`O_EXCL | O_CLOEXEC` 原子模式；日志 append、SQLite 与子进程输出各有专用 I/O 路径。
 
 > **Caches 是例外，不是应用布局的一部分**：`~/Library/Caches/com.yaktype.llm-monitor/`
 > 由 Foundation 的 `URLSession` 按 bundle id 自动创建（`Cache.db` + `fsCachedData`），
@@ -16,9 +16,9 @@
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
 - 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog](../../Sources/LLM-monitor/Services/AppLog.swift) 的 `resolveLogFileURL`（优先级见 `logging.md`）
-- 6× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh,agy}.json` [TokenMonitorPaths.swift:8](../../Sources/LLM-monitor/Services/TokenMonitorPaths.swift:8)
+- 7× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh,agy,codex}.json` [TokenMonitorPaths.swift](../../Sources/LLM-monitor/Services/TokenMonitorPaths.swift)
 - 节假日缓存 → `…/LLM-monitor/holidays-cache.json`（0600）[HolidayCalendarService.swift:37](../../Sources/LLM-monitor/Services/HolidayCalendarService.swift:37)
-- SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
+- SQLite 临时副本 → `$TMPDIR/llm-monitor-sqlite/<UUID>.db{,-wal,-shm}`；DSH 解压产物同目录、前缀 `llm-monitor-dsh-`，由 `SQLiteTempCopy.appTempDir` 管理
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；
 > 测试用 `ConfigStore(configURL:)` 注入。
@@ -26,7 +26,7 @@
 ## 权限 & 原子写
 
 [`FileManagerBox.writePrivate`](../../Sources/LLM-monitor/Services/Infra/FileManagerBox.swift:106) 是
-项目所有敏感文件写入的**唯一**入口：同目录 `.<basename>.<UUID>.tmp` →
+私有 JSON/快照文件的原子写入入口：同目录 `.<basename>.<UUID>.tmp` →
 `O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC` + `S_IRUSR | S_IWUSR`（0600 from birth）→
 完整 `write()` 循环（`EINTR` 重试）→ `fchmod` 0600 → `fsync` → `rename` 原子替换 →
 父目录 `fsync`（best effort + warning）。不存在 `Data.write(.atomic) → chmod` 的
@@ -50,9 +50,9 @@
 [ConfigStore.swift:653](../../Sources/LLM-monitor/Services/ConfigStore.swift:653)）：解析失败
 → 备份到 `config.json.corrupt-<UUID>.json`（0600）→ 备份成功用 `.default` 空配置运行
 （不覆盖原文件）→ 备份失败 `persistenceAllowed = false` 禁止自动写回。
-6× scanner 用 `ScannerIndexIO` 加载缓存，版本不匹配直接重扫全量重建；Antigravity
+7× scanner 用 `ScannerIndexIO` 加载缓存，版本不匹配直接重扫全量重建；Antigravity
 切换为数据库直读后也不再迁移旧 RPC 索引（`AntigravityFilesystem.loadIndex`）。
-当前版本号：Antigravity 12 / Minimax 20 / GLM-Zcode 14 /
+当前版本号：Antigravity 12 / Minimax 21 / GLM-Zcode 14 /
 OpenCode 3 / DSH 7 / Agy 8。Codex JSONL 索引为 v2。
-`SQLiteTempCopy.read` 把生产 `.db` 复制到 `NSTemporaryDirectory()` 绕开 IDE/Antigravity WAL
-锁（`CANTOPEN`/`BUSY`），per-scan UUID，权限 0600。
+`SQLiteTempCopy.read` 优先直读；遇文件级错误或 immutable 直读条件失效时，才把
+`.db` 与 WAL/SHM 复制到上述私有临时目录再试，per-scan UUID，文件权限 0600。

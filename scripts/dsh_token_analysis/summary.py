@@ -52,8 +52,14 @@ for path in sorted(PLAIN_DIR.glob("*.zstd")):
                 usage = data.get("usage") or {}
                 key = (sid, data.get("turn"), data.get("step"))
                 rec = call_totals.setdefault(
-                    key, {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid}
+                    key, {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid, "samples": []}
                 )
+                rec["samples"].append((ts, {
+                    "input": usage.get("inputTokens") or 0,
+                    "cache": usage.get("cacheReadTokens") or 0,
+                    "output": usage.get("outputTokens") or 0,
+                    "reasoning": usage.get("reasoningTokens") or 0,
+                }))
                 rec["input"] += usage.get("inputTokens") or 0
                 rec["cache"] += usage.get("cacheReadTokens") or 0
                 rec["output"] += usage.get("outputTokens") or 0
@@ -93,6 +99,8 @@ for i, (ts, rid, sid, turn, step) in enumerate(rate_limit_events, 1):
     day_start_ms = int(ts_dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
     win_start_ms = int(win.timestamp() * 1000)
     call = call_totals.get((sid, turn, step))
+    if call is not None and call["ts"] > ts:
+        call = None
     if call is None:
         for r in reversed(call_list):
             if r["sid"] == sid and r["ts"] <= ts:
@@ -100,13 +108,16 @@ for i, (ts, rid, sid, turn, step) in enumerate(rate_limit_events, 1):
                 break
     if call is None:
         call = {"input": 0, "cache": 0, "output": 0, "reasoning": 0}
+    else:
+        call = {k: sum(sample[k] for at, sample in call["samples"] if at <= ts)
+                for k in ("input", "cache", "output", "reasoning")}
     # Count every call in the interval once, including calls with no retry.
     day_total = 0
     win_total = 0
     for record in call_list:
         if record["ts"] > ts:
             break
-        total = sum(record[k] for k in ("input", "cache", "output", "reasoning"))
+        total = sum(sum(sample.values()) for at, sample in record["samples"] if at <= ts)
         if record["ts"] >= day_start_ms:
             day_total += total
         if record["ts"] >= win_start_ms:

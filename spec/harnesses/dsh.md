@@ -210,6 +210,9 @@ to the next line, so a replayed event can never stall the scan.
   Overflow and cancellation propagate immediately without trying the Node fallback;
   ordinary decoder failures may still fall back. Tests inject small output budgets
   and fake executables, including an endless writer, without producing GiB files.
+  Pipe collection uses nonblocking bounded reads under the same timeout/cancellation
+  loop, including EOF waiting after the direct child exits; an inherited pipe held
+  by a descendant cannot turn decoder cleanup into an unlimited blocking wait.
 - A corrupt or unreadable log does not abort the whole scan: `aggregateFiles` isolates
   the bad file, logs a warning (path + error summary), and keeps aggregating the rest.
   But a round that saw **any** failed file never becomes the new last-good: the scanner
@@ -230,7 +233,9 @@ to the next line, so a replayed event can never stall the scan.
 
 离线分析辅助脚本（`scripts/dsh_token_analysis/`）不参与 App 运行时：`summary.py` 与
 `analyze.py` 的 RATE_LIMIT 窗口/日累计按去重后的全部 call 起始时间求和，包含触发时刻、
-排除未来 call，不因多个 retry 重算同一 call；触发次数来自实际去重事件数。`cost.py`
+排除未来 call，不因多个 retry 重算同一 call；同一 call 的后续 usage 也必须按记录时间
+截断，不能把触发之后才出现的用量提前计入。当次调用列同样只显示截至触发时已观察到的
+usage；窗口归属仍使用 call 起始时间。触发次数来自实际去重事件数。`cost.py`
 与 `minimax_cost.py` 在无窗口、仅触发/仅未触发、零成本数据上输出空态或零值，不对空
 集合取极值/分位数、不以零值缩放。合成回归命令：
 `python -m unittest discover -s scripts/tests -v`（项目共享环境可用 `./.venv/bin/python`）。

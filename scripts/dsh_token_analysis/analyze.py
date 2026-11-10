@@ -126,8 +126,9 @@ rate_limit_events.sort(key=lambda r: r[0])
 call_totals: dict[tuple, dict] = {}
 for ts, sample_key, in_t, cr_t, out_t, reas_t, sid in usage_samples:
     rec = call_totals.setdefault(
-        sample_key, {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid}
+        sample_key, {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid, "samples": []}
     )
+    rec["samples"].append((ts, {"input": in_t, "cache": cr_t, "output": out_t, "reasoning": reas_t}))
     rec["input"] += in_t
     rec["cache"] += cr_t
     rec["output"] += out_t
@@ -141,7 +142,7 @@ call_timestamps = [r["ts"] for r in call_list]
 
 
 def total_for_range(start_ms: int, end_ms: int | None) -> dict:
-    """Sum usage tokens whose timestamp is in [start, end). end=None = +inf."""
+    """Calls start in [start, end); include only usage observed before end."""
     s = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "count": 0}
     for r in call_list:
         ts = r["ts"]
@@ -149,10 +150,10 @@ def total_for_range(start_ms: int, end_ms: int | None) -> dict:
             continue
         if end_ms is not None and ts >= end_ms:
             break
-        s["input"] += r["input"]
-        s["cache"] += r["cache"]
-        s["output"] += r["output"]
-        s["reasoning"] += r["reasoning"]
+        for observed_at, sample in r["samples"]:
+            if end_ms is None or observed_at < end_ms:
+                for key in ("input", "cache", "output", "reasoning"):
+                    s[key] += sample[key]
         s["count"] += 1
     return s
 
@@ -177,6 +178,8 @@ for i, (ts, rid, sid, turn, step, code, msg) in enumerate(rate_limit_events, 1):
     # whose ts is <= the rate-limit time.
     target_key = (sid, turn, step)
     call = call_totals.get(target_key)
+    if call is not None and call["ts"] > ts:
+        call = None
     if call is None:
         # Latest call in the same session at-or-before the rate limit
         for r in reversed(call_list):
@@ -185,6 +188,9 @@ for i, (ts, rid, sid, turn, step, code, msg) in enumerate(rate_limit_events, 1):
                 break
     if call is None:
         call = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid}
+    else:
+        call = {k: sum(sample[k] for at, sample in call["samples"] if at <= ts)
+                for k in ("input", "cache", "output", "reasoning")}
 
     call_str = (
         f"in={format_num(call['input'])} "

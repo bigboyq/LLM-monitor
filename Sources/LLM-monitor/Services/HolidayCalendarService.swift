@@ -56,9 +56,6 @@ final class HolidayCalendarService: ObservableObject {
     /// 当前 `shared` 表是否来自本地缓存（false = 内置快照或空表）。状态行展示用。
     @Published private(set) var resolvedFromCache: Bool = false
 
-    /// 本会话内最近一次成功取数所用的源字符串（会话内去重：启动 / config 变更
-    /// 多次触发同一源时只在第一次真刷）。
-    private var fetchedSource: String?
     /// 最近一次看到的配置源；config 变更检测基线（`adoptSource` seed，不触发取数）。
     private var lastSeenSource: String?
     private var refreshTask: Task<Void, Never>?
@@ -168,7 +165,6 @@ final class HolidayCalendarService: ObservableObject {
             let calendar = HolidayCalendar.make(document: document)
             HolidayCalendar.applyResolved(calendar)
             resolvedFromCache = true
-            fetchedSource = source
             let years: String
             if let range = calendar.coveredYears {
                 years = range.lowerBound == range.upperBound
@@ -189,13 +185,13 @@ final class HolidayCalendarService: ObservableObject {
         }
     }
 
-    /// 非强制取数的触发判定：bundledOnly 不刷；本会话已按该源刷过不刷；
-    /// 缓存缺失 / 损坏 / 来自其他源 / `fetchedAt` 过期才刷。
+    /// 非强制取数只由可用缓存去重；此前成功取数不代表缓存仍可恢复该表。
+    /// 缓存缺失 / 损坏 / 空表 / 来自其他源 / `fetchedAt` 过期才刷。
     private func shouldFetch(source: String) -> Bool {
         if case .bundledOnly = HolidayCalendar.parseSource(source) { return false }
-        if fetchedSource == source { return false }
         guard let data = try? Data(contentsOf: cacheURL),
-              let document = try? JSONDecoder().decode(HolidayCalendar.CacheDocument.self, from: data) else {
+              let document = try? JSONDecoder().decode(HolidayCalendar.CacheDocument.self, from: data),
+              !document.holidays.isEmpty else {
             return true
         }
         if document.source != source { return true }

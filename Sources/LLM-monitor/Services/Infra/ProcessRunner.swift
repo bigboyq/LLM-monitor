@@ -4,8 +4,8 @@ import Darwin
 /// 小型、同步的子进程执行器。
 ///
 /// stdout/stderr 在进程运行期间持续排空，避免 pipe 缓冲区填满后子进程与父进程
-/// 相互等待。调用线程以短间隔检查超时和 Swift Task 取消；本项目只用它执行
-/// `pgrep`/`lsof` 这类短命令。
+/// 相互等待。调用线程以短间隔检查超时和 Swift Task 取消；短命令与 DSH
+/// 流式解压共用同一套非阻塞管道排空、输出上限和退出语义。
 enum ProcessRunner {
     struct Result: Sendable {
         let terminationStatus: Int32
@@ -27,10 +27,8 @@ enum ProcessRunner {
         }
     }
 
-    /// stdout 经 pipe 分块写盘；超限只保留预算内字节，并让轮询终止子进程。
-    /// 回调不能抛错，写入失败在锁内保存，由调用线程统一上抛。
-    private final class BoundedFileOutput: @unchecked Sendable {
-        private let lock = NSLock()
+    /// stdout 经 pipe 分块写盘；超限只保留预算内字节，由同一轮询线程中止。
+    private final class BoundedFileOutput {
         private let handle: FileHandle
         private let limit: Int
         private var written = 0
@@ -42,8 +40,6 @@ enum ProcessRunner {
         }
 
         func append(_ data: Data) {
-            lock.lock()
-            defer { lock.unlock() }
             guard failure == nil, !data.isEmpty else { return }
             let remaining = limit - written
             do {
@@ -61,33 +57,7 @@ enum ProcessRunner {
         }
 
         var error: Error? {
-            lock.lock()
-            defer { lock.unlock() }
-            return failure
-        }
-
-        func recordFailure(_ error: Error) {
-            lock.lock()
-            defer { lock.unlock() }
-            if failure == nil { failure = error }
-        }
-    }
-
-    private final class LockedData: @unchecked Sendable {
-        private let lock = NSLock()
-        private var storage = Data()
-
-        func append(_ data: Data) {
-            guard !data.isEmpty else { return }
-            lock.lock()
-            storage.append(data)
-            lock.unlock()
-        }
-
-        func snapshot() -> Data {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
+            failure
         }
     }
 
@@ -98,14 +68,15 @@ enum ProcessRunner {
         standardOutputFile: URL? = nil,
         maximumOutputBytes: Int? = nil
     ) throws -> Result {
+        try Task.checkCancellation()
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
 
         let stdout = Pipe()
         let stderr = Pipe()
-        let stdoutData = LockedData()
-        let stderrData = LockedData()
+        var stdoutData = Data()
+        var stderrData = Data()
         let outputFileHandle: FileHandle?
         let boundedOutput: BoundedFileOutput?
         if let standardOutputFile {
@@ -141,54 +112,48 @@ enum ProcessRunner {
             process.standardOutput = stdout
         }
         process.standardError = stderr
-
-        if standardOutputFile == nil {
-            stdout.fileHandleForReading.readabilityHandler = { handle in
-                stdoutData.append(handle.availableData)
-            }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            stderrData.append(handle.availableData)
-        }
-
-        do {
-            try process.run()
-        } catch {
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
+        defer {
             try? outputFileHandle?.close()
-            throw error
+            try? stdout.fileHandleForReading.close()
+            try? stderr.fileHandleForReading.close()
+        }
+        let readStdout = standardOutputFile == nil || boundedOutput != nil
+        for handle in [stdout.fileHandleForReading, stderr.fileHandleForReading] {
+            let fd = handle.fileDescriptor
+            let flags = fcntl(fd, F_GETFL)
+            guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
         }
 
-        let boundedReadGroup = DispatchGroup()
-        if let boundedOutput {
-            // 单一 reader 负责整个 stdout 到 EOF，退出时等待它完成后再关文件。
-            // 不混用 readabilityHandler 与 readDataToEndOfFile，避免末块回调/关盘竞态。
-            boundedReadGroup.enter()
-            let reader = stdout.fileHandleForReading
-            DispatchQueue.global(qos: .utility).async {
-                defer { boundedReadGroup.leave() }
-                do {
-                    while let data = try reader.read(upToCount: 64 * 1024), !data.isEmpty {
-                        boundedOutput.append(data)
-                    }
-                } catch {
-                    boundedOutput.recordFailure(error)
-                }
+        try process.run()
+        try? stdout.fileHandleForWriting.close()
+        try? stderr.fileHandleForWriting.close()
+
+        // Read at most one bounded chunk from each pipe per turn. No blocking
+        // read/group wait may outlive the same timeout/cancellation checks,
+        // including when an exited process left a descendant holding a pipe.
+        func readChunk(_ handle: FileHandle, consume: (Data) -> Void) throws -> (read: Bool, eof: Bool) {
+            var bytes = [UInt8](repeating: 0, count: 64 * 1024)
+            let count = bytes.withUnsafeMutableBytes { buffer in
+                Darwin.read(handle.fileDescriptor, buffer.baseAddress, buffer.count)
             }
+            if count > 0 {
+                consume(Data(bytes.prefix(count)))
+                return (true, false)
+            }
+            if count == 0 { return (false, true) }
+            if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { return (false, false) }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
 
         let deadline = Date().addingTimeInterval(timeout)
         var terminalError: Error?
-        while process.isRunning {
-            if let error = boundedOutput?.error {
-                terminalError = error
-                process.terminate()
-                break
-            }
+        var stdoutEOF = !readStdout
+        var stderrEOF = false
+        while process.isRunning || !stdoutEOF || !stderrEOF {
             if Task<Never, Never>.isCancelled {
                 terminalError = CancellationError()
-                process.terminate()
                 break
             }
             if Date() >= deadline {
@@ -196,11 +161,35 @@ enum ProcessRunner {
                     executable: executable.lastPathComponent,
                     seconds: timeout
                 )
-                process.terminate()
                 break
             }
-            Thread.sleep(forTimeInterval: 0.01)
+            var readAny = false
+            do {
+                if !stdoutEOF {
+                    let next = try readChunk(stdout.fileHandleForReading) { data in
+                        if let boundedOutput { boundedOutput.append(data) }
+                        else { stdoutData.append(data) }
+                    }
+                    readAny = next.read
+                    stdoutEOF = next.eof
+                }
+                if !stderrEOF {
+                    let next = try readChunk(stderr.fileHandleForReading) { stderrData.append($0) }
+                    readAny = readAny || next.read
+                    stderrEOF = next.eof
+                }
+            } catch {
+                terminalError = error
+                break
+            }
+            if let error = boundedOutput?.error {
+                terminalError = error
+                break
+            }
+            if !readAny { Thread.sleep(forTimeInterval: 0.01) }
         }
+
+        if terminalError != nil, process.isRunning { process.terminate() }
 
         // pgrep/lsof 会响应 SIGTERM。短暂等待让 terminationStatus 和 pipe EOF
         // 稳定下来；若极端情况下仍未退出，再发送 interrupt。
@@ -223,23 +212,14 @@ enum ProcessRunner {
             }
         }
         process.waitUntilExit()
-        boundedReadGroup.wait()
-
-        stdout.fileHandleForReading.readabilityHandler = nil
-        stderr.fileHandleForReading.readabilityHandler = nil
-        if standardOutputFile == nil {
-            stdoutData.append(stdout.fileHandleForReading.readDataToEndOfFile())
-        }
-        stderrData.append(stderr.fileHandleForReading.readDataToEndOfFile())
-        try? outputFileHandle?.close()
 
         if let terminalError = terminalError ?? boundedOutput?.error {
             throw terminalError
         }
         return Result(
             terminationStatus: process.terminationStatus,
-            standardOutput: String(data: stdoutData.snapshot(), encoding: .utf8) ?? "",
-            standardError: String(data: stderrData.snapshot(), encoding: .utf8) ?? ""
+            standardOutput: String(data: stdoutData, encoding: .utf8) ?? "",
+            standardError: String(data: stderrData, encoding: .utf8) ?? ""
         )
     }
 }

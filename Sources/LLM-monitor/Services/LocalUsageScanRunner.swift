@@ -67,12 +67,14 @@ enum LocalUsageScanRunner {
         do {
             let result = try await work()
             // 完成时再 generation 比对 —— 中间可能被 cancel + 新 scan 抢了 generation
-            let finalLatest = await MainActor.run { latestGeneration() }
-            guard startedGeneration == finalLatest else {
-                logInfo("\(logTag) 完成时 generation 已变 (\(startedGeneration) → \(finalLatest)), 丢弃结果")
-                return
+            await MainActor.run {
+                let finalLatest = latestGeneration()
+                guard !Task.isCancelled, startedGeneration == finalLatest else {
+                    logInfo("\(logTag) 完成时任务已取消或 generation 已变 (\(startedGeneration) → \(finalLatest)), 丢弃结果")
+                    return
+                }
+                applyResult(result)
             }
-            await MainActor.run { applyResult(result) }
         } catch {
             // 跟 AppState 一样: 取消请求不污染 lastError.
             // 统一 filter 在 `CancellationFilter`，与 AppState 的 quota catch 共用。
@@ -81,14 +83,16 @@ enum LocalUsageScanRunner {
                 return
             }
             // 错误也走 generation 守门（防止 cancel 后错误也写回）
-            let finalLatest = await MainActor.run { latestGeneration() }
-            guard startedGeneration == finalLatest else {
-                logInfo("\(logTag) 出错时 generation 已变 (\(startedGeneration) → \(finalLatest)), 丢弃错误")
-                return
+            await MainActor.run {
+                let finalLatest = latestGeneration()
+                guard !Task.isCancelled, startedGeneration == finalLatest else {
+                    logInfo("\(logTag) 出错时任务已取消或 generation 已变 (\(startedGeneration) → \(finalLatest)), 丢弃错误")
+                    return
+                }
+                let message = error.localizedDescription
+                logError("\(logTag) failed: \(message)")
+                applyError(message)
             }
-            let message = error.localizedDescription
-            logError("\(logTag) failed: \(message)")
-            await MainActor.run { applyError(message) }
         }
     }
 }

@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 20,
+            version: 21,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 20,
+            version: 21,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -517,9 +517,9 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(rebuilt[0].ttftSeconds, 7.778, "重建样本 ttftSeconds 原样保留")
         XCTAssertNil(rebuilt[1].ttftSeconds, "重建样本 ttftSeconds 的 nil 同样保留")
 
-        // 缓存版本钉 20：修复残余 reasoning 分配后必须让旧缓存全量重建。
+        // 缓存版本钉 21：修复残余 reasoning 分配后必须让旧缓存全量重建。
         let saved = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: FileManagerBox())
-        XCTAssertEqual(saved.version, 20)
+        XCTAssertEqual(saved.version, 21)
     }
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
@@ -542,7 +542,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 20)
+        XCTAssertEqual(current.version, 21)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

@@ -71,6 +71,13 @@ Sleep health is refreshed at startup and wake, and the same deadline driver also
 a five-minute health boundary, so newly acquired sleep assertions or AC power changes
 are reflected without opening Settings or restarting the app.
 
+`stop()` 同时使当前配置代际及生命周期代际失效：即使 fetcher 忽略取消后成功返回，
+也不能写回旧额度、通知或 reset 排期。已排入主循环的配置发布与状态到 Fleet 的转发
+在停止期间不重启服务；显式再次 `start()` 清认证就绪缓存和 probe 结果，按 `ConfigStore.config`
+重建状态、重做凭据预检并检查节假日源变更，再恢复 watcher、同步和刷新。初次构造先 seed
+节假日源，仍由 App 入口负责第一次取数。排队的 startup reconcile 只属于创建它的那次生命周期，不能穿透
+stop/start 后抢先消费新一轮启动屏障。
+
 ## Provider State Machine
 
 ```swift

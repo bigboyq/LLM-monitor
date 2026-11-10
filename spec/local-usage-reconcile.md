@@ -42,6 +42,8 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 
 完整结果的 `onValidatedResult` 与 clean 独立：扫描期间再度 dirty 时仍解除初始化、保留 dirty；partial/失败不解除。Coordinator 在 MainActor 同步转发 result，再发布验证状态，避免 Fleet 先看到 initialized 却仍读取旧空缓存。Codex 结果必须经过当前配置代际及 `applyCodexUsageDetails` 接纳检查，未有可承载结果的 QuotaInfo 时只保留扫描缓存，不上报完整零值。
 
+partial 结果在 `lastResult` 发布前先标记 dirty/failed，再经 Coordinator 同步应用；即使同步观察者在 result 回调内立即构建报告，也不能把部分结果作为健康完整值写入 Fleet。完整结果仍先应用数据，再解除初始化与发布 clean。
+
 协调器只有一个待处理模式槽位，优先级为 `dirty < full < hardFull`；运行期间到达的请求只提升这个槽位，不再创建并行 reconcile。日历/时区失效使用单调 revision 标记：如果失效发生在当前事务期间，当前事务不能消费这次失效，事务结束后必须再执行一次 `hardFull`。
 
 ## Provider 策略矩阵
@@ -63,6 +65,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 4. regular Interval 从完整事务完成时间结算；**配置重载不取消在飞扫描**（扫描与配置无关），代价是可能多出一次扫描请求——该请求必须在 scanner 层**合并**：`LocalUsageScannerBase.scan(mode:)` 在 in-flight 期间把请求并入待执行槽位（更强模式优先），当前扫描 settle 后接续一轮，**任何时刻每个 scanner 至多一个在飞扫描**（重复触发不得演变成并发叠加）；旧 generation 在取消、stop 后不能写回新的 deadline、freshness 或 cache。
 5. 自动 batch 只触发一次 reconcile；启动错峰 quota 结束后只触发一次 cache-assisted-full。Provider 之间可以分批控制内存峰值，但不能把每个 Provider 拆成一次全局 full scan。
 6. Scanner 的结果必须区分完整和可重试的 partial；partial 可以暂时展示，但不能推进 freshness、日历签名或成功 fingerprint。旧 generation 不能释放新 generation 的 gate，也不能覆盖新的 deadline、freshness 或 cache。
+   `LocalUsageScanRunner` 的最终 generation / cancellation 检查与结果（或错误）发布在同一次 MainActor turn 内完成；不能在检查后再跨 actor hop 发布，让两步之间的停用/取消漏过守门并解除新来源的初始化状态。
 
 ## 执行阶段
 

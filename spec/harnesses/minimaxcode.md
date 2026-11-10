@@ -122,9 +122,10 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v17 / v18 | v17 显式零 TTFT；v18 改为 request−decode 原生差分推导，移除伪零值 |
    | v19 | 配对调用按本行字符拆分，未配对调用保留日级残余估算 |
    | v20 | 未配对样本只分配扣除配对/原生 reasoning 后的残余预算，按 output 权重结算并保留整数舍入余数；daily output/reasoning 取最终样本按日累计 |
+   | v21 | 原生调用单独累计固定预算与已知配对字符，同日 native / paired / fallback 混合时不再由日级 native 判断吞掉 fallback reasoning |
 
    当前 scanner 的 `currentVersion` 是 20（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 20)` 两处一致）。v20 的 bump 理由见
+   `loadIndex(currentVersion: 21)` 两处一致）。v21 的 bump 理由见
    `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），
    v12 / v13 / v14 / v15 见上表。
 
@@ -402,14 +403,14 @@ columnar 表待更多样本确认；若不落，只读 db 的 scanner 会漏 bra
 `applyReasoningSplit` 现为三条路径：
 
 ```swift
-if usage.reasoningTokens > 0 {
-    // 未来路径:账单/聚合层面已经分了 reasoning,直接用
+if usage.reasoningTokens > 0 && nativeSplits[day] == nil {
+    // 兼容只有日汇总、没有逐调用 native 清单的旧调用入口
     // P2-2 钳位: reasoning 超过 output 时截到 output,保证守恒
     reason     = min(usage.reasoningTokens, outputTokens)
     realOutput = outputTokens - reason
-} else if 当天有配对调用 {
-    // 调用级（2026-11-08 起）: reason = Σ配对调用拆分 + 未配对残余按日级比例
-    // （残余 raw = 当天 raw output − 配对覆盖账面 output；残余字符 = 日级字符 − 配对字符，
+} else if 当天有原生或配对调用 {
+    // reason = Σ原生调用 + Σ配对调用拆分 + 未配对残余按日级比例
+    // （残余 raw = 当天 raw output − 原生/配对调用账面 output；残余字符 = 日级字符 − 已知原生/配对字符，
     //  差减钳 0，无字符数据/无残余 → 残余分量 0 不猜）
 } else if let chars = perDayChars[day],
           let split = ReasoningCharSplit.split(
@@ -427,7 +428,8 @@ samples 侧同理：配对下标直接用调用级结果（`perSampleCallSplits`
 对齐），未配对样本仅分配 `adjustedPerDay.reasoning − 已配对/原生 reasoning`
 的非负残余预算，按剩余 output 权重逐条分配、最后一条承接整数舍入余数。
 最终 daily 的 output/reasoning 从这些样本按日累计，保持逐桶一致；不得把整天
-reasoning 比例再次乘到未配对调用。缓存 v20 一次性重建旧错误结果。
+reasoning 比例再次乘到未配对调用。reader 的 `perDayNativeSplits` 按调用累计原生桶与已知字符；
+单个原生调用不会短路同日其他调用的字符回退。缓存 v21 一次性重建旧混合分摊结果。
 重建构造点 `rebuiltSample` 对
 `sourceProviderID` / `durationSeconds` / `ttftSeconds` 原样透传。
 `outputTokens` itself is clamped with `max(usage.outputTokens, 0)` before the branch, so a
@@ -502,7 +504,7 @@ ZCode 的非智谱 provider 分片（`GlmZcodeDBReader`，day 级 / 行级）、
 - realOutput: 2,207,301 tokens (62.8%)
 - 守恒: ✓
 
-**Future-proof**: 当 minimax 切到 thinking model 时,`raw.reasoning` 或 `reasoning_tokens` 列会出现非零值。**P2-1 + P1/P2-1 修复**后,reader 的 per-day reasoning 表达式是 `TOTAL(MAX(MAX(COALESCE(reasoning_tokens,0),0.0), MAX(COALESCE(json_extract(safe_raw,'$.reasoning'),0),0.0)))` —— **per-row 取最大再 sum**(不是 `MAX(SUM, SUM)` 那种 group 后取 max,后者混合数据会算错,见 P1/P2-1 修复)。`safe_raw` 是 `CASE WHEN json_valid(t.raw) THEN t.raw ELSE '{}' END`,所以 `raw` 是非法 JSON 时该行按 0 参与而不是让整条查询失败。scanner 看到 `usage.reasoningTokens > 0` 走未来路径直接用账单,字符分摊路径变成 fallback。
+**Future-proof**: 当 minimax 切到 thinking model 时,`raw.reasoning` 或 `reasoning_tokens` 列会出现非零值。**P2-1 + P1/P2-1 修复**后,reader 的 per-day reasoning 表达式是 `TOTAL(MAX(MAX(COALESCE(reasoning_tokens,0),0.0), MAX(COALESCE(json_extract(safe_raw,'$.reasoning'),0),0.0)))` —— **per-row 取最大再 sum**(不是 `MAX(SUM, SUM)` 那种 group 后取 max,后者混合数据会算错,见 P1/P2-1 修复)。`safe_raw` 是 `CASE WHEN json_valid(t.raw) THEN t.raw ELSE '{}' END`,所以 `raw` 是非法 JSON 时该行按 0 参与而不是让整条查询失败。scanner 将原生调用逐行固定，其他配对/未配对调用继续各自字符分摊，不因同日出现一个原生值而关闭整天的回退。
 
 **P1-2 算法本质 — 估算,不是精确 token 统计 (v8 修)**: 字符数 ≠ token 数(中文 / 英文 / 代码 / JSON 密度不同,4-1 chars/token 范围)。算法用字符比例分摊 output_tokens:
 

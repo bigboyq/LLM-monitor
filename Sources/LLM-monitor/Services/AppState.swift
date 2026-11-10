@@ -182,6 +182,7 @@ final class AppState: ObservableObject {
     private var startupReconcilePendingProviderIDs: Set<String> = []
     private var startupReconcileCompleted = false
     private var isRunning = false
+    private var lifecycleGeneration: UInt64 = 0
     /// 上次推送 ZCode 运营活动通知的时间（按 delivery.id 记录，1 小时内不重复通知）
     private var lastMarketingNotificationTimes: [String: Date] = [:]
 
@@ -356,14 +357,10 @@ final class AppState: ObservableObject {
             self?.statusDidChange.send()
         }
 
-        rebuildStatuses()
-        start()
         // 节假日数据源：seed 源基线（后续 config 变更据此判定「源变了」）。
-        // 启动取数由 App 入口触发，不在测试会构造的 init/start 路径上发网络请求。
+        // 初次取数由 App 入口触发；先 seed，初次 start 的配置比较不会请求网络。
         holidayCalendarService.adoptSource(configStore.config.effectiveHolidaySource)
-        // Antigravity 凭据策略启动预检（2.5.0）：monitor 启动执行一次，结果
-        // 记忆到本会话；config 热重载时由 setupConfigSubscription 再次执行。
-        runAntigravityCredentialPreflight()
+        start()
         setupConfigSubscription()
     }
 
@@ -393,10 +390,19 @@ final class AppState: ObservableObject {
     // MARK: - 生命周期
 
     func start() {
+        lifecycleGeneration &+= 1
+        configurationGeneration &+= 1
         isRunning = true
+        // A stopped instance may have received configuration writes while its
+        // subscription was suspended. Restart from the current config snapshot.
+        authReadyCache.removeAll()
+        authProber.reset()
+        rebuildStatuses()
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
         applyAppearance()
+        runAntigravityCredentialPreflight()
+        holidayCalendarService.handleConfigChange(source: configStore.config.effectiveHolidaySource)
 
         // 多机联动：仅在配置显式启用时启动（缺省 false）。
         if configStore.config.effectiveSyncConfig.enabled {
@@ -428,6 +434,8 @@ final class AppState: ObservableObject {
 
     func stop() {
         isRunning = false
+        lifecycleGeneration &+= 1
+        configurationGeneration &+= 1
         pendingWakeup = false
         cancelAllRefreshTasks()
         manualRefreshGate.reset()
@@ -478,7 +486,7 @@ final class AppState: ObservableObject {
             // 所有 statuses 变更（quota 刷新、scanner 应用、rebuildStatuses）
             // 都驱动同步运行时：hub 防抖重建本机报告，node 唤醒推送循环。
             fleetSyncCancellable = statusDidChange.sink { [weak self] _ in
-                guard let self, let fleetSync = self.fleetSync else { return }
+                guard let self, self.isRunning, let fleetSync = self.fleetSync else { return }
                 fleetSync.update(config: self.configStore.config, statuses: self.statuses)
             }
             coordinator.start(config: configStore.config, statuses: statuses)
@@ -703,8 +711,10 @@ final class AppState: ObservableObject {
     private func scheduleStartupReconcileIfReady() {
         guard isRunning, !startupReconcileCompleted,
               startupReconcilePendingProviderIDs.isEmpty else { return }
+        let generation = lifecycleGeneration
         Task { @MainActor [weak self] in
-            guard let self, self.isRunning, !self.startupReconcileCompleted,
+            guard let self, self.isRunning, self.lifecycleGeneration == generation,
+                  !self.startupReconcileCompleted,
                   self.startupReconcilePendingProviderIDs.isEmpty,
                   let token = self.refreshScheduler.beginExternalJob() else { return }
             defer { self.refreshScheduler.endExternalJob(token) }
@@ -941,7 +951,7 @@ final class AppState: ObservableObject {
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] newConfig in
-                guard let self else { return }
+                guard let self, self.isRunning else { return }
                 logInfo("AppState: 检测到配置变更，开始重建状态并重新调度任务")
                 self.configurationGeneration &+= 1
                 self.authReadyCache.removeAll()
@@ -1242,7 +1252,7 @@ final class AppState: ObservableObject {
         let startedAt = Date()
         do {
             let fetchedInfo = try await fetcher.fetch(mode: mode)
-            guard startedAtGeneration == configurationGeneration else {
+            guard !Task.isCancelled, startedAtGeneration == configurationGeneration else {
                 logDebug("refreshProviderDirectly[\(providerID)]: 配置已变更，丢弃旧请求结果")
                 return .deferred
             }

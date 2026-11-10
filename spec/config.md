@@ -239,6 +239,8 @@ Package a DMG after building the app:
 `scripts/build-release.sh [version] [build-number]` 依次构建 App、DMG 和 SHA-256。
 构建号优先使用显式参数，否则读取 `.build_number`；新检出仓库缺少该忽略文件时使用
 `1`。此入口始终向 `build-app.sh` 传入显式构建号，不创建或递增 `.build_number`。
+`build-app.sh` 仅在未指定构建号时读取计数器（缺失时以内存值 `1` 起算），参数与
+图标校验通过后才写入递增值；显式构建号路径不初始化计数文件。
 
 需要 notarization 时，先用 `xcrun notarytool store-credentials` 保存凭据，再显式启用：
 

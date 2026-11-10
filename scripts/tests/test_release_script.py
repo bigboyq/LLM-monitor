@@ -9,6 +9,22 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'build-release.sh'
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def test_real_builder_does_not_seed_counter_for_explicit_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'VERSION').write_text('1.2.3\n')
+            shutil.copy2(SCRIPT.with_name('build-app.sh'), root / 'scripts/build-app.sh')
+            # Stop at the real pre-build icon gate, before invoking Swift/AppKit.
+            gate = root / 'scripts/sync-icon-assets.sh'
+            gate.write_text('#!/bin/bash\nexit 1\n')
+            gate.chmod(0o755)
+            result = subprocess.run(['bash', 'scripts/build-app.sh', '1.2.3', '1'],
+                                    cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('图标资产与源不同步', result.stderr)
+            self.assertFalse((root / '.build_number').exists(), '显式构建不得创建本地计数器')
+
     def test_build_number_precedence_and_fresh_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

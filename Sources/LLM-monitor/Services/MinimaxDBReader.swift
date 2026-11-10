@@ -30,6 +30,10 @@ struct MinimaxDBAggregate: Equatable, Sendable {
     /// scanner 的 daily 路径用它做「调用级 + 未配对残余」分摊；为空（旧 schema /
     /// 时长查询失败 / 全库无配对）时整天回退日级字符比例。
     let perDayPairedSplits: [Date: MinimaxPairedSplitDay]
+    /// Calls with native reasoning are fixed independently of character-only
+    /// calls on the same day. Matched message characters are removed from the
+    /// fallback character budget alongside the paired calls.
+    let perDayNativeSplits: [Date: MinimaxPairedSplitDay]
     /// 去重 session 数
     let sessionCount: Int
     /// 总 rounds (= 总行数)
@@ -50,6 +54,7 @@ struct MinimaxDBAggregate: Equatable, Sendable {
         perDay: [Date: MinimaxDailyUsage],
         perDayChars: [Date: MinimaxCharCounts],
         perDayPairedSplits: [Date: MinimaxPairedSplitDay] = [:],
+        perDayNativeSplits: [Date: MinimaxPairedSplitDay] = [:],
         sessionCount: Int,
         eventCount: Int,
         turnCount: Int,
@@ -60,6 +65,7 @@ struct MinimaxDBAggregate: Equatable, Sendable {
         self.perDay = perDay
         self.perDayChars = perDayChars
         self.perDayPairedSplits = perDayPairedSplits
+        self.perDayNativeSplits = perDayNativeSplits
         self.sessionCount = sessionCount
         self.eventCount = eventCount
         self.turnCount = turnCount
@@ -333,6 +339,7 @@ final class MinimaxDBReader {
         // 不做字符拆分，沿用账单。两者只依赖 FIFO 配对结果，与字符聚合的 degraded
         // 状态互不影响；时长查询失败 → 队列空 → 全部为空，scanner 整天回退日级。
         var perDayPairedSplits: [Date: MinimaxPairedSplitDay] = [:]
+        var perDayNativeSplits: [Date: MinimaxPairedSplitDay] = [:]
         var perSampleCallSplits: [MinimaxCallSplit?] = []
 
         // 逐次调用只保留 UI 需要的最近窗口。inputTokens 归一为
@@ -498,12 +505,20 @@ final class MinimaxDBReader {
                     )
                 }
                 perSampleCallSplits.append(callSplit)
+                let dayStart = calendar.startOfDay(
+                    for: Date(timeIntervalSince1970: Double(timestampMs) / 1000)
+                )
+                if buckets.reasoning > 0 {
+                    var native = perDayNativeSplits[dayStart] ?? .zero
+                    native.reasonTokens = SaturatingArithmetic.add(native.reasonTokens, buckets.reasoning)
+                    native.outputTokens = SaturatingArithmetic.add(native.outputTokens, buckets.output)
+                    native.thinkingChars = SaturatingArithmetic.add(native.thinkingChars, matchedEntry?.thinkingChars ?? 0)
+                    native.visibleChars = SaturatingArithmetic.add(native.visibleChars, matchedEntry?.msgChars ?? 0)
+                    perDayNativeSplits[dayStart] = native
+                }
                 if let callSplit, let entry = matchedEntry {
                     // 按天 Σ（与 scanner 既有口径一致：样本用 calendar.startOfDay
                     // 对齐 perDay 的本地日桶）。
-                    let dayStart = calendar.startOfDay(
-                        for: Date(timeIntervalSince1970: Double(timestampMs) / 1000)
-                    )
                     var paired = perDayPairedSplits[dayStart] ?? .zero
                     paired.reasonTokens = SaturatingArithmetic.add(paired.reasonTokens, callSplit.reasoningTokens)
                     paired.outputTokens = SaturatingArithmetic.add(paired.outputTokens, callSplit.outputTokens)
@@ -553,6 +568,7 @@ final class MinimaxDBReader {
             perDay: perDay,
             perDayChars: perDayChars,
             perDayPairedSplits: perDayPairedSplits,
+            perDayNativeSplits: perDayNativeSplits,
             sessionCount: sessionCount,
             eventCount: eventCount,
             turnCount: totalTurns,

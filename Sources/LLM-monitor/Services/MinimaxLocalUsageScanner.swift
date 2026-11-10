@@ -356,7 +356,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 let adjustedPerDay = Self.applyReasoningSplit(
                     perDay: aggregate.perDay,
                     perDayChars: safeChars,
-                    pairedSplits: aggregate.perDayPairedSplits
+                    pairedSplits: aggregate.perDayPairedSplits,
+                    nativeSplits: aggregate.perDayNativeSplits
                 )
                 let adjustedSamples = Self.applyReasoningSplit(
                     samples: aggregate.samples,
@@ -575,6 +576,8 @@ extension MinimaxLocalUsageScanner {
         var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
+            // v21：同日原生、配对与未配对调用分别固定/分摊，原生调用不再
+            // 短路整天字符估算；原生已配对字符从残余预算扣除。
             // v20：未配对样本仅分配扣除已配对/原生 reasoning 后的残余预算；
             // 舍入余数守恒，daily output/reasoning 同取最终样本按日累计。
             // v19：reasoning 拆分从日级大锅饭升级为调用级——`local_runtime_message_rows`
@@ -593,7 +596,7 @@ extension MinimaxLocalUsageScanner {
             // `$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，
             // 供窗口 tok/s 分母）。旧 samples 没有时长字段值，必须全量重建才能
             // 补上，指纹推进不够。
-            version: 20,
+            version: 21,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -699,7 +702,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 20,
+            currentVersion: 21,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"
