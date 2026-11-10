@@ -32,6 +32,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
             "周不是瓶颈时原始值与有效额度一致"
         )
         XCTAssertTrue(entry.hasAnyQuotaWindow)
+        XCTAssertEqual(entry.ringPresentation, .dualQuota)
     }
 
     func testWeeklyRingUsesRawPercentNotEquivalentMultiplier() {
@@ -52,6 +53,17 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertNil(entry.intervalFraction)
         XCTAssertEqual(entry.weeklyFraction ?? -1, 0.70, accuracy: 0.0001)
         XCTAssertTrue(entry.hasAnyQuotaWindow)
+        XCTAssertEqual(entry.ringPresentation, .singleQuota(.weekly))
+    }
+
+    func testExhaustedSingleWindowStillHasQuotaRingPresentation() {
+        // A zero remaining fraction is a real exhausted window, not a missing window.
+        let status = makeStatus(id: "interval_only", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 0),
+        ])))
+        let entry = EdgeDockProjection.entries(from: [status])[0]
+        XCTAssertEqual(entry.intervalFraction, 0)
+        XCTAssertEqual(entry.ringPresentation, .singleQuota(.interval))
     }
 
     func testProjectionUsesWorstModelNotAveragePerWindow() {
@@ -78,6 +90,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertNil(entry?.intervalFraction)
         XCTAssertNil(entry?.weeklyFraction)
         XCTAssertFalse(entry?.hasAnyQuotaWindow ?? true)
+        XCTAssertEqual(entry?.ringPresentation, .unknown)
     }
 
     func testDeepseekBalanceAvailabilityDoesNotBecomeAFiveHourRing() {
@@ -91,6 +104,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertNil(availableEntry.rawIntervalFraction)
         XCTAssertNil(availableEntry.weeklyFraction)
         XCTAssertFalse(availableEntry.hasAnyQuotaWindow)
+        XCTAssertEqual(availableEntry.ringPresentation, .balanceStatus)
         XCTAssertNil(availableEntry.intervalHealth, "余额 provider 没有独立的 5h 窗口健康档")
         XCTAssertEqual(availableEntry.health, .healthy, "整体健康档仍沿用现有余额可用性算法")
         XCTAssertEqual(availableEntry.balanceAvailable, true)
@@ -107,8 +121,16 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertNil(unavailableEntry.intervalHealth, "余额 provider 没有独立的 5h 窗口健康档")
         XCTAssertEqual(unavailableEntry.health, .critical, "余额不可用仍保持现有整体告急色档")
         XCTAssertEqual(unavailableEntry.balanceAvailable, false)
+        XCTAssertEqual(unavailableEntry.ringPresentation, .balanceStatus)
         XCTAssertEqual(EdgeDockProjection.balanceLabel(available: unavailableEntry.balanceAvailable), "不可用")
         XCTAssertEqual(EdgeDockProjection.balanceCaption(available: unavailableEntry.balanceAvailable), "账户不可用")
+
+        let unknown = makeStatus(id: "deepseek", kind: .deepseek, state: .ready)
+        XCTAssertEqual(
+            EdgeDockProjection.entries(from: [unknown], at: Self.makeNow).first?.ringPresentation,
+            .balanceStatus,
+            "DeepSeek 没有缓存余额时仍是余额状态圈，而非伪额度窗口"
+        )
     }
 
     func testProjectionKeepsLastSuccessWhileLoading() {
@@ -118,6 +140,11 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
             makeStatus(id: "loading", state: .loading(lastSuccess: info)),
             makeStatus(id: "failed", state: .failed(message: "boom", lastSuccess: info)),
         ] {
+            XCTAssertEqual(
+                EdgeDockProjection.entries(from: [status], at: Self.makeNow).first?.ringPresentation,
+                .dualQuota,
+                "loading/failed state keeps the cached dual-window presentation"
+            )
             XCTAssertEqual(
                 EdgeDockProjection.intervalFraction(status, at: Date()) ?? -1, 0.42, accuracy: 0.0001
             )
@@ -130,7 +157,9 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     func testProjectionFailedWithoutCacheHasNoHealth() {
         let failed = makeStatus(id: "failed", state: .failed(message: "boom", lastSuccess: nil))
         XCTAssertNil(EdgeDockProjection.intervalFraction(failed, at: Date()))
-        XCTAssertNil(EdgeDockProjection.entries(from: [failed]).first?.health)
+        let entry = EdgeDockProjection.entries(from: [failed]).first
+        XCTAssertNil(entry?.health)
+        XCTAssertEqual(entry?.ringPresentation, .unknown)
     }
 
     func testProjectionSkipsModelsWithoutActiveWindow() {
@@ -586,6 +615,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         ])))
         let intervalOnlyEntry = EdgeDockProjection.entries(from: [intervalOnly], at: Self.makeNow)[0]
         XCTAssertEqual(intervalOnlyEntry.intervalHealth, .warning)
+        XCTAssertEqual(intervalOnlyEntry.ringPresentation, .singleQuota(.interval))
         XCTAssertNil(intervalOnlyEntry.weeklyHealth, "纯 5h 型没有周窗口")
         XCTAssertNil(intervalOnlyEntry.weeklyEscalationHealth, "没有周信息就没有可提示的升级")
 

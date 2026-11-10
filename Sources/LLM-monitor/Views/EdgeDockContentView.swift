@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// 边缘状态窗的内容：一列 provider 双环。
+/// 边缘状态窗的内容：每个 provider 一个或两个 quota 窗口环。
 ///
 /// 结构由外向内三层：
-/// - **外环** = 5h 有效额度（min(5h 剩余, 周剩余 × 周等效倍率 N)，与状态栏中心扇形同口径，
+/// - **外环** = 双窗口时的 5h 有效额度（min(5h 剩余, 周剩余 × 周等效倍率 N)，与状态栏中心扇形同口径，
 ///   见 `EdgeDockProjection.intervalFraction`）
-/// - **内环** = 周窗口剩余比例
+/// - **内环** = 双窗口时的周窗口剩余比例；单窗口 provider 把对应窗口画在外环位置
 /// - **中心** = Provider 品牌图标（`BrandLogoView`，与菜单卡片同源）
 ///
 /// 背景用 `EdgeDockTab`：贴屏幕那一侧是直角、与屏幕边缘连成一条线；
@@ -226,7 +226,7 @@ struct EdgeDockContentView: View {
         )
     }
 
-    /// 单个 provider 的圆：完整形态 = 双环 + 品牌图标；简版 = 缩到 14pt 的单环
+    /// 单个 provider 的圆：完整形态按实际窗口数绘单环或双环，并保留品牌图标；简版 = 缩到 14pt 的单环
     /// （周更紧时环心多一个升级提示点，见 `weeklyEscalationHealth`）。
     ///
     /// 两种形态是**同一棵树的插值**而不是两套分支：外环直径、弧长随
@@ -234,34 +234,42 @@ struct EdgeDockContentView: View {
     /// 长出 / 收回而不是瞬间换内容。简版单环取 5h 有效额度、没有 5h 窗口的退到
     /// 周窗口（与数值文字同一取值口径）。
     private func circle(for entry: EdgeDockEntry) -> some View {
-        let hasNoWindow = !entry.hasAnyQuotaWindow
-        let ringHealth = hasNoWindow
-            ? entry.health
-            : (controller.config.independentRingColors
-                ? (entry.intervalHealth ?? entry.weeklyHealth)
-                : entry.health)
-        let emptyRingTint = hasNoWindow && entry.health != nil
+        let presentation = entry.ringPresentation
+        let isCompact = controller.isCompactAppearance
+        let visibleFraction: Double? = {
+            if isCompact { return entry.intervalFraction ?? entry.weeklyFraction }
+            return switch presentation {
+            case .dualQuota, .singleQuota(.interval): entry.intervalFraction
+            case .singleQuota(.weekly): entry.weeklyFraction
+            case .balanceStatus, .unknown: nil
+            }
+        }()
+        let ringHealth: HealthLevel? = {
+            guard controller.config.independentRingColors else { return entry.health }
+            return switch presentation {
+            case .dualQuota, .singleQuota(.interval): entry.intervalHealth
+            case .singleQuota(.weekly): entry.weeklyHealth
+            case .balanceStatus, .unknown: entry.health
+            }
+        }()
+        let emptyRingTint = presentation == .balanceStatus && entry.health != nil
             ? healthTint(for: entry.health)
             : nil
         return ZStack {
             ring(
-                fraction: controller.isCompactAppearance
-                    ? (entry.intervalFraction ?? entry.weeklyFraction)
-                    : entry.intervalFraction,
-                diameter: controller.isCompactAppearance
+                fraction: visibleFraction,
+                diameter: isCompact
                     ? compactMetrics.diameter
                     : EdgeDockGeometry.outerRingDiameter,
-                lineWidth: controller.isCompactAppearance
+                lineWidth: isCompact
                     ? compactMetrics.ringLineWidth
                     : EdgeDockGeometry.ringLineWidth,
                 emptyTint: emptyRingTint,
-                // 外环读 5h 窗口的色档；简版只有一环，取值口径必须与它的**弧长**
-                // 回退一致（没有 5h 窗口时退到周窗口），否则会出现"弧长画的是周
-                // 窗口、颜色说的是 5h 窗口"的错配。
+                // 单窗口时颜色与弧长读取同一个窗口；双窗口外环仍读取有效 5h。
                 tint: healthTint(for: ringHealth)
             )
 
-            if !controller.isCompactAppearance {
+            if !isCompact, presentation == .dualQuota {
                 // 内环（周窗口）
                 ring(
                     fraction: entry.weeklyFraction,
@@ -270,12 +278,14 @@ struct EdgeDockContentView: View {
                     // 层级消失。取值理由见 `EdgeDockGeometry.innerRingLineWidth`。
                     lineWidth: EdgeDockGeometry.innerRingLineWidth,
                     emptyTint: emptyRingTint,
-                    tint: healthTint(for: hasNoWindow
-                        ? entry.health
-                        : (controller.config.independentRingColors ? entry.weeklyHealth : entry.health))
+                    tint: healthTint(for: controller.config.independentRingColors
+                        ? entry.weeklyHealth
+                        : entry.health)
                 )
                 .transition(.opacity)
+            }
 
+            if !isCompact {
                 // 中心品牌图标。尺寸**传给** `BrandLogoView` 而不是在外面套
                 // `.frame(width: 6, height: 6)`：外层 frame 不会缩放一个自带固定
                 // frame 的子视图，只会把 18pt 的图居中摆在 6pt 的框里（不裁剪），
@@ -301,10 +311,10 @@ struct EdgeDockContentView: View {
             }
         }
         .frame(
-            width: controller.isCompactAppearance
+            width: isCompact
                 ? compactMetrics.diameter
                 : EdgeDockGeometry.diameter,
-            height: controller.isCompactAppearance
+            height: isCompact
                 ? compactMetrics.diameter
                 : EdgeDockGeometry.diameter
         )

@@ -50,6 +50,19 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// **仅周窗口**的健康档位（同上，取最差档）。nil = 没有周窗口。
     let weeklyHealth: HealthLevel?
 
+    /// The permanent dock has one visual ring unless both quota windows are present.
+    /// Balance providers carry availability health but no consumable fraction; providers
+    /// without a successful snapshot remain an unknown single track.
+    var ringPresentation: EdgeDockRingPresentation {
+        switch (intervalFraction != nil, weeklyFraction != nil, kind == .deepseek) {
+        case (true, true, _): .dualQuota
+        case (true, false, _): .singleQuota(.interval)
+        case (false, true, _): .singleQuota(.weekly)
+        case (false, false, true): .balanceStatus
+        default: .unknown
+        }
+    }
+
     /// **周额度升级提示**档位：周窗口严格差于 5 小时窗口时返回周档位，否则 nil。
     ///
     /// 简版（收起形态 / 小圆环）只有一环，画的是 5h 有效额度
@@ -79,6 +92,18 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     var hasAnyQuotaWindow: Bool {
         intervalFraction != nil || weeklyFraction != nil
     }
+}
+
+enum EdgeDockQuotaWindow: Equatable, Sendable {
+    case interval
+    case weekly
+}
+
+enum EdgeDockRingPresentation: Equatable, Sendable {
+    case dualQuota
+    case singleQuota(EdgeDockQuotaWindow)
+    case balanceStatus
+    case unknown
 }
 
 /// `[ProviderStatus]` → 边缘窗圆环条目。纯函数，无 AppKit 依赖，可注入固定 `now` 测试。

@@ -44,6 +44,7 @@ extension EdgeDockController {
             // 期间点到那个位置，不该把看不见的 dock 拖走再把新位置写进配置。
             if let panel, panel.isVisible, panel.frame.contains(NSEvent.mouseLocation) {
                 isDragging = true
+                let mouse = NSEvent.mouseLocation
                 // 按下即作废挂起的收起与选择：拖拽期间收起毫无意义，且释放接管会打断
                 // 正在进行的事件序列。形态过渡守卫一并解除，拖拽自己接管 frame。
                 cancelPendingCollapse()
@@ -56,8 +57,12 @@ extension EdgeDockController {
                 // 真实可视区同理：mousedown 探一次（当前屏 + 候选屏），见
                 // `dragFrameByDisplayID`。
                 primeDragFrames()
-                pressScreenLocation = NSEvent.mouseLocation
+                pressScreenLocation = mouse
                 pressBecameDrag = false
+                dragGrabFraction = EdgeDockGeometry.grabFraction(
+                    forMouse: mouse, in: panel.frame, edge: config.edge
+                )
+                lastDragMouseLocation = nil
                 // 上一段拖拽的临时位置不能带进这一次：没越过阈值就松手时
                 // `finishPressOrDrag` 会直接返回，留着就会写回一个陈旧的 offset。
                 dragOffset = nil
@@ -161,11 +166,19 @@ extension EdgeDockController {
     /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 点击刷新或保持现状。
     func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
+        // mouse-up 本身可能是阈值后的首个事件，也可能比最后一个 dragged 坐标更靠前。
+        // 经过同一入口既补足拖动判定，也确保最终 frame/offset 对应松手坐标。
+        if pressScreenLocation != nil, lastDragMouseLocation != mouse {
+            dragMoved(at: mouse)
+        }
         isDragging = false
+        pressScreenLocation = nil
+        lastDragMouseLocation = nil
         // 无论是否越过阈值都要清干净：阈值内松手时不该把上一次拖拽留下的偏移
         // 写进 `config`。
         guard pressBecameDrag, let offset = dragOffset else {
             dragOffset = nil
+            dragGrabFraction = nil
             // Hit test for dock circle click:
             let entries = orderedEntries()
             let panelFrame = panel?.frame ?? .zero
@@ -185,6 +198,7 @@ extension EdgeDockController {
             return
         }
         dragOffset = nil
+        dragGrabFraction = nil
         applyRuntimeConfig { $0.offset = offset }
         // 跨屏拖拽后目标屏变了，而全屏判定还停在**按下那块屏**的值——拖拽
         // 本身不触发激活 / Space 切换，没人会来刷新它。先重判（可能翻转并

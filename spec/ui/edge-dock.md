@@ -26,16 +26,18 @@ provider-level one, and would push the window past a glanceable length.
 
 ### Circle anatomy
 
-Outside-in, three layers at a 38pt diameter:
+Outside-in, the 38pt circle uses one full-size quota ring when a provider has one
+window, and two concentric rings only when it has both 5h and weekly windows:
 
 | Layer | Meaning | Source |
 |---|---|---|
-| **Outer ring** | Effective 5h quota = per-model `min(5h remaining, weekly remaining × N)` via `aggregateActualAvailable` — the same caliber as the iconDuo centre fan / `aggregateHealthLevel` | **worst** model by that effective quota |
-| **Inner ring** | Weekly window remaining | `weeklyRemainingPercent`, **worst** model, **raw** (not multiplied by `weeklyEquivalentMultiplier` — the inner ring answers "how much weekly quota is left", and multiplying by the equivalence factor N would stop being that) |
+| **Single ring** | The only available quota window: effective 5h quota when present, otherwise weekly quota | **worst** model in that window; the ring fills the standard full-size ring |
+| **Outer ring (dual-window providers only)** | Effective 5h quota = per-model `min(5h remaining, weekly remaining × N)` via `aggregateActualAvailable` — the same caliber as the iconDuo centre fan / `aggregateHealthLevel` | **worst** model by that effective quota |
+| **Inner ring (dual-window providers only)** | Weekly window remaining | `weeklyRemainingPercent`, **worst** model, **raw** (not multiplied by `weeklyEquivalentMultiplier` — the inner ring answers "how much weekly quota is left", and multiplying by the equivalence factor N would stop being that) |
 | **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 14pt (`EdgeDockGeometry.iconSize`) — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.72 × 38 = 27.4pt`, so its inner edge sits at a 12.2pt radius against the icon's 7pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
 
 Each ring's length is the **minimum** across the provider's models that have that
-window — and the outer ring reads the **effective 5h quota** above, not the raw 5h
+window — and a 5h ring reads the **effective 5h quota** above, not the raw 5h
 percentage: a weekly budget that is tighter than the 5h window once the equivalent
 multiplier is applied shrinks the outer ring with it (antigravity's Claude/GPT group
 at N = 1 is the typical case). The inner ring keeps the **raw** weekly remaining.
@@ -115,17 +117,19 @@ would say nothing. The verdict reads `weeklyEscalationHealth` directly and is
 **not** affected by `independentRingColors` — that switch governs ring tints, not
 whether the weekly window has escalated past the 5h one.
 
-A provider with only one of the two windows draws just that ring; a provider with
-neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
-on both when aggregate health is known, reading as "health is known, remaining
-quantity is not". The dim full rings use the aggregate health tint at reduced
-opacity; no arc or quota number is invented. With no known health, only the neutral
-track is shown — a *missing* window gets a `nil` per-window health rather than a
-guessed colour.
+A provider with only one quota window draws that reading in one full-size ring in
+both expanded and compact forms; the second, smaller ring is reserved for actual
+weekly quota data on dual-window providers. A provider with no quota window
+(balance-only DeepSeek or no successful fetch yet) also draws one ring only. For
+DeepSeek, known account availability uses a dimmed full ring in its health colour,
+reading as "availability is known, remaining quantity is not"; unknown availability
+shows only the neutral track. No percent, arc, or denominator is invented. Other
+providers with no successful data likewise show one neutral track.
 
 DeepSeek's legacy `intervalStatus == .present` is account availability, not a 5h
-quota window. Its entry therefore keeps interval/weekly ring fractions and health
-nil, while retaining the existing aggregate health level. The persistent number
+quota window. Its entry therefore keeps interval/weekly ring fractions and
+per-window health nil, while retaining the existing aggregate health level for its
+single availability ring. The persistent number
 says `可用` / `不可用`,
 and VoiceOver says `账户可用` / `账户不可用` with the health label. If there is no
 successful cached balance yet, the label is `—` / `余额状态未知`. It must never
@@ -1328,8 +1332,14 @@ chosen baseline, so after upgrading an existing offset lands a few pixels to a f
 pixels from where it used to (still on screen); one drag re-anchors it, and the persisted
 format is unchanged.
 
-Dragging moves the panel freely (`isMovableByWindowBackground`); on release it snaps
-to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndSave`.
+Dragging is driven by the pointer while keeping the panel attached to a screen edge;
+the pointer keeps its normalized grab position within the dock, including when the
+dock changes orientation. Edge choice uses Euclidean distance to the four finite edge
+segments, so a pointer outside a screen or in a gap between displays does not turn a
+negative signed distance into a false nearest edge. The current edge wins ties, and a
+new edge must be closer by more than `edgeSwitchMargin` (40pt). Mouse-up is processed
+as the final drag position (and may itself cross the 4pt drag threshold) before
+`{edge, offset, screenUUID}` is persisted through `ConfigStore.applyAndSave`.
 
 | State | Dock |
 |---|---|

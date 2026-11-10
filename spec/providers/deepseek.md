@@ -30,6 +30,7 @@ DSH 与 OpenCode 的 raw input 本就是 uncached）；余额金额和本地 API
 | Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Balance unit | `is_available` + `balance_infos[]`（`currency` / `total_balance` / `granted_balance` / `topped_up_balance`） |
 | Display | 余额行（`DeepseekBalanceRow`）标题 `API 账户余额`，右端 `planLabel` 金额（`¥100.50`）；`充值: ¥90.50` / `赠金: ¥10.00` 与高峰指示器同处该行第二行（单行截断，完整文本走 tooltip） |
+| Edge dock | A single full-size status ring; known availability is shown with the existing health tint and the circle-below label `可用` / `不可用`. Unknown availability shows the neutral track and `—`; the dock never maps the compatibility 0/100 health value to a quota arc. |
 | Remaining percent | `100` if `is_available` 且 `total_balance > 0`，否则 `0` |
 | Windows | interval `.present` 仅保留旧状态/可用性语义，weekly `.absent`；DeepSeek 没有 5h / 周额度池与重置时间 |
 | Peak hours | 默认北京时间工作日 9:00–12:00 & 14:00–18:00，默认高峰倍率 2×（`DeepseekPeakWindow.defaultWindow`）；Provider JSON 的 `peakWindow` 可覆盖时段、工作日限制与倍率，设置页只读展示。默认排除周末与法定节假日（Rule A） |
@@ -85,7 +86,7 @@ The DeepSeek balance endpoint returns per-currency entries. The fetcher uses the
 `healthLevel` 走 interval 分支：余额可用 → 100% → healthy，不可用 → 0% → critical。
 0/100% 的"百分比"不会被当作进度条展示：`ProviderCardView.shouldUseDeepseekBalanceRow`
 对 `.deepseek` 直接路由到 `DeepseekBalanceRow`（余额金额行），绕过百分比进度条。
-该 model 的 interval 字段仍为 `.present` 仅为了既有额度状态与 100/0 可用性语义；不能将它显示为「5h」或展示重置日期。共享 Plan 的余额行是唯一明细来源，显示账户总余额以及真实充值 / 赠金；菜单折叠摘要显示总余额与赠金。额度窗口历史分析表对 DeepSeek 隐藏，不重复解释本地 token 消耗为额度窗口，也不另画一份余额表。
+该 model 的 interval 字段仍为 `.present` 仅为了既有额度状态与 100/0 可用性语义；不能将它显示为「5h」或展示重置日期。边缘状态窗用单个完整状态环表达可用性健康档（已知时按健康色绘制低透明度满环，未知时仅显示中性底槽），保留圈下「可用」/「不可用」/「—」标签；不把该字段解释为剩余比例，也不绘制第二个周环。共享 Plan 的余额行是唯一金额明细来源，显示账户总余额以及真实充值 / 赠金；菜单折叠摘要显示总余额与赠金。额度窗口历史分析表对 DeepSeek 隐藏，不重复解释本地 token 消耗为额度窗口，也不另画一份余额表。
 
 ### Aggregation & notification semantics（纯余额口径）
 

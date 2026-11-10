@@ -180,6 +180,10 @@ final class EdgeDockController: ObservableObject {
     /// 把 dock 拖走几像素。
     var pressScreenLocation: CGPoint?
     var pressBecameDrag = false
+    /// 鼠标按下点在 dock 沿边方向的位置比例；边方向或窗口大小变化时复用。
+    var dragGrabFraction: Double?
+    /// 最后一次实际驱动窗口的鼠标位置，用于 mouse-up 补齐未单独派发的末帧。
+    var lastDragMouseLocation: CGPoint?
     /// 挂起中的延时收起任务。鼠标离开保持区时排入，0.5s 后触发；期间鼠标回来
     /// 或状态变化（拖动 / 隐藏 / 释放接管）则取消。是**固定 deadline** 而不是
     /// 防抖：巡检定时器每 0.2s 会重复走"还在外面"的分支，防抖式重排会让
@@ -500,6 +504,8 @@ final class EdgeDockController: ObservableObject {
         isDragging = false
         pressScreenLocation = nil
         pressBecameDrag = false
+        dragGrabFraction = nil
+        lastDragMouseLocation = nil
         dragEntryCount = 0
         dragOffset = nil
         dragFrameByDisplayID = [:]

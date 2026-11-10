@@ -235,15 +235,22 @@ enum EdgeDockGeometry {
         in visibleFrame: CGRect,
         edgePriority: [DockEdge] = DockEdge.allCases
     ) -> DockEdge {
-        let distances: [(DockEdge, CGFloat)] = edgePriority.map { edge in
-            switch edge {
-            case .left:   return (edge, point.x - visibleFrame.minX)
-            case .right:  return (edge, visibleFrame.maxX - point.x)
-            case .top:    return (edge, visibleFrame.maxY - point.y)
-            case .bottom: return (edge, point.y - visibleFrame.minY)
-            }
-        }
-        return distances.min(by: { $0.1 < $1.1 })?.0 ?? .right
+        let distances = edgeDistances(to: point, in: visibleFrame)
+        let ordered = edgePriority.compactMap { edge in distances[edge].map { (edge, $0) } }
+        return ordered.min(by: { $0.1 < $1.1 })?.0 ?? .right
+    }
+
+    /// 鼠标到四条**有限边线段**的欧氏距离。点在可视区内时等于各边的垂直距离；
+    /// 点落在区外时，最近点会钳在边线端点，不会把负的“有符号距离”误当成更近。
+    private static func edgeDistances(to point: CGPoint, in frame: CGRect) -> [DockEdge: CGFloat] {
+        let x = min(max(point.x, frame.minX), frame.maxX)
+        let y = min(max(point.y, frame.minY), frame.maxY)
+        return [
+            .left: hypot(point.x - frame.minX, point.y - y),
+            .right: hypot(point.x - frame.maxX, point.y - y),
+            .top: hypot(point.x - x, point.y - frame.maxY),
+            .bottom: hypot(point.x - x, point.y - frame.minY),
+        ]
     }
 
     /// 悬停时 popover 与圆环之间的间距（pt）。
@@ -283,16 +290,17 @@ enum EdgeDockGeometry {
     /// 否则在角落附近来回横跳会疯狂闪边。
     static let edgeSwitchMargin: CGFloat = 40
 
-    /// 拖拽 → 沿贴靠边的归一化位置。
+    /// 拖拽 → 沿贴靠边的归一化位置，保留按下点在窗口中的相对位置。
     ///
-    /// 只取**沿边方向**的鼠标坐标：竖排边只看 y，横排边只看 x。垂直于边的方向由
-    /// `frame` 钉死在屏幕边缘，所以拖动天然就是"沿着边缘滑动"，不会把窗口拖到
-    /// 屏幕中间去。
+    /// 只取**沿边方向**的鼠标坐标，并按 `grabFraction` 恢复窗口中心：竖排边只看 y，
+    /// 横排边只看 x。比例按 Provider 阅读顺序定义（竖排上到下、横排左到右），
+    /// 因此拖到另一条边时仍抓住相同相对位置。垂直于边的方向由 `frame` 钉死在边缘。
     static func offsetAlongEdge(
         forMouse mouse: CGPoint,
         dockSize: CGSize,
         visibleFrame: CGRect,
-        edge: DockEdge
+        edge: DockEdge,
+        grabFraction: Double = 0.5
     ) -> Double {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return 0.5 }
         // 窗口两个轴都要各自钳到可用区——不按朝向分叉，竖排横排用的是同一句。
@@ -306,10 +314,29 @@ enum EdgeDockGeometry {
         // 窗口和可用区域一样大时没有行程可言。
         guard travel > 0 else { return 0.5 }
         let along = edge.isVertical ? mouse.y : mouse.x
+        let length = edge.isVertical ? clamped.height : clamped.width
+        let fraction = grabFraction.isFinite ? min(max(grabFraction, 0), 1) : 0.5
+        // Provider 阅读顺序沿竖边是从上到下，沿横边是从左到右；竖边因此需要翻转
+        // 物理 y 方向，才能在换边时仍抓住同一个序位。
+        let desiredCenter = edge.isVertical
+            ? along + (fraction - 0.5) * length
+            : along + (0.5 - fraction) * length
         let center = edge.isVertical ? visibleFrame.midY : visibleFrame.midX
-        let t = 0.5 + (along - center) / travel
+        let t = 0.5 + (desiredCenter - center) / travel
         guard t.isFinite else { return 0.5 }
         return min(max(t, 0), 1)
+    }
+
+    /// 按下点在窗口沿边方向的位置比例。跨边/形态变化后可按新窗口长度复用，
+    /// 使光标仍落在窗口中相同比例的位置，而不是突然跳到窗口中心。
+    static func grabFraction(forMouse mouse: CGPoint, in frame: CGRect, edge: DockEdge) -> Double {
+        let length = edge.isVertical ? frame.height : frame.width
+        guard length > 0 else { return 0.5 }
+        let along = edge.isVertical ? mouse.y : mouse.x
+        let fraction = edge.isVertical
+            ? (frame.maxY - along) / length
+            : (along - frame.minX) / length
+        return Double(min(max(fraction, 0), 1))
     }
 
     /// 拖拽过程中决定要不要换边：鼠标明显更靠近另一条边才切。
@@ -319,17 +346,14 @@ enum EdgeDockGeometry {
         currentEdge: DockEdge,
         visibleFrame: CGRect
     ) -> DockEdge {
-        func distance(_ edge: DockEdge) -> CGFloat {
-            switch edge {
-            case .left:   return mouse.x - visibleFrame.minX
-            case .right:  return visibleFrame.maxX - mouse.x
-            case .top:    return visibleFrame.maxY - mouse.y
-            case .bottom: return mouse.y - visibleFrame.minY
-            }
-        }
-        let nearest = EdgeDockGeometry.nearestEdge(to: mouse, in: visibleFrame)
+        let distances = edgeDistances(to: mouse, in: visibleFrame)
+        let nearest = nearestEdge(to: mouse, in: visibleFrame)
         guard nearest != currentEdge else { return currentEdge }
-        guard distance(nearest) + edgeSwitchMargin < distance(currentEdge) else { return currentEdge }
+        // 当前边在 margin 内占优（包括区外角点的等距情形）时保持，避免角上换边抖动。
+        guard let candidateDistance = distances[nearest],
+              let currentDistance = distances[currentEdge],
+              candidateDistance + edgeSwitchMargin < currentDistance
+        else { return currentEdge }
         return nearest
     }
 

@@ -38,9 +38,14 @@ extension EdgeDockController {
         // 发布会把整棵内容树连同每行两次 GeometryReader 测量全部重跑一遍，
         // 换来的却是一个渲染不出来的数字。
         let offset = EdgeDockGeometry.offsetAlongEdge(
-            forMouse: mouse, dockSize: size, visibleFrame: visibleFrame, edge: edge
+            forMouse: mouse,
+            dockSize: size,
+            visibleFrame: visibleFrame,
+            edge: edge,
+            grabFraction: dragGrabFraction ?? 0.5
         )
         dragOffset = offset
+        lastDragMouseLocation = mouse
 
         // `display: false`：不在每个事件里强制同步重绘。拖动由窗口服务器合成，
         // 同步重绘只会把主线程打满，反而更卡。
