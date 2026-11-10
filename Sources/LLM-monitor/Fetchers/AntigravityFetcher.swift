@@ -193,12 +193,14 @@ struct AntigravityFetcher: QuotaFetcher {
     // MARK: - 额度抓取决策树（2.5.0：ls 优先 → keychain 兜底 → agy 代理刷新）
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+        try Task.checkCancellation()
         // 1. ls 可用？→ 本地 RPC（来源=localLanguageServer）。运行中的
         //    language_server 持有 host bridge 新凭据，本地 RPC 一直是权威额度
         //    来源；发现本身 pgrep + lsof 毫秒级。此步不读钥匙串（邮箱兜底只用
         //    内存缓存，省一次钥匙串访问）。
         do {
             let server = try await localServerDiscovery()
+            try Task.checkCancellation()
             let cached = policy.memoryCachedFreshCredential()
             let info = try await fetchLocal(server: server, credential: cached, mode: mode)
             logInfo("[antigravity] 额度来源：本地 language_server")
@@ -208,6 +210,7 @@ struct AntigravityFetcher: QuotaFetcher {
         } catch let error as URLError where error.code == .cancelled {
             throw error
         } catch {
+            try Task.checkCancellation()
             // ls 不可用（未发现进程/端口）或本地 RPC 失败 → 继续后续分支，
             // 不把本地失败伪装成凭据错误。
             logInfo("[antigravity] 本地 language_server 不可用（\(HTTPRequestLogSanitizer.networkErrorDescription(error))），转入钥匙串/远端分支")
@@ -229,6 +232,7 @@ struct AntigravityFetcher: QuotaFetcher {
                     logInfo("[antigravity] 额度来源：远端 Cloud Code（keychain token）")
                     return info
                 } catch let error as QuotaError where error == QuotaError.credentialExpired {
+                    try Task.checkCancellation()
                     // 远端 401：token 本地未过期但已被服务端拒绝（轮询间隙被 IDE
                     // 换掉 / 会话失效）→ 视同凭据不可用，走刷新/提示分支。
                     logWarn("[antigravity] 远端配额 401，keychain token 视同不可用")
@@ -261,10 +265,12 @@ struct AntigravityFetcher: QuotaFetcher {
         } catch let error as URLError where error.code == .cancelled {
             throw error
         } catch {
+            try Task.checkCancellation()
             logWarn("[antigravity] agy models 运行异常：\(HTTPRequestLogSanitizer.networkErrorDescription(error))")
             outcome = .failure(reloginRequired: false)
         }
 
+        try Task.checkCancellation()
         switch outcome {
         case .success:
             guard let refreshed = policy.credentialAfterAgyRefresh(), !refreshed.isExpired() else {
@@ -280,6 +286,7 @@ struct AntigravityFetcher: QuotaFetcher {
                 logInfo("[antigravity] 额度来源：远端 Cloud Code（agy 刷新后）")
                 return info
             } catch let error as QuotaError where error == QuotaError.credentialExpired {
+                try Task.checkCancellation()
                 // 全新 token 仍 401：会话被服务端吊销类故障，退避避免每拍空转。
                 logWarn("[antigravity] agy 刷新后的 token 仍被远端 401，退避一个刷新周期")
                 policy.startBackoff(intervalSeconds: backoffIntervalSeconds)

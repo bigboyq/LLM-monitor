@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""5h window cost in CNY, with rate_limit threshold visualization."""
+"""Fixed daily window cost in CNY, with observed rate-limit events."""
 from __future__ import annotations
 import json
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-PLAIN_DIR = Path("/tmp/dsh_plain")
+PLAIN_DIR = Path(os.environ.get("DSH_PLAIN_DIR", "/tmp/dsh_plain"))
 TZ = timezone(timedelta(hours=8))
 RATE_INPUT, RATE_CACHE, RATE_OUTPUT = 2.10, 0.42, 8.40
 
@@ -27,11 +28,14 @@ def cost(i, c, o):
 call_totals = {}
 rl_events = []
 seen = set()
-for path in sorted(PLAIN_DIR.glob("*.zstd")):
+for path in sorted(p for p in PLAIN_DIR.glob("*") if p.suffix in {".zstd", ".zst", ".jsonl"}):
     sid = path.stem
     with path.open() as fh:
         for line in fh:
-            ev = json.loads(line) if (l := line.strip()) else None
+            try:
+                ev = json.loads(line) if line.strip() else None
+            except json.JSONDecodeError:
+                continue
             if not ev:
                 continue
             t, data, ts = ev.get("type"), ev.get("data") or {}, ev.get("time")
@@ -81,7 +85,7 @@ rows = sorted(agg.items())
 hit_costs = [cost(r["i"], r["c"], r["o"]) for _, r in rows if r["rl"] > 0]
 miss_costs = [cost(r["i"], r["c"], r["o"]) for _, r in rows if r["rl"] == 0]
 
-print("## 5h 窗口成本（按 M3 官方报价折算 ¥）")
+print("## 固定时段窗口成本（按脚本固定 M3 价格估算 ¥）")
 print()
 print(f"  报价：input ¥{RATE_INPUT}/M  cache-read ¥{RATE_CACHE}/M  output ¥{RATE_OUTPUT}/M")
 print(f"  （output 已含 reasoning；DSH M3 的 reasoning 字段实测恒为 0，参见 TokenAccountingCatalog.dsh）")
@@ -99,7 +103,7 @@ for (day, hour), r in rows:
     flag = "🔥" if r["rl"] > 0 else "  "
     first = parse_ts(r["first"]).strftime("%H:%M") if r["first"] is not None else "--:--"
     last = parse_ts(r["last"]).strftime("%H:%M") if r["last"] is not None else "--:--"
-    print(f"{day:<12}  {hour:02d}:00+5h ({first}-{last})  "
+    print(f"{day:<12}  {hour:02d}:00+{min(5, 24 - hour)}h ({first}-{last})  "
           f"{fmt_m(r['c']):>11}  {fmt_m(r['i']):>9}  {fmt_m(r['o']):>7}  "
           f"{fmt_m(total):>9}  ¥{c:>6.2f}  {r['n']:>5}  {r['rl']:>3}  {flag} {bar}")
 print("```")
@@ -119,13 +123,6 @@ print()
 print("### 总计")
 total_cost = sum(cost(r["i"], r["c"], r["o"]) for _, r in rows)
 total_tok = sum(r["i"] + r["c"] + r["o"] for _, r in rows)
-print(f"- 全部窗口合计：**¥{total_cost:.2f}**  / {total_tok/1_000_000:.1f}M tokens  / {len(rows)} 个 5h 窗口")
+print(f"- 全部窗口合计：**¥{total_cost:.2f}**  / {total_tok/1_000_000:.1f}M tokens  / {len(rows)} 个 固定时段窗口")
 print()
-print("### 推断的 rate_limit 触发线")
-print()
-print("- 触发窗口最低 ¥9.50（08-23 凌晨 8 subagent 并发，是瞬时尖刺而非稳态）")
-print("- 触发窗口去掉离群点后，**剩下 5 个都在 ¥23.80 – ¥30.02 之间**")
-print("- 未触发窗口最高 ¥29.37（08-17 00:00，66M tokens、422 calls）")
-print()
-print("→ 稳态 5h 窗口的 rate limit 阈值大概在 **¥22-30** / 约 **50-70M tokens** 区间，")
-print("  你说的「20 元、45M tokens」基本对得上 —— 偏离的窗口是 subagent 并发场景（被瞬时并发卡掉，不是稳态消耗）。")
+print("注：以上是当前输入的观察统计，不能据此确定服务端限流阈值；价格为脚本固定估值。")

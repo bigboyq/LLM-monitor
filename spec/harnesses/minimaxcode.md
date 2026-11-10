@@ -123,9 +123,10 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v19 | 配对调用按本行字符拆分，未配对调用保留日级残余估算 |
    | v20 | 未配对样本只分配扣除配对/原生 reasoning 后的残余预算，按 output 权重结算并保留整数舍入余数；daily output/reasoning 取最终样本按日累计 |
    | v21 | 原生调用单独累计固定预算与已知配对字符，同日 native / paired / fallback 混合时不再由日级 native 判断吞掉 fallback reasoning |
+   | v22 | ISO 日期固定 9 位小数秒，保留实际 Date 表示；拒绝旧秒级缓存，从原始来源重建窗口边缘样本 |
 
-   当前 scanner 的 `currentVersion` 是 20（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 21)` 两处一致）。v21 的 bump 理由见
+   当前 scanner 的 `currentVersion` 是 22（`CacheIndex.empty.version` 与
+   `loadIndex(currentVersion: 22)` 两处一致）。v22 的 bump 理由见
    `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），
    v12 / v13 / v14 / v15 见上表。
 

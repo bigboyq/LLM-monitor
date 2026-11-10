@@ -180,7 +180,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
         newCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
         let oldSignature = LocalUsageCalendarSignature.make(oldCalendar)
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 12,
+            version: 13,
             lastScannedAt: Date(),
             sessions: ["cached-session": .init(
                 mtimeMs: 1,
@@ -232,7 +232,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
     /// 指纹），被跟踪集合 = `sessions.keys`。
     func testTrackedSessionIDsAreTheSessionEntries() {
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 12,
+            version: 13,
             lastScannedAt: Date(),
             sessions: ["s1": .init(mtimeMs: 1, sizeBytes: 1, fetchedAt: nil, eventCount: 0)],
             dailyBySession: [:]

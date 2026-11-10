@@ -23,14 +23,14 @@ final class CodexCachePersistenceTests: XCTestCase {
             reachedEOF: true
         )
         let index = CodexScannerIndex(
-            version: 2,
+            version: 3,
             entries: ["session-a": entry]
         )
 
         let data = try JSONEncoder().encode(index)
         let decoded = try JSONDecoder().decode(CodexScannerIndex.self, from: data)
 
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, 3)
         XCTAssertEqual(decoded.entries.count, 1)
         XCTAssertEqual(decoded.entries["session-a"]?.parsedFileSize, 1024)
         XCTAssertEqual(decoded.entries["session-a"]?.events.count, 1)
@@ -53,14 +53,14 @@ final class CodexCachePersistenceTests: XCTestCase {
             events: [],
             reachedEOF: true
         )
-        let original = CodexScannerIndex(version: 2, entries: ["s1": entry])
+        let original = CodexScannerIndex(version: 3, entries: ["s1": entry])
 
         try ScannerIndexIO.saveIndex(original, cacheDir: indexURL, fileManager: fileManager)
 
         let loaded: CodexScannerIndex = try ScannerIndexIO.loadIndex(
             cacheDir: indexURL,
             fileManager: fileManager,
-            currentVersion: 2,
+            currentVersion: 3,
             empty: CodexScannerIndex(),
             version: { $0.version },
             logTag: "[test]"
@@ -88,7 +88,7 @@ final class CodexCachePersistenceTests: XCTestCase {
                 reachedEOF: true
             )
         }
-        let index = CodexScannerIndex(version: 2, entries: entries)
+        let index = CodexScannerIndex(version: 3, entries: entries)
         try ScannerIndexIO.saveIndex(index, cacheDir: indexURL, fileManager: fileManager)
 
         let cache = CodexSessionEventCache(cacheFileURL: indexURL, fileManager: fileManager)

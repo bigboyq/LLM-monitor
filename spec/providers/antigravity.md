@@ -406,7 +406,11 @@ GetUserStatus / GetLoadCodeAssist 见 § Local RPCs；`planStatus.planInfo` 细�
 **agy 运行契约**（`AntigravityAgyCLI`）：`agy models` 经 `ProcessRunner` 运行
 （30s 超时、超时终止子进程；`AsyncMutex` 互斥——手动刷新与排期刷新并发到达时
 串行；`ProcessRunner` 是同步阻塞实现，经 detached task 落到全局并发队列，不占
-协作线程池）。stdout/stderr 只用于 `invalid_grant` 归类，**内容一律不落日志**；
+协作线程池）。父刷新取消通过 cancellation handler 转发到 detached worker，
+由 `ProcessRunner` 轮询中止其子进程；已取消的调用不启动 agy。worker 与策略 runner
+返回后再次检查取消，取消不触发成功后的钥匙串重读，也不写失败退避。本地发现失败
+（含底层将取消归入进程不可用）转入凭据兜底前同样检查取消。
+stdout/stderr 只用于 `invalid_grant` 归类，**内容一律不落日志**；
 错误文案不含子进程输出。refresh_token 不落盘不进日志、监控侧不回写 keychain。
 
 ## Local RPCs（2.5.0：决策树第 1 步的主路径；trajectory RPC 保持退役）
@@ -1066,12 +1070,12 @@ JSONL under `~/.gemini/antigravity/.token-monitor`, which the root migration to
 `token-monitor/` never carried over. `ensureCacheDirectoriesExist` deletes that
 tree idempotently on every scan (a failure is logged, never fatal).
 
-`index.json` schema（v9，阶段二b）：
+`antigravity.json` schema（当前 v13；结构始于阶段二b v9）：
 
 ```json
 {
-  "version": 9,
-  "lastScannedAt": "2026-07-15T02:00:00Z",
+  "version": 13,
+  "lastScannedAt": "2026-07-15T02:00:00.000000000Z",
   "calendarSignature": "gregorian|Asia/Shanghai",
   "sessions": {
     "41272769-fe7d-4802-a174-b5b28b526ade": {
@@ -1079,7 +1083,7 @@ tree idempotently on every scan (a failure is logged, never fatal).
       "sizeBytes": 8421376,
       "walMtimeMs": 0.0,
       "walSizeBytes": 0,
-      "fetchedAt": "2026-07-15T02:00:00Z",
+      "fetchedAt": "2026-07-15T02:00:00.000000000Z",
       "eventCount": 50
     }
   },
@@ -1096,7 +1100,9 @@ tree idempotently on every scan (a failure is logged, never fatal).
 }
 ```
 
-v9（2026-11-08，阶段二b）：数据源从本地 RPC 切换为 `.db` 直读，逐事件增量状态机
+v13（2026-11-10）：ISO 日期固定 9 位小数秒，保留实际 Date 表示；v12 及更早缓存一次性失效，从原始来源重建，避免窗口边缘样本在 cold/warm 路径归属不同。
+
+v9（2026-11-08，阶段二b，历史）：数据源从本地 RPC 切换为 `.db` 直读，逐事件增量状态机
 整体退役——sessions 条目精简为 `{mtimeMs, sizeBytes, walMtimeMs, walSizeBytes,
 fetchedAt, eventCount}`（外加可选 `consecutiveReadFailures`：连续可重试读失败
 计数，见下文优化 6 的有界收敛；健康态 nil 不落盘，合成 Codable 经
@@ -1728,7 +1734,7 @@ provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取�
 | Scanner: every entry in `defaultConversationsDirs` missing | Scan completes with `sessionCount: 0`; the local-usage section shows the "本机未发现 Antigravity 会话数据" placeholder |
 | Scanner: conversations enumeration hit a permission / TCC / I/O error | `isComplete = false` → no session is declared deleted, the calendar signature does not advance, and the round counts as one failure |
 | Scanner: session `.db` 直读成功但无连接命中的 Call（如纯后台/克隆会话） | 正常写空缓存（eventCount 0 / 空 samples）并采纳指纹 |
-| Scanner: `index.json` corrupted or version ≤ 8 | Logged at warn/info level + reset to `.empty`（v8 及更早整体重置，全量重建）; next scan rebuilds from scratch |
+| Scanner: cache JSON corrupted or version ≠ 13 | Logged at warn/info level + reset to `.empty`（非 v13 整体重置，全量重建）; next scan rebuilds from scratch |
 
 ## Cross-Provider Cache Semantics (Antigravity vs Codex)
 

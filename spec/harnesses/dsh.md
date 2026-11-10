@@ -13,7 +13,7 @@ are shown under Settings → Clients alongside the other local clients.
 | Artifact | `<project-dir>/<session-id>/session.jsonl.zstd`（`*.jsonl.zst` 同等识别；关闭压缩时为 `session.jsonl`） |
 | Format | Append-only JSONL; first line is a session header; later lines are session events or packed chunk rows |
 | Decoder | Prefer `zstd -q -d -c` CLI (`/opt/homebrew/bin`, `/usr/local/bin`); fall back to Node's `zlib.createZstdDecompress()` streaming, then throw `unavailable` |
-| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/dsh.json`（`DshCacheIndex`，当前 `version = 5`：文件指纹数组 + last-good snapshot + calendar signature） |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/dsh.json`（`DshCacheIndex`，当前 `version = 8`：文件指纹数组 + last-good snapshot + calendar signature） |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads provider-billed usage from every `assistant/message` event:
@@ -170,7 +170,7 @@ to the next line, so a replayed event can never stall the scan.
   mid-scan keeps the source dirty so the next round picks it up. `.hardFull`
   (explicit user retry / system clock change) is the only mode allowed to bypass the
   provider's own fingerprint cache.
-- Uses file mtime + size fingerprints (version 5 of `DshCacheIndex`); if nothing
+- Uses file mtime + size fingerprints (version 8 of `DshCacheIndex`); if nothing
   changed it only rebases the cached seven-day window after midnight. A calendar
   signature change forces a re-parse so day buckets are rebuilt under the current
   timezone.
@@ -240,6 +240,23 @@ usage；窗口归属仍使用 call 起始时间。触发次数来自实际去重
 集合取极值/分位数、不以零值缩放。合成回归命令：
 `python -m unittest discover -s scripts/tests -v`（项目共享环境可用 `./.venv/bin/python`）。
 
+这些脚本是离线观察工具，不是 App 核算的测试 oracle，也不能从窗口成本推导服务端
+限流阈值。它们固定按 UTC+8 的 0/5/10/15/20 分桶（末桶到次日 0 点仅 4 小时），
+价格是脚本中的固定估值，不代表实时价格或实际账单；输出不再附加与当前输入无关的
+历史阈值结论。DSH raw output 已含 reasoning，明细先拆成互斥 output/reasoning；
+MiniMax 离线成本同样只计 raw output 一次。Antigravity 历史脚本读取的是 App sample，
+先从 cache-inclusive input 扣 cache，再算独立桶；只估算显式列出的历史模型，不替未知
+模型套用 Opus 价格，零成本也可输出。
+
+输入目录可用 `DSH_PLAIN_DIR` 指定（默认 `/tmp/dsh_plain`），三个 DSH 分析器读取
+其中 `.zstd` / `.zst` / `.jsonl` 后缀的**已解压文本**；损坏的 JSON 行跳过。
+`decompress.py --source <sessions> --output <directory>` 支持这三种原始格式，采用
+Python 3.14 `compression.zstd`（旧环境可安装 `zstandard`）；每次重新流式生成，不以
+已有输出体积跳过，输出目录 0700、暂存文件及最终文本 0600，解码失败保留旧完整文件
+并报错。它不会清理来源已删除的旧输出；完整快照分析应选空目录，不能把失败后残留
+结果当作本轮成功。`MINIMAX_USAGE_DB` 可指定只读 SQLite（默认当前用户的 MiniMax
+账本，不创建缺失数据库）；`ANTIGRAVITY_USAGE_INDEX` 可指定历史分析的 cache JSON。
+
 | Responsibility | Source |
 |---|---|
 | Data model and provider slices | `Sources/LLM-monitor/Models/DshLocalUsage.swift`（`DshDailyUsage` 是 `Models/LocalDailyTokenUsage.swift` 里 `LocalDailyTokenUsage` 的 typealias） |
@@ -253,6 +270,8 @@ usage；窗口归属仍使用 call 起始时间。触发次数来自实际去重
 | Client diagnostics | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
+
+当前持久化缓存版本 **v8**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
 > 核对基线：2026-11-10 · 代码 abcf932
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。

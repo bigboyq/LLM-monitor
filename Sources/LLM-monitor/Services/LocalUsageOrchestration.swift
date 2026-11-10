@@ -10,6 +10,8 @@ import Foundation
 /// AppState，保持单向依赖：orchestration → writer(AppState)。
 @MainActor
 final class LocalUsageOrchestration {
+    typealias CodexUsageDetailsLoader = @Sendable (String?, ModelQuota?, Bool) async -> CodexUsageDetails?
+
     struct ActiveSources: Equatable, Sendable {
         var codex = true
         var antigravity = true
@@ -198,6 +200,10 @@ final class LocalUsageOrchestration {
     private var handledCalendarInvalidationRevision: UInt64 = 0
     private var codexSourceLifecycle: LocalUsageSourceLifecycle?
     private var codexWatchedHome: URL?
+    /// A cancelled loader can outlive its reconcile task and finish after a
+    /// replacement scan starts. Only the current owner may publish or clean up.
+    private var codexScanOwner: (token: UUID, providerID: String)?
+    private let loadCodexUsageDetails: CodexUsageDetailsLoader
     private let calendar: Calendar
     private let now: @Sendable () -> Date
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
@@ -221,11 +227,15 @@ final class LocalUsageOrchestration {
     init(
         writer: any LocalUsageStatusWriting,
         calendar: Calendar = .autoupdatingCurrent,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        loadCodexUsageDetails: @escaping CodexUsageDetailsLoader = { authPath, model, forceFull in
+            await CodexFetcher.loadUsageDetailsAsync(authPath: authPath, model: model, forceFull: forceFull)
+        }
     ) {
         self.writer = writer
         self.calendar = calendar
         self.now = now
+        self.loadCodexUsageDetails = loadCodexUsageDetails
     }
 
     func cancelInFlightAll() {
@@ -239,6 +249,7 @@ final class LocalUsageOrchestration {
         reconcileTask?.cancel()
         reconcileTask = nil
         pendingMode = nil
+        clearCodexScanOwner()
         stopCodexWatcher()
         codexSourceLifecycle = nil
         codexWatchedHome = nil
@@ -272,6 +283,7 @@ final class LocalUsageOrchestration {
         opencodeCoordinator.setActive(active.opencode)
         agyCoordinator.setActive(active.agy)
         if !active.codex {
+            clearCodexScanOwner()
             stopCodexWatcher()
         } else if codexSourceLifecycle != nil {
             codexSourceLifecycle?.start()
@@ -634,20 +646,24 @@ final class LocalUsageOrchestration {
         startCodexWatcher(authPath: target.authPath)
         let startedEventGeneration = codexSourceLifecycle?.eventGeneration ?? 0
 
+        let owner = UUID()
+        codexScanOwner = (owner, target.providerID)
         writer.setScanningState(true, for: target.providerID)
         defer {
-            writer.setScanningState(false, for: target.providerID)
+            if codexScanOwner?.token == owner {
+                clearCodexScanOwner()
+            }
         }
 
-        let details = await CodexFetcher.loadUsageDetailsAsync(
-            authPath: target.authPath,
-            model: target.model,
+        let details = await loadCodexUsageDetails(
+            target.authPath,
+            target.model,
             // Codex owns a per-file event cache with append/truncate/rewrite
             // detection. Startup `.full` must be allowed to reuse it; only
             // `.hardFull` requests a cold parse of every selected file.
-            forceFull: mode.bypassesProviderCache
+            mode.bypassesProviderCache
         )
-        guard !Task.isCancelled else { return false }
+        guard !Task.isCancelled, codexScanOwner?.token == owner else { return false }
         guard let details else { return false }
         guard writer.codexEnrichmentTarget()?.generation == target.generation else { return false }
         guard writer.applyCodexUsageDetails(
@@ -662,6 +678,12 @@ final class LocalUsageOrchestration {
             writer.setLocalUsageFreshness(.clean, for: .codex)
         }
         return true
+    }
+
+    private func clearCodexScanOwner() {
+        guard let owner = codexScanOwner else { return }
+        codexScanOwner = nil
+        writer.setScanningState(false, for: owner.providerID)
     }
 
     /// Codex local usage is implemented by `CodexFetcher` rather than the

@@ -43,8 +43,8 @@ struct QuotaSnapshot: Codable, Equatable, Sendable {
 ///
 /// MainActor 只负责复制一份 `[providerID: QuotaSnapshot]` 值类型快照并排一次
 /// `enqueue`；JSON 编码与 `FileManagerBox.writePrivate`（0600 / 临时文件 /
-/// fsync / rename）都在 actor 的串行执行器上跑，不阻塞主线程。串行执行从构造上
-/// 消除并发写竞态（与 `LastRefreshStore` 同一设计）。
+/// fsync / rename）都在 actor 的串行执行器上跑，不阻塞主线程。停机同步兜底
+/// 另经共享写锁串行，防止它与正在运行的 actor 写互相覆盖。
 ///
 /// 写入策略：**每次更新都真正写盘，不做防抖合并**（与原同步直写同频、同内容）。
 /// `seq` 只用于防御乱序到达：快照是全量状态字典，旧快照若晚于新快照落盘会把
@@ -52,37 +52,32 @@ struct QuotaSnapshot: Codable, Equatable, Sendable {
 /// 不影响内存基线与通知语义。
 actor TriggerStateWriter {
     private let url: URL
-    private let fileManager: FileManagerBox
-    /// 已经写过的最大 seq；比它小的 enqueue 是迟到的旧快照，必须丢弃。
-    private var writtenSeq: UInt64 = 0
-    /// 同步兜底落盘（`TriggerStateStore.flushSynchronously`）推高的高水位：
-    /// 兜底写完之后，排在 actor 队列里、seq 不更新的旧快照不得再落盘，否则
-    /// 会把文件回退到兜底之前的内容。`@unchecked Sendable` + NSLock 让 MainActor
-    /// 侧的同步写与 actor 侧的判定共享同一份高水位。
+    private let writeFile: @Sendable (Data, URL) throws -> Void
+    /// actor 与同步兜底共享的落盘高水位和写锁。
     private let syncFloor: TriggerWriteFloor
 
     init(
         url: URL,
-        fileManager: FileManagerBox = FileManagerBox(),
+        writeFile: @escaping @Sendable (Data, URL) throws -> Void = { try FileManagerBox().writePrivate($0, to: $1) },
         syncFloor: TriggerWriteFloor = TriggerWriteFloor()
     ) {
         self.url = url
-        self.fileManager = fileManager
+        self.writeFile = writeFile
         self.syncFloor = syncFloor
     }
 
     func enqueue(_ snapshots: [String: QuotaSnapshot], seq: UInt64) {
-        guard seq > writtenSeq, !syncFloor.supersedes(seq) else { return }
-        writtenSeq = seq
         do {
-            try fileManager.writePrivate(Self.encode(snapshots), to: url)
+            let data = try Self.encode(snapshots)
+            try syncFloor.write(seq: seq) {
+                try writeFile(data, url)
+            }
         } catch {
             logWarn("[trigger-state] 触发器基线写盘失败: \(error.localizedDescription)")
         }
     }
 
-    /// 落盘字节的唯一编码入口：异步写与同步兜底写必须逐字一致，否则"后写无害"
-    /// 的论证不成立。
+    /// 异步写与同步兜底共用落盘编码。
     nonisolated static func encode(_ snapshots: [String: QuotaSnapshot]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -91,23 +86,24 @@ actor TriggerStateWriter {
     }
 }
 
-/// 同步兜底落盘的高水位门。`flushSynchronously` 把已落盘的 seq 记进来，writer
-/// actor 由此丢弃更早的排队快照，保证"兜底写完不会再被旧写覆盖"。
+/// 所有落盘共享高水位与写锁，判定、同步 I/O 和推进序号必须属于同一临界区。
+/// 只锁高水位无法阻止已通过判定的旧 writer 在同步兜底之后 rename。
 final class TriggerWriteFloor: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock: NSLock
     private var floorSeq: UInt64 = 0
 
-    /// `seq` 是否已被同步兜底写覆盖（≤ 已落盘高水位即视为过时）。
-    func supersedes(_ seq: UInt64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return seq <= floorSeq
+    init(lock: NSLock = NSLock()) {
+        self.lock = lock
     }
 
-    func advance(to seq: UInt64) {
+    /// operation 只做同步写盘，不能 await 或回到 MainActor。
+    /// 写失败不推进高水位，停机兜底仍可重试同一份最新基线。
+    func write(seq: UInt64, operation: () throws -> Void) rethrows {
         lock.lock()
         defer { lock.unlock() }
-        floorSeq = max(floorSeq, seq)
+        guard seq > floorSeq else { return }
+        try operation()
+        floorSeq = seq
     }
 }
 
@@ -129,7 +125,7 @@ final class TriggerWriteFloor: @unchecked Sendable {
 final class TriggerStateStore {
     private let writer: TriggerStateWriter
     private let fileURL: URL
-    private let fileManager: FileManagerBox
+    private let writeFile: @Sendable (Data, URL) throws -> Void
     private let syncFloor: TriggerWriteFloor
     private var snapshots: [String: QuotaSnapshot]
     /// 单调递增的落盘序号：既用于丢弃迟到的旧快照，也让 `waitForPendingWrites`
@@ -137,13 +133,17 @@ final class TriggerStateStore {
     private var writeSeq: UInt64 = 0
     private var latestWrite: Task<Void, Never>?
 
-    init(configURL: URL) {
+    init(
+        configURL: URL,
+        writeFile: @escaping @Sendable (Data, URL) throws -> Void = { try FileManagerBox().writePrivate($0, to: $1) },
+        writeLock: NSLock = NSLock()
+    ) {
         let fileURL = configURL.deletingLastPathComponent()
             .appendingPathComponent("notification-state.json")
-        let syncFloor = TriggerWriteFloor()
-        self.writer = TriggerStateWriter(url: fileURL, syncFloor: syncFloor)
+        let syncFloor = TriggerWriteFloor(lock: writeLock)
+        self.writer = TriggerStateWriter(url: fileURL, writeFile: writeFile, syncFloor: syncFloor)
         self.fileURL = fileURL
-        self.fileManager = FileManagerBox()
+        self.writeFile = writeFile
         self.syncFloor = syncFloor
         self.snapshots = Self.load(from: fileURL)
     }
@@ -181,20 +181,19 @@ final class TriggerStateStore {
     /// 编码后经 `FileManagerBox.writePrivate`（0600 / 临时文件 / fsync / rename）
     /// 同步写完再返回。
     ///
-    /// 与 actor 上排队的写的关系：写完立刻把 `writeSeq` 推进 `syncFloor`，此后
-    /// seq 不更新的排队快照一律被 writer 丢弃——不会出现"兜底写完又被旧快照
-    /// 覆盖回退"。若某次排队写此刻正在 actor 上执行并晚于兜底完成，那它与本次
-    /// 兜底写的内容逐字相同（同一个 `snapshots` 值类型快照、同一个 encode 入口），
-    /// 重复 rename 覆盖同一份字节，无害。
+    /// 与 actor 写共享同一把锁：已在写的旧快照先完成，再写最新内存基线；
+    /// 尚未开始的旧快照随后由高水位丢弃。锁内仅有同步 I/O，不等待 actor。
     func flushSynchronously() {
         // 从没排过写 = 没有待落盘的基线，不要凭空造出一个空基线文件。
         guard writeSeq > 0 else { return }
         do {
-            try fileManager.writePrivate(TriggerStateWriter.encode(snapshots), to: fileURL)
+            let data = try TriggerStateWriter.encode(snapshots)
+            try syncFloor.write(seq: writeSeq) {
+                try writeFile(data, fileURL)
+            }
         } catch {
             logWarn("[trigger-state] 停机同步兜底落盘失败: \(error.localizedDescription)")
         }
-        syncFloor.advance(to: writeSeq)
     }
 
     /// MainActor 只做值类型快照拷贝 + 排一个 Task；encode / fsync / rename 全部

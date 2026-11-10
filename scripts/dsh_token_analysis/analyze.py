@@ -2,7 +2,7 @@
 """
 Analyze DSH session.jsonl data for M3 (MiniMax-M3 / minimax-cn) usage:
   1) Token count at each RATE_LIMIT trigger
-  2) Token usage per 5-hour quota window (0, 5, 10, 15, 20)
+  2) Token usage per fixed daily window (0, 5, 10, 15, 20)
 
 We use the cached Mavis scanner-equivalent token accounting (uncached input +
 cache-read, output, reasoning).
@@ -14,7 +14,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-PLAIN_DIR = Path("/tmp/dsh_plain")
+PLAIN_DIR = Path(os.environ.get("DSH_PLAIN_DIR", "/tmp/dsh_plain"))
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai — DSH sessions are CN users
 WINDOW_HOURS = (0, 5, 10, 15, 20)
 
@@ -37,7 +37,7 @@ def window_start(ts: datetime) -> datetime:
 
 
 def window_label(start: datetime) -> str:
-    return f"{start.strftime('%Y-%m-%d %H:00')}+5h"
+    return f"{start.strftime('%Y-%m-%d %H:00')}+{min(5, 24 - start.hour)}h"
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ rate_limit_events = []  # list of (ts_ms, retry_id, turn, step, code, message)
 retry_seen = set()
 file_stats = []
 
-for path in sorted(PLAIN_DIR.glob("*.zstd")):
+for path in sorted(p for p in PLAIN_DIR.glob("*") if p.suffix in {".zstd", ".zst", ".jsonl"}):
     size = path.stat().st_size
     with path.open("r", encoding="utf-8") as fh:
         line_count = 0
@@ -86,8 +86,9 @@ for path in sorted(PLAIN_DIR.glob("*.zstd")):
                     seq = ev.get("seq")
                     in_t = usage.get("inputTokens") or 0
                     cr_t = usage.get("cacheReadTokens") or 0
-                    out_t = usage.get("outputTokens") or 0
-                    reas_t = usage.get("reasoningTokens") or 0
+                    raw_output = max(usage.get("outputTokens") or 0, 0)
+                    reas_t = min(max(usage.get("reasoningTokens") or 0, 0), raw_output)
+                    out_t = raw_output - reas_t
                     sample_key = (sid, turn, step)
                     usage_samples.append(
                         (ts, sample_key, in_t, cr_t, out_t, reas_t, sid)
@@ -220,7 +221,7 @@ for i, (ts, rid, sid, turn, step, code, msg) in enumerate(rate_limit_events, 1):
 
 print()
 print("=" * 110)
-print("Section 2 — M3 token usage per 5-hour quota window (0/5/10/15/20)")
+print("Section 2 — M3 token usage per fixed daily window (0/5/10/15/20)")
 print("=" * 110)
 
 # Group by (day, window_start_hour) using call timestamps
@@ -256,7 +257,7 @@ for (day, hour) in keys:
     total = r["input"] + r["cache"] + r["output"] + r["reasoning"]
     first = parse_ts(r["first_ts"]).strftime("%H:%M:%S") if r["first_ts"] else "-"
     last = parse_ts(r["last_ts"]).strftime("%H:%M:%S") if r["last_ts"] else "-"
-    print(f"{day:<12}  {hour:02d}:00+5h ({first}-{last:<8})  "
+    print(f"{day:<12}  {hour:02d}:00+{min(5, 24 - hour)}h ({first}-{last:<8})  "
           f"{format_num(r['input']):>11}  {format_num(r['cache']):>14}  "
           f"{format_num(r['output']):>10}  {format_num(r['reasoning']):>6}  "
           f"{format_num(total):>14}  {r['count']:>6}  {r['rate_limits']:>12}")

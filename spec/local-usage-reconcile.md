@@ -54,8 +54,18 @@ partial 结果在 `lastResult` 发布前先标记 dirty/failed，再经 Coordina
 | MiniMax | runtime DB + WAL 指纹，逐 source cache；缓存带日历签名 | 未变化复用；变化 source 重聚合最近窗口，保留 sample cache | stat/SQL 不确定、日历变化或 session 失败时保留 last-good，不推进成功指纹，结果不完整时保持 dirty |
 | GLM / OpenCode | DB + WAL 指纹，快照带日历签名 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读、日历变化或 cache 版本不匹配时重建；失败不覆盖 last-good |
 | DSH | session 文件集合和每文件 fingerprint；聚合快照带日历签名 | 未变化复用；只解析变化文件，复用 parsed-file cache。**样本保留上限是独立于预算的第二条截断轴**：fingerprint 命中还要求 cache 带样本完整性元数据（`recentSamplesLimit` 匹配、`recentSamplesTruncated` / `latestOmittedSampleAt` 已知，见 `Models/DshLocalUsage.swift`），旧格式 cache 或 limit 变化时即使指纹未变也强制重聚合一次（一次性迁移代价）；rebase 保留已知样本截断，被挤出样本滑出保留窗后经 `latestOmittedSampleAt` 自动恢复完整标记。细则见 `harnesses/dsh.md` | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量；单文件失败时整份 index 保持 last-good 且保持 dirty，避免 fingerprint 与 aggregate 不一致 |
-| Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 未变化复用 `token-monitor/codex.json` 磁盘缓存；append 从 offset 续读；冷启动无缓存时全量扫描并落盘 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；会话索引经 `ScannerIndexIO` 跨进程持久化至 `token-monitor/codex.json` |
 | agy | transcript 文件集合 + per-file `mtime/size` 指纹 + cli log 时间线签名（log-only 变化触发重聚合）；聚合快照带日历签名 | 未变化 rebase 本地 7 天窗口；变化时重聚合整个选中文件集（无 per-file 增量，靠 `(sessionID, created_at, step_index)` 跨文件去重兜底） | stat 失败或文件解析失败保留 last-good 且按 partial 暴露（partial 永不入盘、不推进成功指纹，失败文件下一轮重试）；预算截断是完整扫描，置 `isTruncated` 不算 partial |
+| Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 未变化复用 `token-monitor/codex.json` 磁盘缓存；append 从 offset 续读；冷启动无缓存时全量扫描并落盘 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；会话索引经 `ScannerIndexIO` 跨进程持久化至 `token-monitor/codex.json` |
+
+`ScannerIndexIO` 的日期继续使用 ISO8601 字符串，新写入固定 9 位小数，保留毫秒以及
+Antigravity protobuf Timestamp 来源的亚毫秒；读取兼容带小数与旧整秒字符串。整秒
+格式/解析复用不可变 `Date.ISO8601FormatStyle`，小数在 reference epoch 中拆分/合成，
+避免 Unix epoch 换算再丢位，不为每条样本新建 formatter。窗口按
+`[start − 20s, end)` 筛选，服务端 reset 可带毫秒，缓存不得把 `completedAt` 截为整秒：
+否则即使文件指纹未变化，cold/warm 的边缘样本也可能不同。旧精度不可从缓存还原，
+因此 7 类 cache 一次性失效重建：Antigravity v13、agy v9、Codex v3、DSH v8、
+MiniMax v22、ZCode v15、OpenCode v4；完成后恢复未变化源的缓存复用。旧日期可解码
+不代表旧版本可采纳，不做只升版本但保留旧样本的迁移。
 
 ## 事务和并发契约
 

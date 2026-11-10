@@ -360,7 +360,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             )
             try saveIndex(
                 AgyCacheIndex(
-                    version: 8,
+                    version: 9,
                     files: [],
                     snapshot: empty,
                     calendarSignature: currentCalendarSignature
@@ -457,7 +457,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         )
         try saveIndex(
             AgyCacheIndex(
-                version: 8,
+                version: 9,
                 files: outcome.processedFingerprints,
                 snapshot: snapshot,
                 calendarSignature: currentCalendarSignature,
@@ -1005,7 +1005,8 @@ private struct AgyCacheIndex: Codable, Equatable, Sendable {
         // 仅对非工具流式调用（f12 >= 0.5s）按 (ttft+f12) 供给，工具调用保持 nil；
         // 版本不匹配即整体重建。
         // （v6：清除伪 ttftSeconds；v5：原生真值拆分；v4：旧伪 ttft；v3：旧 duration。）
-        version == 8
+        // v9: rebuild dates previously truncated to whole seconds.
+        version == 9
             && files == fingerprint.files
             && timelineSignature == fingerprint.timelineSignature
             && databaseFiles == fingerprint.databaseFiles
@@ -1021,8 +1022,8 @@ private extension AgyLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 8,
-            empty: AgyCacheIndex(version: 8, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 9,
+            empty: AgyCacheIndex(version: 9, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[agy-scan]"
         )

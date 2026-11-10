@@ -35,15 +35,18 @@ extension SettingsView {
     }
 
     /// 通用掩码输入框（SecureField + 显示开关），用于 Device Key 等推送凭证。
-    func secretField(text: Binding<String>, isVisible: Binding<Bool>, prompt: String) -> some View {
+    func secretField(label: String, text: Binding<String>, isVisible: Binding<Bool>, prompt: String) -> some View {
         HStack(spacing: 8) {
             Group {
                 if isVisible.wrappedValue {
-                    TextField("", text: text, prompt: Text(prompt))
+                    TextField(label, text: text, prompt: Text(prompt))
+                        .accessibilityLabel(label)
                 } else {
-                    SecureField("", text: text, prompt: Text(prompt))
+                    SecureField(label, text: text, prompt: Text(prompt))
+                        .accessibilityLabel(label)
                 }
             }
+            .labelsHidden()
             .textFieldStyle(.roundedBorder)
 
             Button {
@@ -63,11 +66,14 @@ extension SettingsView {
             HStack(spacing: 8) {
                 Group {
                     if isVisible.wrappedValue {
-                        TextField("", text: text, prompt: Text("sk-cp-..."))
+                        TextField("API Key", text: text, prompt: Text("sk-cp-..."))
+                            .accessibilityLabel("API Key")
                     } else {
-                        SecureField("", text: text, prompt: Text("sk-cp-..."))
+                        SecureField("API Key", text: text, prompt: Text("sk-cp-..."))
+                            .accessibilityLabel("API Key")
                     }
                 }
+                .labelsHidden()
                 .textFieldStyle(.roundedBorder)
 
                 Button {

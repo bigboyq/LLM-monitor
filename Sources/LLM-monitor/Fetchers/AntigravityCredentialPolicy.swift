@@ -56,7 +56,8 @@ enum AntigravityAgyCLI {
     /// 落到全局并发队列执行。stdout / stderr 只用于 `invalid_grant` 归类，
     /// 内容一律不落日志。
     static func runModels(executablePath: String) async throws -> AntigravityAgyRunOutcome {
-        let outcome: AntigravityAgyRunOutcome = try await Task.detached(priority: .utility) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .utility) {
             do {
                 let result = try ProcessRunner.run(
                     executable: URL(fileURLWithPath: executablePath),
@@ -76,8 +77,16 @@ enum AntigravityAgyCLI {
                 // 超时 / 进程无法启动等传输层失败：按普通失败退避，不做 relogin 归类。
                 return AntigravityAgyRunOutcome.failure(reloginRequired: false)
             }
-        }.value
-        return outcome
+        }
+        // detached task 不继承父任务取消；显式转发，令 ProcessRunner 的轮询
+        // 终止本轮子进程。返回边界再次检查，避免退出与取消同时发生时继续读钥匙串。
+        return try await withTaskCancellationHandler {
+            let outcome = try await worker.value
+            try Task.checkCancellation()
+            return outcome
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// 默认 agy 查找 seam（带测试进程护栏）。
@@ -284,6 +293,7 @@ final class AntigravityCredentialPolicy: @unchecked Sendable {
     /// 仅在 autoRefresh 生效且未退避时由 fetcher 调用；locator 为 nil 的极端
     /// 情形（预检后 CLI 被移除）按普通失败返回，不 disable。
     func runAgyRefresh() async throws -> AntigravityAgyRunOutcome {
+        try Task.checkCancellation()
         guard let executable = agyLocator() else {
             logWarn("[antigravity] 未找到 agy 可执行文件，无法代理刷新")
             return .failure(reloginRequired: false)
@@ -291,6 +301,7 @@ final class AntigravityCredentialPolicy: @unchecked Sendable {
         return try await agyMutex.withLock {
             logInfo("[antigravity] 运行 agy models 刷新 keychain 凭据（互斥，超时 30s，输出不落日志）")
             let outcome = try await agyRunner(executable)
+            try Task.checkCancellation()
             switch outcome {
             case .success:
                 logInfo("[antigravity] agy models 完成：成功")

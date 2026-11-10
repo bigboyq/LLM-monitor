@@ -173,31 +173,37 @@ private struct ClientProviderExpandedContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SevenDayUsageHistoryView(
-                days: UsageHistorySeriesBuilder.build(
-                    days: provider.dailyTokenUsage,
-                    costByDay: LocalUsagePriceByDay.estimates(
-                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
-                        recentSamples: provider.recentSamples,
-                        quotaProviderID: provider.quotaProviderID,
-                        deepseekPeakWindow: provider.deepseekPeakWindow
+            ScrollView(.horizontal) {
+                SevenDayUsageHistoryView(
+                    days: UsageHistorySeriesBuilder.build(
+                        days: provider.dailyTokenUsage,
+                        costByDay: LocalUsagePriceByDay.estimates(
+                            dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                            recentSamples: provider.recentSamples,
+                            quotaProviderID: provider.quotaProviderID,
+                            deepseekPeakWindow: provider.deepseekPeakWindow
+                        ),
+                        speedByDay: LocalUsageSpeedByDay.statistics(
+                            dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                            recentSamples: provider.recentSamples
+                        ),
+                        ttftByDay: LocalUsageTTFTByDay.ttftStatistics(
+                            dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                            recentSamples: provider.recentSamples
+                        ),
+                        samplesTruncated: provider.samplesTruncated,
+                        isTruncated: provider.isTruncated
                     ),
-                    speedByDay: LocalUsageSpeedByDay.statistics(
-                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
-                        recentSamples: provider.recentSamples
-                    ),
-                    ttftByDay: LocalUsageTTFTByDay.ttftStatistics(
-                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
-                        recentSamples: provider.recentSamples
-                    ),
-                    samplesTruncated: provider.samplesTruncated,
-                    isTruncated: provider.isTruncated
-                ),
-                scannedAt: provider.scannedAt,
-                isScanning: false,
-                isTruncated: provider.isTruncated,
-                layoutMode: .expanded
-            )
+                    scannedAt: provider.scannedAt,
+                    isScanning: false,
+                    isTruncated: provider.isTruncated,
+                    layoutMode: .expanded
+                )
+                .containerRelativeFrame(.horizontal, alignment: .leading) { width, _ in
+                    max(width, SevenDayUsageChartMetrics.expandedTableWidth)
+                }
+            }
+            .defaultScrollAnchor(.leading)
 
             // 单行并排：聚合指标（总 Token / 命中率 / 价值）+ 分项 Token 桶，
             // caption 字号 + 紧凑数值下 7 列约 380pt，minWidth 720 的内容区放得下。

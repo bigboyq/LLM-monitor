@@ -1,48 +1,50 @@
 #!/usr/bin/env python3
-"""Decompress all dsh session .zstd files into plaintext JSONL."""
-import sys
-import zstandard
+"""Refresh plaintext copies of DSH sessions; outputs contain private conversation data."""
+import argparse
+import os
 from pathlib import Path
+import shutil
+import tempfile
 
-src_root = Path("/tmp/dsh_unpack_zip")
-out_root = Path("/tmp/dsh_plain")
-out_root.mkdir(exist_ok=True)
-src_root.mkdir(exist_ok=True)
 
-# Collect sources from real dsh location
-real_root = Path.home() / ".dsh/sessions"
-sources = []
-for path in real_root.rglob("session.jsonl.zstd"):
-    sources.append(path)
-for path in real_root.rglob("session.jsonl.zst"):
-    sources.append(path)
-for path in real_root.rglob("session.jsonl"):
-    # already plaintext (rare)
-    out = out_root / (path.parent.name + "__" + path.name)
-    if not out.exists():
-        out.write_bytes(path.read_bytes())
-        print(f"plain copy: {out.name} ({out.stat().st_size} bytes)")
+def decompress(src_root: Path, out_root: Path) -> None:
+    # Python 3.14 supplies zstd; older environments can use the existing optional package.
+    try:
+        from compression import zstd
+    except ImportError:
+        import zstandard as zstd
 
-dctx = zstandard.ZstdDecompressor()
-for path in sources:
-    out = out_root / (path.parent.name + "__" + path.name)
-    if out.exists() and out.stat().st_size > 100_000:
-        continue
-    with path.open("rb") as fh:
-        reader = dctx.stream_reader(fh, read_across_frames=True, closefd=False)
-        chunks = []
-        total = 0
-        try:
-            while True:
-                chunk = reader.read(1 << 20)  # 1MB
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-        except Exception as e:
-            print(f"FAIL: {path}: {e}")
+    if not src_root.is_dir():
+        raise FileNotFoundError(f"Session directory does not exist: {src_root}")
+    out_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    out_root.chmod(0o700)
+    for path in sorted(src_root.rglob("*")):
+        if not (path.name == "session.jsonl" or path.name.endswith((".jsonl.zstd", ".jsonl.zst"))):
             continue
+        out = out_root / (path.parent.name + "__" + path.name)
+        # Always refresh: a large existing output is not evidence its source is unchanged.
+        # Stage a 0600 file so a decode failure cannot replace the last complete output.
+        staged = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=out_root, delete=False) as target:
+                staged = Path(target.name)
+                if path.suffix == ".jsonl":
+                    source = path.open("rb")
+                else:
+                    source = zstd.open(path, "rb")
+                with source:
+                    shutil.copyfileobj(source, target, length=1 << 20)
+            os.replace(staged, out)
         finally:
-            reader.close()
-    out.write_bytes(b"".join(chunks))
-    print(f"decompressed: {out.name} ({total} bytes from {path.stat().st_size} compressed)")
+            if staged is not None:
+                staged.unlink(missing_ok=True)
+        print(f"refreshed: {out.name} ({out.stat().st_size} bytes)")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=Path.home() / ".dsh/sessions")
+    parser.add_argument("--output", type=Path,
+                        default=Path(os.environ.get("DSH_PLAIN_DIR", "/tmp/dsh_plain")))
+    args = parser.parse_args()
+    decompress(args.source, args.output)

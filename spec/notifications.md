@@ -48,7 +48,7 @@ flowchart TD
 |---|---|
 | `Services/QuotaUpdateNotifier.swift` | `QuotaNotifyChannel` / `QuotaNotificationKind` / `QuotaEvent` / `QuotaEventDetector` / `QuotaEventBatch` / `QuotaUpdateNotifying` 协议 + `Composite`/`Noop` + `SystemQuotaUpdateNotifier` |
 | `Services/BarkNotifier.swift` | `BarkQuotaNotifier`（渠道实现 + 屏幕/锁屏判定 + 测试推送）+ `BarkSendQueue`（actor 串行队列） |
-| `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新经 actor `TriggerStateWriter` 异步串行写盘：0600 / 临时文件 / fsync / rename，`seq` 丢弃迟到旧快照；`update` 返回后内存态立即可读；`AppState.stop()` 另做一次同步兜底写（`flushSynchronously` + 写高水位，排队旧快照不回退） |
+| `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新经 actor `TriggerStateWriter` 异步串行写盘：0600 / 临时文件 / fsync / rename，`seq` 丢弃迟到旧快照；`update` 返回后内存态立即可读；`AppState.stop()` 另做一次同步兜底写，和 actor 共用覆盖完整落盘的锁及写高水位） |
 | `Services/AppState.swift` | 刷新成功分支的事件源 + windowedKinds 门控 + notConfigured 时 reset 基线 |
 | `Views/SettingsView.swift` / `Views/SettingsGeneralPane.swift` | 「通知」pane：系统权限、Bark 全局配置及各窗口类 provider 通知规则 |
 | `Models/AppConfig.swift` | `AppConfig.bark: BarkConfig?`（`BarkConfig` 同文件）+ `ProviderConfig.notify*` 四字段与 `setNotifyChannel`；`Services/ConfigStore.swift` 只持便捷访问器（`var bark { config.bark }`） |
@@ -98,6 +98,10 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
   （2026-09-14）：不做防抖合并——频率只有每 provider 每刷新周期一次、文件 ~2KB，
   写盘自 2026-10-05 起移到 actor `TriggerStateWriter` 串行执行（仍每次更新直写、不加合并；fsync 不再占主线程——10s 极值间隔下曾达 ≈0.5 次/秒阻塞），
   一致性由 MainActor 内存权威副本保证；代价是进程在毫秒级写盘窗口内退出可能丢最后一次基线。坏文件容错降级为空。
+  `TriggerWriteFloor.write` 将序号检查、同步写盘与成功后的高水位推进置于同一把锁内：
+  停机兜底先等已经开始的旧写完成，再写最新快照；尚未开始的旧写被高水位丢弃。
+  只保护序号不够，旧写可能已通过检查却尚未 rename；锁内只含同步 I/O，没有 actor hop。
+  写失败不推进高水位，因此重复同步兜底仍能重试同一序号。
 
 ## 4. 渠道层
 

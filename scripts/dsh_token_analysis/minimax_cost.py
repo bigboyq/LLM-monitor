@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
 Analyze minimax code client's local M3 usage from
-~/.minimax/v2/sqlite/runtime-state.sqlite, grouped by 5h quota window.
+~/.minimax/v2/sqlite/runtime-state.sqlite, grouped by fixed daily window.
 
 This is the Mavis-internal app's own usage (when the user runs M3 inside
-the Mavis desktop client). 5h windows snap to local 0/5/10/15/20.
+the Mavis desktop client). Windows start at UTC+8 0/5/10/15/20; the final window is 4 hours.
 """
 import sqlite3
+import os
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-DB = "/Users/zhebinqiu/.minimax/v2/sqlite/runtime-state.sqlite"
+DB = Path(os.environ.get("MINIMAX_USAGE_DB", str(Path.home() / ".minimax/v2/sqlite/runtime-state.sqlite")))
 TZ = timezone(timedelta(hours=8))
 RATE_INPUT, RATE_CACHE, RATE_OUTPUT = 2.10, 0.42, 8.40
 
-conn = sqlite3.connect(DB)
+conn = sqlite3.connect(DB.resolve().as_uri() + "?mode=ro", uri=True)
 cur = conn.cursor()
 
 # 1. Inspect providers / models
@@ -23,7 +25,7 @@ cur.execute("""
     substr(model, 1, instr(model, '/')-1) AS provider,
     substr(model, instr(model, '/')+1)    AS model,
     COUNT(*) AS rows,
-    SUM(input_tokens+output_tokens+reasoning_tokens+cache_read_tokens+cache_write_tokens) AS total
+    SUM(input_tokens+output_tokens+cache_read_tokens) AS total
   FROM local_runtime_token_usage
   GROUP BY provider, model
   ORDER BY total DESC
@@ -80,15 +82,15 @@ for ts_ms, i, o, r, c, w in cur.fetchall():
 
 
 def cost(r):
-    return (r["i"] * RATE_INPUT + r["c"] * RATE_CACHE + (r["o"] + r["r"]) * RATE_OUTPUT) / 1_000_000.0
+    return (r["i"] * RATE_INPUT + r["c"] * RATE_CACHE + r["o"] * RATE_OUTPUT) / 1_000_000.0
 
 
 # Pretty print all windows
 print()
-print("## minimax code 客户端 — M3 每 5h 窗口累计（按 M3 官方报价折算）")
+print("## minimax code 客户端 — M3 每 固定时段窗口累计（按脚本固定 M3 价格估算）")
 print()
 print("```")
-print(f"{'日期':<12}  {'窗口':<22}  {'cache-read':>10}  {'input':>8}  {'output+reas':>10}  "
+print(f"{'日期':<12}  {'窗口':<22}  {'cache-read':>10}  {'input':>8}  {'output':>10}  "
       f"{'total':>9}  {'成本':>8}  {'calls':>5}  bar")
 print("-" * 110)
 rows = []
@@ -97,13 +99,13 @@ for k, r in agg.items():
 rows.sort(key=lambda x: x[2])
 max_cost = max((cost(r) for _, r, _ in rows), default=1)
 for c, r, (day, win) in rows:
-    total = r["i"] + r["o"] + r["r"] + r["c"]
+    total = r["i"] + r["o"] + r["c"]
     bar_len = int(round(c / max_cost * 30)) if max_cost > 0 else 0
     bar = "█" * bar_len + "·" * (30 - bar_len)
     first = datetime.fromtimestamp(r["first"] / 1000.0, tz=TZ).strftime("%m-%d %H:%M")
     last = datetime.fromtimestamp(r["last"] / 1000.0, tz=TZ).strftime("%m-%d %H:%M")
-    print(f"{day:<12}  {win.strftime('%m-%d %H:%M')}+5h   "
-          f"{fmt_m(r['c']):>10}  {fmt_m(r['i']):>8}  {fmt_m(r['o']+r['r']):>10}  "
+    print(f"{day:<12}  {win.strftime('%m-%d %H:%M')}+{min(5, 24 - win.hour)}h   "
+          f"{fmt_m(r['c']):>10}  {fmt_m(r['i']):>8}  {fmt_m(r['o']):>10}  "
           f"{fmt_m(total):>9}  {fmt_yuan(c):>8}  {r['n']:>5}  {bar}")
 print("```")
 print()
@@ -115,9 +117,9 @@ total_cost = sum(all_costs)
 n = len(all_costs)
 print("## 汇总")
 print()
-print(f"- **5h 窗口数**：{n}")
+print(f"- **固定时段窗口数**：{n}")
 print(f"- **总成本**：{fmt_yuan(total_cost)}")
-print(f"- **总 token**（input + cache + output + reasoning）：{sum(r['i']+r['c']+r['o']+r['r'] for r in agg.values())/1e6:,.1f}M")
+print(f"- **总 token**（input + cache-read + output，output 已含 reasoning）：{sum(r['i']+r['c']+r['o'] for r in agg.values())/1e6:,.1f}M")
 print(f"- **总 rounds**（LLM 调用数）：{sum(r['n'] for r in agg.values()):,}")
 print()
 if all_costs:
@@ -132,11 +134,11 @@ print("## 时间分布")
 print()
 cur.execute("""
   SELECT
-    strftime('%Y-%m', ts/1000, 'unixepoch', 'localtime') as ym,
+    strftime('%Y-%m', ts/1000, 'unixepoch', '+8 hours') as ym,
     COUNT(*) as rounds,
-    SUM(input_tokens+output_tokens+reasoning_tokens+cache_read_tokens+cache_write_tokens) as total,
+    SUM(input_tokens+output_tokens+cache_read_tokens) as total,
     printf('%.2f', SUM(input_tokens)*2.1/1e6 + SUM(cache_read_tokens)*0.42/1e6
-                  + (SUM(output_tokens)+SUM(reasoning_tokens))*8.4/1e6) as cost
+                  + SUM(output_tokens)*8.4/1e6) as cost
   FROM local_runtime_token_usage
   WHERE model = 'minimax/MiniMax-M3'
   GROUP BY ym
@@ -146,3 +148,5 @@ print("| 月份 | rounds | tokens | 成本 |")
 print("|------|-------:|-------:|-----:|")
 for ym, rounds, total, c in cur.fetchall():
     print(f"| {ym} | {rounds:,} | {total/1e6:,.1f}M | ¥{float(c):,.2f} |")
+
+conn.close()

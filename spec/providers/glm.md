@@ -449,6 +449,14 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
   account hover (unlike Antigravity).
 - `unit` / `number` window descriptors are used when present; `nextResetTime` remains the
   compatibility fallback for older responses or incomplete metadata.
+- Equal-reset windows deliberately retain the compatibility fallback in § API Parser Behavior,
+  even when both descriptors are present. The [official usage plugin documentation](https://docs.z.ai/devpack/extension/usage-query-plugin)
+  links to the [official query script](https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs),
+  which calls this endpoint but passes `CREDIT_LIMIT` records through without defining
+  `unit` / `number`, array order, or equal-reset guarantees. A reversed equal-reset fixture
+  alone therefore does not establish a supported production response. Changing this rule
+  requires an official descriptor/order contract or a verified response demonstrating that
+  both distinct windows may legitimately share a reset while arriving in reverse order.
 - `data.limits` schema is empirical (captured from a live Lite-tier account). Pro / Max
   tiers and future API changes are covered by the lenient optional-field decoder, but
   edge cases may surface.

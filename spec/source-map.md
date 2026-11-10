@@ -112,7 +112,7 @@
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器；MainActor 同步应用结果，再转发完整结果验证/新鲜度回调 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓）；loop 带实例 token（`cancelAll` 后旧 loop 收尾不再清新 loop 的 sleepTask、不再进入下一轮迭代） |
 | `Sources/LLM-monitor/Services/ManualRefreshGate.swift` | 手动 full refresh 与 in-flight background refresh 的合并协议（pending 登记 / 取消撤销 / 一次性补跑） |
-| `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：按触发原因分层为 `.dirty` / `.full`（cache-assisted） / `.hardFull`（绕过各 provider 自己的 fingerprint / offset / cache），请求按 `dirty < full < hardFull` 优先级折叠成一次；`.hardFull` 只在启动首拍、日历签名失效与 `bypassesProviderCache` 时触发。Provider batch settled 后每拍都投递一次 reconcile（scanner 内部指纹短路决定是否真扫），不持有 Timer |
+| `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：按触发原因分层为 `.dirty` / `.full`（cache-assisted） / `.hardFull`（绕过各 provider 自己的 fingerprint / offset / cache），请求按 `dirty < full < hardFull` 优先级折叠成一次；启动首拍使用 `.full`，`.hardFull` 只在日历签名失效与 `bypassesProviderCache` 时触发。Provider batch settled 后每拍都投递一次 reconcile（scanner 内部指纹短路决定是否真扫），不持有 Timer |
 | `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表；`info` 载荷为 passRetained 的 context box（对 watcher 弱引用，stream↔watcher 不成环；旧的裸 unretained 指针已移除） |
 | `Sources/LLM-monitor/Services/LocalVnodeWriteWatcher.swift` | 文件级 write/extend vnode watcher（持续增长的日志文件 dirty 标记；只报 dirty，扫描仍归 provider 循环） |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
@@ -144,7 +144,7 @@
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` | Antigravity `.db` 直读 scanner（AsyncMutex + lastCommittedGeneration 串行化；脏 session 经 `AntigravitySessionDBReader` 全量直读，不发网络请求）|
 | `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift` | Antigravity 会话 `.db` 直读模块：`probe` 版本指纹门（`gen_metadata` 首行模型名）+ `readCalls`（`steps.idx == f20.last_step_index + 1` 连接）+ `readUserTurnSteps`（step_type=14）；经 `SQLiteTempCopy`（原路径 READONLY + /tmp 副本兜底） |
-| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v10 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
+| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v13 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageCache.swift` | `AntigravityLocalUsageScanner` 的缓存与 index 类型 extension（与上面的 scanner 同类型，按职责拆文件） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day 聚合与 sample 组装（`accountCalls`：turns = step14 直计、rounds = 连接命中 Call；纯函数，unit-testable） |
 | `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取 + agy 共用的 gen_metadata 原生 usage 读取（f1.f4：f9 reasoning / f10 normalized，守恒门控供 agy 拆分；f1.f11 曾误作 TTFT 接入，已证伪回退）（antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
@@ -252,16 +252,22 @@
 | `Tests/LLMMonitorTests/CrossReviewDataTests.swift` | 计量交叉复核：同窗守恒、原生/配对/残余分配、DB 删除、数值边界及子进程 EOF 超时/取消 |
 | `Tests/LLMMonitorTests/CrossReviewRuntimeTests.swift` | 运行时交叉复核：停止/重启、排队配置、取消后成功、扫描代际原子应用与不完整结果发布顺序 |
 | `Tests/LLMMonitorTests/CrossReviewUITests.swift` | UI 交叉复核：节假日缓存恢复、设置目标重入、来源等价失效与悬停目标替换 |
+| `Tests/LLMMonitorTests/BoundaryCachePrecisionTests.swift` | 9 位小数秒 ISO 日期、真实纳秒来源 Date 精度及 10k 样本观察、七类缓存旧精度重建；真实 GLM 窗口 cold/warm 回归另见 CrossReviewDataTests |
+| `Tests/LLMMonitorTests/BoundaryAuthTests.swift` | 实际受控 agy 子进程取消传播、凭据副作用及失败退避边界 |
+| `Tests/LLMMonitorTests/BoundaryRuntimeTests.swift` | 通知基线并发落盘、Fleet 冷启动同代快照、Bark 成功/取消边界 |
+| `Tests/LLMMonitorTests/BoundaryUITests.swift` | Codex 首次无配额承载边界；可选当前版本 Settings 合成渲染与可访问性探针 |
 | `Tests/LLMMonitorTests/RuntimeLifecycleRegressionTests.swift` | 配置重建、启动收敛、取消恢复、Fleet 首扫保护与 Bark 队列冷却回归 |
 | `Tests/LLMMonitorTests/HolidaySourceLifecycleTests.swift` | 节假日草稿/已保存源隔离、旧请求拒收与新请求刷新状态回归 |
 | `Tests/LLMMonitorTests/SettingsNavigationTests.swift` | 实际消费设置页发布目标并清理导航请求 |
 | `Tests/LLMMonitorTests/EdgeDockSelectionTests.swift` | Dock 稳定 Provider 身份、重排与停用清理回归 |
-| `scripts/tests/test_analysis_tools.py` | 合成日志/SQLite 测试分析脚本的累计去重、时间边界、空与零成本；不读取用户数据 |
+| `scripts/tests/test_analysis_tools.py` | 合成日志/SQLite/cache 测试累计去重、时间边界、互斥桶、格式发现、解压刷新/权限、只读数据库及空零成本；不读取用户数据 |
 | `scripts/tests/test_release_script.py` | 临时干净仓库与桩构建器验证发布入口的构建号优先级及不写回约束 |
 | `scripts/dsh_token_analysis/summary.py` | DSH 离线 RATE_LIMIT 与窗口汇总；全部 call 区间累计、retryId 去重 |
 | `scripts/dsh_token_analysis/analyze.py` | DSH 离线明细分析；触发时刻窗口/日累计按 call 时间统计 |
 | `scripts/dsh_token_analysis/cost.py` | DSH 离线窗口成本与分组统计；空组/零成本可输出 |
 | `scripts/dsh_token_analysis/minimax_cost.py` | MiniMax 本地 SQLite 离线窗口成本分析；空库/零成本可输出 |
+| `scripts/dsh_token_analysis/decompress.py` | 三种 DSH 输入格式流式刷新为私有权限文本；失败不覆盖旧输出 |
+| `scripts/dsh_token_analysis/antigravity_opus.py` | Antigravity 明确历史模型的固定估值分析；cache-inclusive input 归一化，无未知模型价格回退 |
 
 ## Test Suite
 

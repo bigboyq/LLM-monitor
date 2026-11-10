@@ -1263,16 +1263,16 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(try sample(result, "session-a:step:40").durationSeconds, "3601s 超界：无效域")
     }
 
-    /// 缓存失效：v2 旧索引（无样本时长）必须被版本守卫一次性拒绝并全量重建，
-    /// 重建后的索引以当前版本（v6）落盘。
-    func testCacheVersionBumpRebuildsStaleV2Index() throws {
+    /// v8 旧索引已丢失样本毫秒，必须一次性拒绝并全量重建为 v9。
+    func testCacheVersionBumpRebuildsStaleV8Index() throws {
         let fixture = makeFixture()
         writeSession(
             fixture,
             sessionID: "session-a",
             mainLines: [agyLine(createdAt: iso(t0), input: 10, cacheRead: 0, output: 5)]
         )
-        // 手写一份 v2 旧格式索引（content 与真实文件集不符，若被采纳会短路出 99 个事件）。
+        _ = try scan(fixture)
+        // 手写上一版本索引（若被采纳会短路出 99 个事件）。
         let stale = AgyLocalUsage(
             dailyTokenUsage: [],
             models: [],
@@ -1285,19 +1285,18 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let snapshotJSON = try JSONSerialization.jsonObject(with: encoder.encode(stale))
-        let legacyIndex: [String: Any] = [
-            "version": 2,
-            "files": [] as [[String: Any]],
-            "snapshot": snapshotJSON,
-            "calendarSignature": LocalUsageCalendarSignature.make(fixture.calendar)
-        ]
+        var legacyIndex = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
+        )
+        legacyIndex["version"] = 8
+        legacyIndex["snapshot"] = snapshotJSON
         try JSONSerialization.data(withJSONObject: legacyIndex).write(to: fixture.cacheDir, options: .atomic)
 
         let result = try scan(fixture)
 
-        XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
+        XCTAssertEqual(result.eventCount, 1, "v8 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 8, "重建后的索引以 v8 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 9, "重建后的索引以 v9 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

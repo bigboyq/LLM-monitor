@@ -272,7 +272,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             )
             try saveIndex(
                 DshCacheIndex(
-                    version: 7,
+                    version: 8,
                     files: [],
                     snapshot: empty,
                     calendarSignature: LocalUsageCalendarSignature.make(calendar)
@@ -351,7 +351,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             return Self.markPartial(lastGood)
         }
         index = DshCacheIndex(
-            version: 7,
+            version: 8,
             files: outcome.processedFingerprints,
             snapshot: snapshot,
             calendarSignature: currentCalendarSignature
@@ -1420,7 +1420,8 @@ private extension DshCacheIndex {
         // step/start 差分）；v5 快照该字段恒为 nil，版本不匹配即整体重建。
         // v7：v3/v4 的 message.data.stream 首 chunk 时间差分接入 TTFT（v1 仍走
         // chunk 行路径）；v6 快照的 v3/v4 样本 ttft 恒为 nil，版本不匹配即整体重建。
-        version == 7 && files == fingerprint.files
+        // v8: rebuild dates previously truncated to whole seconds.
+        return version == 8 && files == fingerprint.files
     }
 }
 
@@ -1432,8 +1433,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 7,
-            empty: DshCacheIndex(version: 7, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 8,
+            empty: DshCacheIndex(version: 8, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

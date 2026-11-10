@@ -206,7 +206,8 @@ struct CodexLocalScanLimits: Sendable {
 /// `time_to_first_token_ms`）。v1 缓存的事件无该字段，TTFT 恒缺失，升版整体
 /// 重扫（事件从 JSONL 重新解析，无迁移路径）。
 struct CodexScannerIndex: Codable, Sendable {
-    var version: Int = 2
+    // v3: rebuild event timestamps previously truncated to whole seconds.
+    var version: Int = 3
     var entries: [String: CodexSessionEventCache.Entry] = [:]
 }
 
@@ -251,7 +252,7 @@ actor CodexSessionEventCache {
             let index: CodexScannerIndex = try ScannerIndexIO.loadIndex(
                 cacheDir: cacheFileURL,
                 fileManager: fileManager,
-                currentVersion: 2,
+                currentVersion: 3,
                 empty: CodexScannerIndex(),
                 version: { $0.version },
                 logTag: "[codex/cache]"
@@ -307,7 +308,7 @@ actor CodexSessionEventCache {
                     entries[key] = val
                 }
             }
-            let index = CodexScannerIndex(version: 2, entries: entries)
+            let index = CodexScannerIndex(version: 3, entries: entries)
             try ScannerIndexIO.saveIndex(index, cacheDir: cacheFileURL, fileManager: fileManager)
             isDirty = false
             logInfo("[codex/cache] 成功持久化 \(entries.count) 个 session 缓存到磁盘")

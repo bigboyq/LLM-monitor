@@ -11,7 +11,8 @@ import Foundation
 final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[opencode-scan]"
     /// v3：daily output/reasoning 与行级样本同源，清除旧日级分摊结果。
-    nonisolated static let cacheIndexVersion = 3
+    // Rebuild dates previously truncated to whole seconds.
+    nonisolated static let cacheIndexVersion = 4
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()

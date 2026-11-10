@@ -77,6 +77,9 @@ are reflected without opening Settings or restarting the app.
 重建状态、重做凭据预检并检查节假日源变更，再恢复 watcher、同步和刷新。初次构造先 seed
 节假日源，仍由 App 入口负责第一次取数。排队的 startup reconcile 只属于创建它的那次生命周期，不能穿透
 stop/start 后抢先消费新一轮启动屏障。
+Codex 本地扫描另持有独立扫描 owner：取消或停用立即清除旧 owner 的 scanning，
+异步 loader 即使稍后才退出，也只能由仍匹配的 owner 发布结果和执行收尾，不能用旧 defer
+清掉 stop/start 后新扫描的 scanning。普通配置重载仍沿用现有配置代际接纳检查，不取消扫描。
 
 ## Provider State Machine
 
@@ -508,7 +511,7 @@ Adding a provider currently requires:
     请求全部返回后（不论成功/失败）投递一次 `LocalUsageOrchestration` reconcile。
     **reconcile 每拍都跑**，不是只在 FSEvents 报 dirty 时才跑：常规档是 `.full`
     （cache-assisted），由各 scanner 自己的 fingerprint 决定复用缓存还是真扫；
-    `.hardFull`（绕过 fingerprint / offset / cache）只在启动首拍、日历签名失效
+    启动首拍同样使用 cache-assisted `.full`；`.hardFull`（绕过 fingerprint / offset / cache）只在日历签名失效
     （`LocalUsageCalendarSignature`）和 `bypassesProviderCache` 时触发。请求按
     `dirty < full < hardFull` 折叠，FSEvents / vnode dirty 只是把该拍标成 `.dirty`
     的一个来源。即使 Provider 全部禁用，调度器也会完成一次空 pass，保证首次扫描

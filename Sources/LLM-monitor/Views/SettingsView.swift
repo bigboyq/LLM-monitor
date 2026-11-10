@@ -55,6 +55,11 @@ struct SettingsView: View {
     @State var showsDiscardConfirmation = false
     @State var saveErrorMessage: String?
 
+    /// Native hosting probes can supply a status reader without requiring an application bundle.
+    var readNotificationAuthorization: @MainActor @Sendable () async -> QuotaNotificationAuthorization = {
+        await SystemQuotaUpdateNotifier.authorizationStatus()
+    }
+
     var isDirty: Bool {
         draft != baselineDraft || launchAtLoginDraft.hasLocalEdit
     }
@@ -73,7 +78,7 @@ struct SettingsView: View {
 
     func refreshNotificationAuthorization() {
         Task {
-            notificationAuthorization = await SystemQuotaUpdateNotifier.authorizationStatus()
+            notificationAuthorization = await readNotificationAuthorization()
         }
     }
 

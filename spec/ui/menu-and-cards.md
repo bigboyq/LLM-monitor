@@ -648,8 +648,11 @@ scrolling (the former 700pt default could not). The root frame is
 `.frame(minWidth: minHeight: 420)` only — the `idealWidth`/`idealHeight` pair was
 removed because macOS SwiftUI ideal sizing fights manual resizes, and `defaultSize`
 already owns the initial size. Content stretches with the window: the `.expanded`
-history table cells use `minWidth` floor + `maxWidth: .infinity` (column floors live
-in `SevenDayUsageChartMetrics.expanded*`), and the quota-window table does the same
+history table uses `ExpandedUsageHistoryTableLayout`: the date column stays fixed,
+and the other six columns divide the space above their individual minimum widths
+(column floors live in `SevenDayUsageChartMetrics.expanded*`). Row heights follow
+the measured cells. Compact history retains its existing Grid; the quota-window table uses
+`minWidth` floors plus flexible widths
 for its numeric/value/speed columns via the `quotaTableFillsWidth` environment key
 (injected only here). Routes keep an optional notification model name as context only;
 the card is not filtered or scrolled to that model. A disabled provider gets an

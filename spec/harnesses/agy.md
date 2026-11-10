@@ -100,7 +100,7 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 **禁止前驱差分**：transcript `created_at` 是整秒级且记录的是该 step 的**发起**
 时刻 ⌊f1⌋（不是完成时刻），`row[i] − row[i−1]` 仅 21.8% 落入有效域，完全失真。
 
-缓存：当前 `AgyCacheIndex` v8——DB/WAL 指纹和增强读取重试纳入缓存判定，并清除
+缓存：当前 `AgyCacheIndex` v9——DB/WAL 指纹和增强读取重试纳入缓存判定，并清除
 旧工具响应错误回填的时长；旧版本快照一次性失效重建。
 
 ## TTFT（ttftSeconds）
@@ -111,7 +111,7 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 - 全量调用统一采集 `ttftSeconds = f1.f11`（中位数 ~3.0s - 4.6s，包含 prefill 与内部思考）；
 - 纯文本流式调用的解码速度按 `(Think + Visible) / f12` 准确反映硬件吞吐；
 - 工具调用不提供流式耗时（`duration = nil`），但保留 `ttftSeconds`；
-- TTFT 于 v7 接入，当前 `AgyCacheIndex` **v8** 同时重建旧版本指标。聚合口径见
+- TTFT 于 v7 接入，当前 `AgyCacheIndex` **v9** 同时重建旧版本指标。聚合口径见
 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 ## Provider mapping
@@ -171,7 +171,7 @@ Recent samples 的 promptID 以裸格式落盘；`agy:` 命名空间由帧构造
   尾部数据永久缺失。单文件行数超过预算（`maxSessionFiles × 10_000` 行）同样
   必须抛错（`AgyLineBudgetExceededError`）：超预算文件按失败隔离（partial），
   不入指纹，下一轮重试，而不是静默半结果入库。
-- 指纹缓存 `AgyCacheIndex` v8（per-file mtime/size 指纹 + **cli log 时间线签名**
+- 指纹缓存 `AgyCacheIndex` v9（per-file mtime/size 指纹 + **cli log 时间线签名**
   + 对应 conversations `.db` / `.db-wal` 指纹 + 全量快照 + 日历签名）：任一变化
   都触发重聚合（log-only 更新模型名，DB-only 更新原生 usage/TTFT/时长）；全部未变只做 midnight rebase
   （按当前日历重算 7 天窗口并重剪样本，业务字段原样保留）；日历签名变更强制
@@ -229,6 +229,8 @@ agy 不挂独立 timer、没有 quota 依赖：由 `ProviderRefreshScheduler` �
 | 编排与卡片接线 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift`（`agyCoordinator` / `ActiveSources.agy` / readiness 短路）+ `Services/AppState+LocalUsage.swift`（`applyAgyUsage`） |
 | 缓存路径 | `Sources/LLM-monitor/Services/TokenMonitorPaths.swift`（`TokenMonitorProvider.agy` → `token-monitor/agy.json`） |
 | Client 身份与描述符 | `Sources/LLM-monitor/Models/ClientIdentity.swift`（`ClientID.agy` + `ClientDescriptor`） |
-| Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（24 个用例：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶、时长方案 A `.db` 真值优先于方案 B、方案 A (0, 3600] 有效域、.db 缺失走方案 B GENERIC 后继结算、纯文本终答保持 nil、USER_INPUT / 非 GENERIC MODEL 行不误食、跨主文件 / 分块配对与主文件先序、方案 B 有效域边界、v2 旧索引一次性失效重建） |
+| Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（覆盖：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶、时长方案 A `.db` 真值优先于方案 B、方案 A (0, 3600] 有效域、.db 缺失走方案 B GENERIC 后继结算、纯文本终答保持 nil、USER_INPUT / 非 GENERIC MODEL 行不误食、跨主文件 / 分块配对与主文件先序、方案 B 有效域边界、v8 旧索引在指纹未变时一次性失效重建） |
+
+当前持久化缓存版本 **v9**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
 > 核对基线：2026-11-10 · 代码 91f6cd4

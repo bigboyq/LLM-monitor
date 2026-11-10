@@ -180,4 +180,6 @@ Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。启�
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |
 
+当前持久化缓存版本 **v4**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
+
 > 核对基线：2026-11-10 · 代码 91f6cd4

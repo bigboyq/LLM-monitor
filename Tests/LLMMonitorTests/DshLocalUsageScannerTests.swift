@@ -367,9 +367,8 @@ final class DshLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(deepseek.recentSamples[3].ttftSeconds, "step/start 锚点缺失落 nil")
     }
 
-    /// 缓存 index 版本钉住 7：v3/v4 的 message.data.stream 首 chunk 时间差分接入
-    /// 后，v6 及更早的旧快照必须整体重建，不得带着缺失的 ttft 命中。
-    func testDshCacheIndexVersionIsPinnedAt7() throws {
+    /// v7 的秒级日期快照必须整体重建为 v8，即使文件指纹未变化。
+    func testDshCacheIndexVersionRebuildsPreviousVersion() throws {
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()
         let root = FileManager.default.temporaryDirectory
@@ -393,10 +392,20 @@ final class DshLocalUsageScannerTests: XCTestCase {
             limits: DshLocalUsageScanLimits.production
         )
 
-        let index = try XCTUnwrap(
+        var index = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: cache.appendingPathComponent("index.json"))) as? [String: Any]
         )
-        XCTAssertEqual(index["version"] as? Int, 7, "DSH 缓存 index 版本必须钉在 7")
+        XCTAssertEqual(index["version"] as? Int, 8, "DSH 缓存 index 版本必须钉在 8")
+        index["version"] = 7
+        var stale = try XCTUnwrap(index["snapshot"] as? [String: Any])
+        stale["eventCount"] = 999
+        index["snapshot"] = stale
+        try JSONSerialization.data(withJSONObject: index).write(to: cache.appendingPathComponent("index.json"))
+        let rebuilt = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot, cacheDir: cache, fileManager: FileManagerBox(),
+            calendar: calendar, now: { base }, decompressor: { $0 }, limits: .production
+        )
+        XCTAssertNotEqual(rebuilt.eventCount, 999, "unchanged fingerprints must not reuse a v7 snapshot")
     }
 
     /// step/start 缺失、差值非正、差值超 1h、`step/end` 后残留锚点（防泄漏）

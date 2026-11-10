@@ -218,7 +218,7 @@ TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内
 | ZCode | `model_usage.time_to_first_token_ms` 显式列 ÷ 1000（主表与非智谱分片同口径；NULL-aware 读取，NULL → nil；缓存 v12 重建） |
 | Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
 | Antigravity | 方案 B：`.db` 的 `gen_metadata` 解析 `f1.f11` Duration 秒数（中位数 ~3.0s - 4.6s）；缓存 v12 重建 |
-| agy | 方案 B：同 Antigravity，经 `AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 读取 `f1.f11`；当前缓存 v8 重建 |
+| agy | 方案 B：同 Antigravity，经 `AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 读取 `f1.f11`；v7 接入，当前缓存 v9 保留小数秒后重建 |
 | DSH | 双路径：v1 首个独立 `assistant/chunk.time − step/start.time` ÷ 1000（字节级预过滤 + 每 step 首 chunk 节流解码）；v3 / v4 取 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（缓存 v7 重建。见 `harnesses/dsh.md` § TTFT 调研记录） |
 | MiniMax | `(request_duration_ms − decode_duration_ms) / 1000`（同一时长守门窗口查询补取 decode 键、同一 `(session, turn)` FIFO 配对；decode 缺失 / 差值 < 0 → nil。缓存 v18 重建。见 `harnesses/minimaxcode.md` § TTFT 调研记录） |
 | OpenCode | 无（恒 nil） |

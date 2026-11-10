@@ -1,5 +1,55 @@
 import SwiftUI
 
+/// Grid can let flexible cells exceed the sum of their minima. Allocate the table's
+/// columns explicitly so its reported width includes every cell, including in a scroll view.
+private struct ExpandedUsageHistoryTableLayout: Layout {
+    let minimumWidths: [CGFloat]
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    private var minimumWidth: CGFloat {
+        minimumWidths.reduce(0, +) + CGFloat(minimumWidths.count - 1) * horizontalSpacing
+    }
+
+    private func widths(for width: CGFloat) -> [CGFloat] {
+        let extra = max(width - minimumWidth, 0) / CGFloat(minimumWidths.count - 1)
+        return minimumWidths.enumerated().map { index, minimum in index == 0 ? minimum : minimum + extra }
+    }
+
+    private func rowHeights(subviews: Subviews, widths: [CGFloat]) -> [CGFloat] {
+        stride(from: 0, to: subviews.count, by: widths.count).map { start in
+            (start..<min(start + widths.count, subviews.count)).map { index in
+                subviews[index].sizeThatFits(ProposedViewSize(width: widths[index % widths.count], height: nil)).height
+            }.max() ?? 0
+        }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = max(proposal.width ?? minimumWidth, minimumWidth)
+        let heights = rowHeights(subviews: subviews, widths: widths(for: width))
+        return CGSize(width: width, height: heights.reduce(0, +) + CGFloat(max(heights.count - 1, 0)) * verticalSpacing)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let widths = widths(for: bounds.width)
+        let heights = rowHeights(subviews: subviews, widths: widths)
+        var y = bounds.minY
+        for (row, height) in heights.enumerated() {
+            var x = bounds.minX
+            for column in widths.indices {
+                let index = row * widths.count + column
+                guard index < subviews.count else { break }
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: widths[column], height: height)
+                )
+                x += widths[column] + horizontalSpacing
+            }
+            y += height + verticalSpacing
+        }
+    }
+}
+
 /// Shared seven-day history section for local providers and fleet projections.
 /// It owns only history metric selection and never reads the quota-window segment.
 struct SevenDayUsageHistoryView: View {
@@ -293,39 +343,55 @@ struct SevenDayUsageHistoryView: View {
         }
     }
 
+    @ViewBuilder
     private var dailyTable: some View {
-        Grid(alignment: .leading, horizontalSpacing: tableSpacing, verticalSpacing: effectiveLayoutMode == .expanded ? 6 : 4) {
-            GridRow {
-                header("日期", width: dateColWidth, alignment: .leading)
-                header("R/T", width: rtColWidth)
-                header("Input", width: bucketColWidth)
-                header("Cache", width: bucketColWidth)
-                header("Reason", width: bucketColWidth)
-                header("Output", width: bucketColWidth)
-                selectedDynamicHeader
+        if effectiveLayoutMode == .expanded {
+            ExpandedUsageHistoryTableLayout(
+                minimumWidths: [dateColWidth, rtColWidth] + Array(repeating: bucketColWidth, count: 4) + [dynamicColWidth],
+                horizontalSpacing: tableSpacing, verticalSpacing: 6
+            ) {
+                tableHeader
+                ForEach(days) { tableRow($0) }
             }
-
-            ForEach(days) { day in
-                GridRow {
-                    Text(Formatters.formatMonthDay(day.dayStart))
-                        .font(tableValueFont)
-                        .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
-                        .frame(width: dateColWidth, alignment: .leading)
-                    cellFrame(
-                        Text(roundsTurns(day))
-                            .font(tableValueFont)
-                            .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary),
-                        width: rtColWidth,
-                        alignment: .trailing
-                    )
-                    token(day.input, color: .tokenInputTint, width: bucketColWidth)
-                    token(day.cache, color: .tokenCacheReadTint, width: bucketColWidth)
-                    token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: bucketColWidth)
-                    token(day.output, color: .tokenOutputTint, width: bucketColWidth)
-                    selectedDynamicCell(day, width: dynamicColWidth)
+        } else {
+            Grid(alignment: .leading, horizontalSpacing: tableSpacing, verticalSpacing: 4) {
+                GridRow { tableHeader }
+                ForEach(days) { day in
+                    GridRow { tableRow(day) }
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var tableHeader: some View {
+        header("日期", width: dateColWidth, alignment: .leading)
+        header("R/T", width: rtColWidth)
+        header("Input", width: bucketColWidth)
+        header("Cache", width: bucketColWidth)
+        header("Reason", width: bucketColWidth)
+        header("Output", width: bucketColWidth)
+        selectedDynamicHeader
+    }
+
+    @ViewBuilder
+    private func tableRow(_ day: UsageHistoryDay) -> some View {
+        Text(Formatters.formatMonthDay(day.dayStart))
+            .font(tableValueFont)
+            .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
+            .frame(width: dateColWidth, alignment: .leading)
+        cellFrame(
+            Text(roundsTurns(day))
+                .font(tableValueFont)
+                .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary),
+            width: rtColWidth,
+            alignment: .trailing
+        )
+        token(day.input, color: .tokenInputTint, width: bucketColWidth)
+        token(day.cache, color: .tokenCacheReadTint, width: bucketColWidth)
+        token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: bucketColWidth)
+        token(day.output, color: .tokenOutputTint, width: bucketColWidth)
+        selectedDynamicCell(day, width: dynamicColWidth)
     }
 
     @ViewBuilder

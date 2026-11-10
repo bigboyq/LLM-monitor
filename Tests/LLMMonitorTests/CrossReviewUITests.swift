@@ -136,11 +136,23 @@ final class CrossReviewUITests: StateTestCase {
         let state = AppState(descriptors: [], configStore: store)
         state.stop()
         let controller = EdgeDockController.shared
+        let originalConfig = controller.config
         controller.teardown()
-        defer { controller.teardown(); state.stop() }
+        defer {
+            controller.teardown()
+            controller.applyRuntimeConfig { $0 = originalConfig }
+            state.stop()
+        }
         controller.state = state
         controller.hasFinishedLaunching = true
-        controller.applyRuntimeConfig { $0.mode = .statusWindow; $0.screenUUID = nil }
+        // This fixture exercises pending selection, not the foreground Space's
+        // fullscreen visibility policy. Keep that independent input explicit.
+        controller.applyRuntimeConfig {
+            $0.mode = .statusWindow
+            $0.screenUUID = nil
+            $0.hideInFullscreen = false
+        }
+        XCTAssertFalse(controller.isHiddenByFullscreen)
         controller.panel = NSPanel(
             contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true
         )

@@ -126,11 +126,12 @@ extension SettingsView {
             if currentTab.id == SettingsTab.interfaceID {
             SettingsSection(title: "外观", footer: "浅色 / 深色固定显示，自动跟随系统设置；保存并应用后生效。") {
                 SettingsControlRow("界面外观") {
-                    Picker("", selection: $draft.appearance) {
+                    Picker("界面外观", selection: $draft.appearance) {
                         ForEach(AppAppearance.allCases) { item in
                             Text(item.displayName).tag(item)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: SettingsLayout.standardControlWidth)
                 }
@@ -142,7 +143,7 @@ extension SettingsView {
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
-                        Picker("", selection: $draft.statusBarIconStyle) {
+                        Picker("图标主题", selection: $draft.statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
                                 HStack(spacing: 8) {
                                     Image(nsImage: Self.previewImage(for: style))
@@ -153,12 +154,13 @@ extension SettingsView {
                                 .tag(style)
                             }
                         }
+                        .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
 
                     SettingsControlRow("Provider") {
-                        Picker("", selection: Binding(
+                        Picker("Provider", selection: Binding(
                             get: { draft.statusBarQuotaProvider },
                             set: { providerID in
                                 guard providerID != draft.statusBarQuotaProvider else { return }
@@ -171,6 +173,7 @@ extension SettingsView {
                                 Text(descriptor.displayName).tag(descriptor.id)
                             }
                         }
+                        .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
@@ -178,7 +181,7 @@ extension SettingsView {
                     if !draft.statusBarQuotaProvider.isEmpty {
                         let options = state.statusBarQuotaOptions(providerID: draft.statusBarQuotaProvider)
                         SettingsControlRow("额度类型") {
-                            Picker("", selection: $draft.statusBarQuotaSource) {
+                            Picker("额度类型", selection: $draft.statusBarQuotaSource) {
                                 ForEach(options) { option in
                                     Text(option.title).tag(option.source)
                                 }
@@ -186,6 +189,7 @@ extension SettingsView {
                                     Text("所选额度（暂不可用）").tag(draft.statusBarQuotaSource)
                                 }
                             }
+                            .labelsHidden()
                             .pickerStyle(.menu)
                             .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                         }
@@ -195,7 +199,7 @@ extension SettingsView {
 
                     SettingsControlRow("正常颜色") {
                         ColorPicker(
-                            "",
+                            "正常颜色",
                             selection: statusBarColorBinding(for: \.healthyHex),
                             supportsOpacity: false
                         )
@@ -204,7 +208,7 @@ extension SettingsView {
 
                     SettingsControlRow("预警颜色") {
                         ColorPicker(
-                            "",
+                            "预警颜色",
                             selection: statusBarColorBinding(for: \.warningHex),
                             supportsOpacity: false
                         )
@@ -213,7 +217,7 @@ extension SettingsView {
 
                     SettingsControlRow("异常颜色") {
                         ColorPicker(
-                            "",
+                            "异常颜色",
                             selection: statusBarColorBinding(for: \.criticalHex),
                             supportsOpacity: false
                         )
@@ -236,7 +240,7 @@ extension SettingsView {
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("形态") {
-                        Picker("", selection: $draft.edgeDockMode) {
+                        Picker("形态", selection: $draft.edgeDockMode) {
                             ForEach(EdgeDockMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
@@ -282,7 +286,7 @@ extension SettingsView {
                     }
 
                     SettingsControlRow("小圆环尺寸") {
-                        Picker("", selection: $draft.edgeDockCompactSize) {
+                        Picker("小圆环尺寸", selection: $draft.edgeDockCompactSize) {
                             ForEach(EdgeDockCompactSize.allCases) { size in
                                 Text(size.displayName).tag(size)
                             }
@@ -338,32 +342,40 @@ extension SettingsView {
 
                     SettingsControlRow("服务端地址") {
                         TextField(
-                            "",
+                            "服务端地址",
                             text: $draft.barkServerURL,
                             prompt: Text(BarkConfig.defaultServerURL)
                         )
+                        .labelsHidden()
+                        .accessibilityLabel("服务端地址")
                         .frame(width: SettingsLayout.standardControlWidth)
                         .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("Device Key") {
-                        secretField(text: $draft.barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
+                        secretField(label: "Device Key", text: $draft.barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
                     }
 
                     SettingsControlRow("铃声（可选）") {
-                        TextField("", text: $draft.barkSound, prompt: Text("默认"))
+                        TextField("铃声（可选）", text: $draft.barkSound, prompt: Text("默认"))
+                            .labelsHidden()
+                            .accessibilityLabel("铃声（可选）")
                             .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("分组（可选）") {
-                        TextField("", text: $draft.barkGroup, prompt: Text(BarkConfig.defaultGroup))
+                        TextField("分组（可选）", text: $draft.barkGroup, prompt: Text(BarkConfig.defaultGroup))
+                            .labelsHidden()
+                            .accessibilityLabel("分组（可选）")
                             .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("消息有效期 TTL（秒，可选）") {
-                        TextField("", text: $draft.barkTTL, prompt: Text("0 = 不过期"))
+                        TextField("消息有效期 TTL（秒，可选）", text: $draft.barkTTL, prompt: Text("0 = 不过期"))
+                            .labelsHidden()
+                            .accessibilityLabel("消息有效期 TTL（秒，可选）")
                             .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!draft.barkEnabled)
                     }
@@ -544,10 +556,12 @@ extension SettingsView {
                 SettingsControlRow("DeepSeek 余额预警阈值（黄色）") {
                     HStack(spacing: 8) {
                         TextField(
-                            "",
+                            "DeepSeek 余额预警阈值（黄色）",
                             value: $draft.alertThresholds.deepseekBalanceWarning,
                             format: .number
                         )
+                        .labelsHidden()
+                        .accessibilityLabel("DeepSeek 余额预警阈值（黄色）")
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         Text("元 / 美元")
@@ -560,10 +574,12 @@ extension SettingsView {
                 SettingsControlRow("DeepSeek 余额严重阈值（红色）") {
                     HStack(spacing: 8) {
                         TextField(
-                            "",
+                            "DeepSeek 余额严重阈值（红色）",
                             value: $draft.alertThresholds.deepseekBalanceCritical,
                             format: .number
                         )
+                        .labelsHidden()
+                        .accessibilityLabel("DeepSeek 余额严重阈值（红色）")
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         Text("元 / 美元")
@@ -583,11 +599,12 @@ extension SettingsView {
         ) {
             ForEach(QuotaNotificationKind.allCases) { kind in
                 SettingsControlRow(kind.displayName) {
-                    Picker("", selection: notifyChannelBinding(providerID: providerID, kind: kind)) {
+                    Picker(kind.displayName, selection: notifyChannelBinding(providerID: providerID, kind: kind)) {
                         ForEach(QuotaNotifyChannel.allCases) { channel in
                             Text(channel.displayName).tag(channel)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                 }
@@ -752,7 +769,9 @@ struct HolidaySourceSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsControlRow("数据源") {
-                TextField("", text: $draft, prompt: Text(HolidayCalendar.defaultSourceURL))
+                TextField("数据源", text: $draft, prompt: Text(HolidayCalendar.defaultSourceURL))
+                    .labelsHidden()
+                    .accessibilityLabel("数据源")
                     .textFieldStyle(.roundedBorder)
                     .frame(width: SettingsLayout.standardControlWidth)
             }

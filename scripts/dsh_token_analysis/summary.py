@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Compact summary view of the analysis."""
 import json
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-PLAIN_DIR = Path("/tmp/dsh_plain")
+PLAIN_DIR = Path(os.environ.get("DSH_PLAIN_DIR", "/tmp/dsh_plain"))
 TZ = timezone(timedelta(hours=8))
 
 
@@ -28,7 +29,7 @@ call_totals = {}      # (sid, turn, step) -> dict
 rate_limit_events = []  # (ts, rid, sid, turn, step)
 retry_seen = set()
 
-for path in sorted(PLAIN_DIR.glob("*.zstd")):
+for path in sorted(p for p in PLAIN_DIR.glob("*") if p.suffix in {".zstd", ".zst", ".jsonl"}):
     sid = path.stem
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -50,6 +51,8 @@ for path in sorted(PLAIN_DIR.glob("*.zstd")):
                 if src.get("provider") != "minimax-cn" or src.get("model") != "MiniMax-M3":
                     continue
                 usage = data.get("usage") or {}
+                raw_output = max(usage.get("outputTokens") or 0, 0)
+                reasoning = min(max(usage.get("reasoningTokens") or 0, 0), raw_output)
                 key = (sid, data.get("turn"), data.get("step"))
                 rec = call_totals.setdefault(
                     key, {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid, "samples": []}
@@ -57,13 +60,13 @@ for path in sorted(PLAIN_DIR.glob("*.zstd")):
                 rec["samples"].append((ts, {
                     "input": usage.get("inputTokens") or 0,
                     "cache": usage.get("cacheReadTokens") or 0,
-                    "output": usage.get("outputTokens") or 0,
-                    "reasoning": usage.get("reasoningTokens") or 0,
+                    "output": raw_output - reasoning,
+                    "reasoning": reasoning,
                 }))
                 rec["input"] += usage.get("inputTokens") or 0
                 rec["cache"] += usage.get("cacheReadTokens") or 0
-                rec["output"] += usage.get("outputTokens") or 0
-                rec["reasoning"] += usage.get("reasoningTokens") or 0
+                rec["output"] += raw_output - reasoning
+                rec["reasoning"] += reasoning
                 if ts < rec["ts"]:
                     rec["ts"] = ts
             elif t == "llm/retry":
@@ -128,9 +131,9 @@ for i, (ts, rid, sid, turn, step) in enumerate(rate_limit_events, 1):
           f"{fmt(win_total)} | {fmt(day_total)} |")
 
 print()
-print("## 5h 窗口累计 token 使用")
+print("## 固定时段窗口累计 token 使用")
 print()
-print("按本地时间 0/5/10/15/20 切分（每个窗口 5 小时）。\"calls\"=该窗口内的 M3 call 次数。")
+print("按本地时间 0/5/10/15/20 切分（前四个窗口 5 小时，20:00 窗口到次日 0 点为 4 小时）。\"calls\"=该窗口内的 M3 call 次数。")
 print()
 print("| 日期 | 窗口 | input (uncached) | cache-read | output | reasoning | **total** | calls | rate_limits |")
 print("|------|------|-----------------:|-----------:|-------:|----------:|----------:|------:|------------:|")
@@ -151,7 +154,7 @@ for ts, rid, sid, turn, step in rate_limit_events:
 
 for (day, hour), r in sorted(agg.items()):
     total = sum((r["input"], r["cache"], r["output"], r["reasoning"]))
-    print(f"| {day} | {hour:02d}:00+5h | {fmt(r['input'])} | {fmt(r['cache'])} | "
+    print(f"| {day} | {hour:02d}:00+{min(5, 24 - hour)}h | {fmt(r['input'])} | {fmt(r['cache'])} | "
           f"{fmt(r['output'])} | {fmt(r['reasoning'])} | **{fmt(total)}** | {r['count']} | {r['rate_limits']} |")
 
 # ---------------------------------------------------------------------------
@@ -166,5 +169,5 @@ print("| 窗口 | input | cache-read | output | reasoning | total | calls | rate
 print("|------|------:|-----------:|-------:|----------:|------:|------:|------------:|")
 for (day, hour), r in hits:
     total = sum((r["input"], r["cache"], r["output"], r["reasoning"]))
-    print(f"| {day} {hour:02d}:00+5h | {fmt(r['input'])} | {fmt(r['cache'])} | "
+    print(f"| {day} {hour:02d}:00+{min(5, 24 - hour)}h | {fmt(r['input'])} | {fmt(r['cache'])} | "
           f"{fmt(r['output'])} | {fmt(r['reasoning'])} | **{fmt(total)}** | {r['count']} | {r['rate_limits']} |")

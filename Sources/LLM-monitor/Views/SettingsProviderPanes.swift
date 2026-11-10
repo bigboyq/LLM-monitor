@@ -97,7 +97,9 @@ extension SettingsView {
                 ) {
                     SettingsControlRow("auth.json 路径") {
                         HStack(spacing: 8) {
-                            TextField("", text: $draft.chatgptAuthPath, prompt: Text("~/.codex/auth.json 或 ~/.codex/"))
+                            TextField("auth.json 路径", text: $draft.chatgptAuthPath, prompt: Text("~/.codex/auth.json 或 ~/.codex/"))
+                                .labelsHidden()
+                                .accessibilityLabel("auth.json 路径")
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: .infinity)
                             Button("选择…") {
@@ -244,7 +246,7 @@ extension SettingsView {
         if antigravityPreflight.keychainAccessDenied {
             SettingsControlRow("钥匙串额度兜底") {
                 HStack(spacing: 8) {
-                    Toggle("", isOn: .constant(false))
+                    Toggle("钥匙串额度兜底", isOn: .constant(false))
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
@@ -274,7 +276,7 @@ extension SettingsView {
         if antigravityPreflight.agyCLIMissing {
             SettingsControlRow("允许监控刷新 Token") {
                 HStack(spacing: 8) {
-                    Toggle("", isOn: .constant(false))
+                    Toggle("允许监控刷新 Token", isOn: .constant(false))
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
@@ -314,7 +316,9 @@ extension SettingsView {
                     if draft.glmZcodeJWTEnabled {
                         SettingsControlRow("ZCode 凭证路径") {
                             HStack(spacing: 8) {
-                                TextField("", text: $draft.glmAuthPath, prompt: Text("~/.zcode/v2 或 credentials.json"))
+                                TextField("ZCode 凭证路径", text: $draft.glmAuthPath, prompt: Text("~/.zcode/v2 或 credentials.json"))
+                                    .labelsHidden()
+                                    .accessibilityLabel("ZCode 凭证路径")
                                     .textFieldStyle(.roundedBorder)
                                     .frame(maxWidth: .infinity)
                                 Button("选择…") {
@@ -325,11 +329,12 @@ extension SettingsView {
                         }
 
                         SettingsControlRow("运营活动推送通知") {
-                            Picker("", selection: $draft.glmNotifyCampaign) {
+                            Picker("运营活动推送通知", selection: $draft.glmNotifyCampaign) {
                                 ForEach(QuotaNotifyChannel.allCases) { channel in
                                     Text(channel.displayName).tag(channel)
                                 }
                             }
+                            .labelsHidden()
                             .pickerStyle(.menu)
                             .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                         }
@@ -430,11 +435,14 @@ extension SettingsView {
         HStack(spacing: 8) {
             Group {
                 if showGlmKey {
-                    TextField("", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                    TextField("API Key（必填）", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                        .accessibilityLabel("API Key（必填）")
                 } else {
-                    SecureField("", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                    SecureField("API Key（必填）", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                        .accessibilityLabel("API Key（必填）")
                 }
             }
+            .labelsHidden()
             .textFieldStyle(.roundedBorder)
 
             Button {
@@ -535,7 +543,9 @@ struct CodexAdminKeyCardView: View {
             .padding(.bottom, 2)
 
             SettingsControlRow("Key 名称") {
-                TextField("", text: $keyDraft.label, prompt: Text("例如：个人账号、团队项目"))
+                TextField("Key 名称", text: $keyDraft.label, prompt: Text("例如：个人账号、团队项目"))
+                    .labelsHidden()
+                    .accessibilityLabel("Key 名称")
                     .textFieldStyle(.roundedBorder)
                     .frame(width: SettingsLayout.standardControlWidth)
                     .help("用于额度卡片中区分各个 API Key；留空时显示 API Key 序号。")
@@ -545,11 +555,14 @@ struct CodexAdminKeyCardView: View {
                 HStack(spacing: 8) {
                     Group {
                         if isKeyVisible {
-                            TextField("", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                            TextField("Admin API Key", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                                .accessibilityLabel("Admin API Key")
                         } else {
-                            SecureField("", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                            SecureField("Admin API Key", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                                .accessibilityLabel("Admin API Key")
                         }
                     }
+                    .labelsHidden()
                     .textFieldStyle(.roundedBorder)
 
                     Button {
@@ -566,7 +579,9 @@ struct CodexAdminKeyCardView: View {
 
             SettingsControlRow("赠金额度 ($)") {
                 VStack(alignment: .trailing, spacing: 4) {
-                    TextField("", text: $keyDraft.monthlyQuotaLimit, prompt: Text("40"))
+                    TextField("赠金额度 ($)", text: $keyDraft.monthlyQuotaLimit, prompt: Text("40"))
+                        .labelsHidden()
+                        .accessibilityLabel("赠金额度 ($)")
                         .textFieldStyle(.roundedBorder)
                         .frame(width: SettingsLayout.standardControlWidth)
                     if SettingsView.validMonthlyQuotaLimit(keyDraft.monthlyQuotaLimit) == nil && !keyDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -578,16 +593,17 @@ struct CodexAdminKeyCardView: View {
             }
 
             SettingsControlRow("账单日") {
-                Picker("", selection: $keyDraft.billingDay) {
+                Picker("账单日", selection: $keyDraft.billingDay) {
                     ForEach(1...31, id: \.self) { day in
                         Text("每月 \(day) 日").tag(day)
                     }
                 }
+                .labelsHidden()
                 .frame(width: SettingsLayout.standardControlWidth)
             }
 
             SettingsControlRow("重置时间") {
-                DatePicker("", selection: $keyDraft.billingTime, displayedComponents: .hourAndMinute)
+                DatePicker("重置时间", selection: $keyDraft.billingTime, displayedComponents: .hourAndMinute)
                     .labelsHidden()
                     .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
             }

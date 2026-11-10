@@ -58,7 +58,7 @@ struct SettingsToggleRow: View {
 
     var body: some View {
         SettingsControlRow(label) {
-            Toggle("", isOn: $isOn)
+            Toggle(label, isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)

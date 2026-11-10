@@ -17,11 +17,23 @@ final class EdgeDockSelectionTests: StateTestCase {
         let state = AppState(descriptors: [], configStore: store)
         state.stop()
         let controller = EdgeDockController.shared
+        let originalConfig = controller.config
         controller.teardown()
-        defer { controller.teardown(); state.stop() }
+        defer {
+            controller.teardown()
+            controller.applyRuntimeConfig { $0 = originalConfig }
+            state.stop()
+        }
         controller.state = state
         controller.hasFinishedLaunching = true
-        controller.applyRuntimeConfig { $0.mode = .statusWindow; $0.screenUUID = nil }
+        // Identity reconciliation must stay visible regardless of the real
+        // foreground Space or a fullscreen probe cached by another test.
+        controller.applyRuntimeConfig {
+            $0.mode = .statusWindow
+            $0.screenUUID = nil
+            $0.hideInFullscreen = false
+        }
+        XCTAssertFalse(controller.isHiddenByFullscreen)
         // 不显示任何真实窗口；拖拽门禁只跳过 frame/show，保留 reconcile 的身份处理。
         controller.panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         controller.isDragging = true

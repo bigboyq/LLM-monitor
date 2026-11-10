@@ -30,6 +30,10 @@ Settings layout rules:
 - pane headers vertically center a `34x34pt` icon container with the two-line title and subtitle
 - settings rows use a left-aligned label and a right-aligned control or value
 - boolean settings use native SwiftUI switch toggles with `.controlSize(.small)`
+- Toggle / Picker（含颜色与日期选择器）及 TextField / SecureField 以实际字段名作为控件标题；仅用
+  `.labelsHidden()` 隐去重复视觉标题，保留 VoiceOver 的控件名称，不依赖同级 Text 自动关联。
+  TextField / SecureField 同时将 `.accessibilityLabel` 显式设置到真实输入节点（含密钥显隐
+  两个分支）；原生输入框不保证将隐藏标题导出为 AX 名称，占位文字也不替代字段用途。
 - controls within a section use 16pt vertical spacing; the section card uses 14pt padding
 - explanatory copy belongs below the section card as caption-sized footer text
 - menu pickers use a fixed trailing-aligned frame where necessary to keep controls in one column
@@ -207,6 +211,9 @@ thinking share, output-to-input ratio, hit rate, or speed; total is the default.
 gaps and today is marked incomplete. Speed is calculated as daily Prompt P50. The selected
 metric is persisted independently under `usageHistoryMetric` and is not coupled to the
 quota-window Analysis/Usage switch.
+设置页展开行的历史区可横向滚动；内容宽度取可用宽度与 expanded 表格 466pt 下限的
+较大值，初始靠左显示，末列可完整滚入视口。720pt 窗口下不再由表格最小宽度撑大整棵
+设置布局，放大窗口时仍撑满右侧区域。
 
 Harness usage attribution is automatic. This pane has no attribution toggles, no binding
 draft, and no binding save action. Every supported ledger provider contributes to its mapped
@@ -447,7 +454,7 @@ appearance-neutral.
 ### 设置页滚动位置与排版规范
 
 - **切页滚动复位**：`SettingsView` 的 `detailContent` 在 `SettingsPaneHeader` 挂载 `.id("settings-top")`。普通 Tab 切换统一通过 `proxy.scrollTo("settings-top", anchor: .top)` 归位到顶部，避免继承上一页的滚动偏移；从 Provider 页点击「编辑此 Provider 的通知规则」时保留定向平滑滚动至目标项。
-- **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。expanded 表格（b9e1000 起）的 R/T 与四个分桶加动态列在 expanded 下改为「`minWidth` 列宽下限 + `maxWidth: .infinity`」弹性填满（下限常量住在 `SevenDayUsageChartMetrics.expanded*`，日期列恒为固定 42pt），compact 仍为 `.frame(width:)` 固定列宽；详情窗口因此能在放大时让表格随窗口一起拉伸。
+- **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。expanded 表格由 `ExpandedUsageHistoryTableLayout` 显式分配七列：日期固定 42pt，其余六列在各自下限上均分额外空间（下限常量住在 `SevenDayUsageChartMetrics.expanded*`），行高随单元格测量结果变化。466pt 下限可完整布局，放大时随窗口拉伸；compact 保留原有 Grid 与固定列宽。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
 > 核对基线：2026-11-10 · 代码 abcf932

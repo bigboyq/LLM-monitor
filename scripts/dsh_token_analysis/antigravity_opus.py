@@ -5,15 +5,16 @@ Antigravity Opus 5h window cost aggregation.
 Source: ~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json
   (LLM-monitor-maintained cache; reads per-session samples from Antigravity RPC)
 
-Opus model: claude-opus-4-6-thinking (169 samples)
-Sonnet model: claude-sonnet-4-6 (97 samples)
+Opus model: claude-opus-4-6-thinking
+Sonnet model: claude-sonnet-4-6
 
-Pricing reference (Anthropic public list):
+Fixed historical analysis assumptions (not current provider prices):
   Opus 4.6:   input $15 / 1M, cache_read $1.50 / 1M, output $75 / 1M
   Sonnet 4.6: input $3  / 1M, cache_read $0.30 / 1M, output $15 / 1M
-  (These are list prices; Antigravity subscription may negotiate different rates.)
+  (These legacy assumptions do not represent the app pricing catalog or a bill.)
 """
 import json
+import os
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -26,10 +27,11 @@ INDEX = (
     / "token-monitor"
     / "antigravity.json"
 )
+INDEX = Path(os.environ.get("ANTIGRAVITY_USAGE_INDEX", str(INDEX)))
 TZ = timezone(timedelta(hours=8))
 WINDOWS = (0, 5, 10, 15, 20)
 
-# Public list prices (USD per 1M tokens)
+# Fixed historical assumptions (USD per 1M tokens); no fallback for unknown models.
 PRICES = {
     "claude-opus-4-6-thinking": {
         "input": 15.0, "cache": 1.50, "output": 75.0,
@@ -54,7 +56,7 @@ def window_start(ts):
 
 
 def cost_usd(model, in_t, cache_t, out_t, reason_t=0):
-    p = PRICES.get(model, PRICES["claude-opus-4-6-thinking"])
+    p = PRICES[model]
     return (
         in_t * p["input"]
         + cache_t * p["cache"]
@@ -79,13 +81,14 @@ for sid, samples in data["samplesBySession"].items():
         continue
     for s in samples:
         m = s.get("modelName", "")
-        if "opus" not in m.lower() and "claude" not in m.lower():
+        if m not in PRICES:
             continue
         ts = parse_ts(s["completedAt"])
         win = window_start(ts)
         k = (m, ts.strftime("%Y-%m-%d"), win)
-        in_t = s.get("inputTokens") or 0
-        cache_t = s.get("cachedInputTokens") or 0
+        raw_input = max(s.get("inputTokens") or 0, 0)
+        cache_t = min(max(s.get("cachedInputTokens") or 0, 0), raw_input)
+        in_t = raw_input - cache_t
         out_t = s.get("outputTokens") or 0
         reason_t = s.get("reasoningOutputTokens") or 0
         rec = per_window[k]
@@ -108,7 +111,7 @@ opus_total_cost_usd = cost_usd(
     opuses_total["i"], opuses_total["c"], opuses_total["o"], opuses_total["r"]
 )
 opus_total_cost_cny = opus_total_cost_usd * USD_CNY
-print(f"## Antigravity Opus 总消耗（2026-07-29 ~ 09-14）")
+print(f"## Antigravity Opus 4.6 总消耗（当前输入；固定历史估值，不含未列模型）")
 print()
 print(f"- rounds: **{opuses_total['n']}**")
 print(f"- input (uncached): {opuses_total['i']:,}")
@@ -117,13 +120,13 @@ print(f"- output: {opuses_total['o']:,}")
 print(f"- reasoning: {opuses_total['r']:,}")
 total_tokens = opuses_total['i']+opuses_total['c']+opuses_total['o']+opuses_total['r']
 print(f"- **total tokens**: {total_tokens:,} ({total_tokens/1e6:.1f}M)")
-print(f"- cost @ list price: **${opus_total_cost_usd:,.2f}**  ≈ **¥{opus_total_cost_cny:,.2f}**")
+print(f"- cost @ fixed historical assumptions: **${opus_total_cost_usd:,.2f}**  ≈ **¥{opus_total_cost_cny:,.2f}**")
 print()
 
 # 5h windows for Opus only
-print("## Opus 每 5h 窗口累计（按 Opus 官方 list price 折算）")
+print("## Opus 每 固定时段窗口累计（按脚本固定历史价格估算）")
 print()
-print(f"Opus list price: input ${PRICES['claude-opus-4-6-thinking']['input']}/M · cache_read ${PRICES['claude-opus-4-6-thinking']['cache']}/M · output ${PRICES['claude-opus-4-6-thinking']['output']}/M")
+print(f"Opus fixed historical estimate: input ${PRICES['claude-opus-4-6-thinking']['input']}/M · cache_read ${PRICES['claude-opus-4-6-thinking']['cache']}/M · output ${PRICES['claude-opus-4-6-thinking']['output']}/M")
 print()
 print("```")
 print(f"{'日期':<12}  {'窗口':<22}  {'cache-read':>11}  {'input':>9}  {'output':>9}  "
@@ -140,11 +143,11 @@ for (model, day, win), r in opus_windows:
     c_usd = cost_usd(model, r["i"], r["c"], r["o"], r["r"])
     c_cny = c_usd * USD_CNY
     total = r["i"] + r["c"] + r["o"] + r["r"]
-    bar_len = int(round(c_usd / max_cost * 30))
+    bar_len = int(round(c_usd / max_cost * 30)) if max_cost > 0 else 0
     bar = "█" * bar_len + "·" * (30 - bar_len)
     first = r["first"].strftime("%m-%d %H:%M") if r["first"] else "-"
     last = r["last"].strftime("%m-%d %H:%M") if r["last"] else "-"
-    print(f"{day:<12}  {win.strftime('%m-%d %H:%M')}+5h   "
+    print(f"{day:<12}  {win.strftime('%m-%d %H:%M')}+{min(5, 24 - win.hour)}h   "
           f"{r['c']/1e6:>9.2f}M  {r['i']/1e6:>7.2f}M  {(r['o']+r['r'])/1e6:>7.2f}M  "
           f"{total/1e6:>7.2f}M  ${c_usd:>5.2f}  ¥{c_cny:>6.2f}  {r['n']:>5}  {bar}")
 print("```")

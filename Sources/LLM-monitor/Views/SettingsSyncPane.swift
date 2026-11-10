@@ -242,10 +242,11 @@ struct SettingsSyncPane: View {
                 }
                 roleStatusRow
                 nodeNameRow
-                Picker("", selection: $configSegment) {
+                Picker("联动配置分组", selection: $configSegment) {
                     Text("主节点配置").tag(0)
                     Text("副节点配置").tag(1)
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
                 .frame(maxWidth: .infinity)
                 if configSegment == 0 {
@@ -291,10 +292,12 @@ struct SettingsSyncPane: View {
     private var nodeNameRow: some View {
         SettingsControlRow("本机名称") {
             VStack(alignment: .trailing, spacing: 4) {
-                TextField("", text: Binding(
+                TextField("本机名称", text: Binding(
                     get: { drafts.nodeNameDraft },
                     set: { drafts.setNodeNameDraft($0) }
                 ), prompt: Text("默认：\(SyncConfig.defaultNodeName())"))
+                    .labelsHidden()
+                    .accessibilityLabel("本机名称")
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: SettingsLayout.standardControlWidth)
@@ -375,10 +378,12 @@ struct SettingsSyncPane: View {
     private var hubFields: some View {
         SettingsControlRow("监听端口") {
             VStack(alignment: .trailing, spacing: 4) {
-                TextField("", text: Binding(
+                TextField("监听端口", text: Binding(
                     get: { drafts.portDraft },
                     set: { drafts.setPortDraft($0) }
                 ), prompt: Text("8787"))
+                    .labelsHidden()
+                    .accessibilityLabel("监听端口")
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 100)
@@ -433,10 +438,12 @@ struct SettingsSyncPane: View {
     private var nodeFields: some View {
         SettingsControlRow("主节点地址", alignment: .top) {
             VStack(alignment: .trailing, spacing: 4) {
-                TextField("", text: Binding(
+                TextField("主节点地址", text: Binding(
                     get: { drafts.hubURLDraft },
                     set: { drafts.setHubURLDraft($0) }
                 ), prompt: Text("http://192.168.1.20:8787"))
+                    .labelsHidden()
+                    .accessibilityLabel("主节点地址")
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: SettingsLayout.standardControlWidth)

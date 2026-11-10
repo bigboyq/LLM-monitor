@@ -893,12 +893,17 @@ final class FleetSyncCoordinator: ObservableObject {
         } else {
             confirmsSubmittedReport = false
         }
-        if let cached, snapshot.generation <= cached, !confirmsSubmittedReport { return false }
+        // A restarted node has a persisted generation but no published snapshot.
+        // A verified, same-generation response can establish that missing memory
+        // baseline without rewriting disk or authorizing any generation rollback.
+        let establishesMemoryBaseline = latestSnapshot == nil && snapshot.generation == cached
+        if let cached, snapshot.generation <= cached,
+           !confirmsSubmittedReport, !establishesMemoryBaseline { return false }
         let nodeSnapshot = nodeID.map(snapshot.compactedForNode) ?? snapshot
         // 内容未变化的快照不重写缓存（2026-10-27 裁定）：generation 未推进
-        // 且仅凭本轮 seq 确认接受 ⇒ hub 可见状态与缓存同代（generatedAt /
+        // 且凭本轮 seq 确认或恢复空内存基线 ⇒ hub 可见状态与缓存同代（generatedAt /
         // 本节点 seq 每拍必变，字节比较没有意义）。
-        let contentUnchanged = snapshot.generation == cached && confirmsSubmittedReport
+        let contentUnchanged = snapshot.generation == cached
         if !contentUnchanged {
             try store.saveSnapshot(nodeSnapshot, upstreamScope: upstreamScope)
         }

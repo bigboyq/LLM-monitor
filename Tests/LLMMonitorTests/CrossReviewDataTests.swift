@@ -3,6 +3,70 @@ import SQLite3
 @testable import LLM_monitor
 
 final class CrossReviewDataTests: XCTestCase {
+    @MainActor
+    func testFractionalGLMWindowHasIdenticalColdWarmAndLegacyRebuiltSamples() async throws {
+        let fixture = try ReviewDatabase()
+        try fixture.execute("CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        try fixture.execute("CREATE TABLE part(message_id TEXT, data TEXT)")
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
+        let resetMs = Int64(now.timeIntervalSince1970 * 1000) - 3_600_000 + 273
+        let json = """
+        {"code":200,"success":true,"data":{"limits":[
+        {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":2000,"currentValue":1,"nextResetTime":\(resetMs)},
+        {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":10000,"currentValue":1,"nextResetTime":\(resetMs + 604_800_000)}]}}
+        """
+        let quota = try XCTUnwrap(try GlmCodingPlanFetcher.parse(data: Data(json.utf8)).models.first)
+        let bounds = try XCTUnwrap(LocalUsageSummaryBuilder.windowBounds(
+            resetsAt: quota.intervalResetsAt, explicitWindowSeconds: quota.intervalWindowSeconds,
+            fallbackSeconds: 5 * 3600, now: now
+        ))
+        // Real GLM boundaries carry milliseconds; the consumer extends start
+        // by 20s, while end remains strict. Whole-second caches changed both.
+        let calls: [(String, Int64)] = [
+            ("start-edge", resetMs - 18_020_000 + 227),
+            ("inside", resetMs - 1),
+            ("after-end", resetMs + 227)
+        ]
+        for (id, timestamp) in calls {
+            let data = "{\"role\":\"assistant\",\"providerID\":\"zhipuai-coding-plan\",\"parentID\":\"\(id)\",\"modelID\":\"glm-4.7\",\"tokens\":{\"input\":1,\"output\":2,\"reasoning\":0,\"cache\":{\"read\":0}}}"
+            try fixture.execute("INSERT INTO message VALUES ('\(id)', 's', \(timestamp), '\(data)')")
+        }
+        let cache = fixture.root.appendingPathComponent("opencode.json")
+        let scanner = OpencodeUsageScanner(dbURL: fixture.url, cacheDir: cache, now: { now })
+        let cold = try await scanner.makeWork(startedGeneration: 0, mode: .full)()
+        let warmScanner = OpencodeUsageScanner(dbURL: fixture.url, cacheDir: cache, now: { now })
+        let warm = try await warmScanner.makeWork(startedGeneration: 0, mode: .full)()
+        func matchedIDs(_ usage: OpencodeLocalUsage) throws -> [String] {
+            let samples = try XCTUnwrap(usage.byProvider["zhipuai-coding-plan"]?.recentSamples)
+            return LocalUsageSummaryBuilder.windowSamples(
+                samples: samples, providerKind: .glmCodingPlan, quotaModelName: quota.modelName,
+                start: bounds.start, end: bounds.end
+            ).map(\.promptID).sorted()
+        }
+        let coldIDs = try matchedIDs(cold)
+        XCTAssertEqual(coldIDs.count, 2)
+        XCTAssertEqual(try matchedIDs(warm), coldIDs)
+        let coldSamples = try XCTUnwrap(cold.byProvider["zhipuai-coding-plan"]?.recentSamples)
+        let warmSamples = try XCTUnwrap(warm.byProvider["zhipuai-coding-plan"]?.recentSamples)
+        XCTAssertEqual(warmSamples.count, coldSamples.count)
+        for (a, b) in zip(coldSamples, warmSamples) {
+            XCTAssertEqual(a.completedAt.timeIntervalSince1970, b.completedAt.timeIntervalSince1970, accuracy: 0.000_001)
+        }
+        // An unchanged database must still rebuild the last whole-second cache.
+        var old = try OpencodeUsageScanner.loadIndex(
+            cacheDir: cache, fileManager: FileManagerBox(), logTag: "[precision-test]",
+            currentVersion: OpencodeUsageScanner.cacheIndexVersion
+        )
+        old.version = 3
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(old).write(to: cache)
+        let upgraded = OpencodeUsageScanner(dbURL: fixture.url, cacheDir: cache, now: { now })
+        XCTAssertNil(upgraded.lastResult, "lost milliseconds cannot be recovered by decoding the old cache")
+        let rebuilt = try await upgraded.makeWork(startedGeneration: 0, mode: .full)()
+        XCTAssertEqual(try matchedIDs(rebuilt), coldIDs)
+    }
+
     func testOpenCodeCutoffUsesTheSameCallsForEveryDailyBucket() throws {
         let fixture = try ReviewDatabase()
         try fixture.execute("CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
@@ -57,10 +121,8 @@ final class CrossReviewDataTests: XCTestCase {
         let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
         let ms = Int64(now.timeIntervalSince1970 * 1000)
         for (index, name) in ["native", "paired", "fallback"].enumerated() {
-            // ScannerIndexIO's existing ISO8601 cache contract stores whole
-            // seconds. Keep this split/cache comparison fixture on that grid
-            // rather than introducing unrelated timestamp precision loss.
-            let timestampMs = ms + Int64(index) * 1000
+            // Include distinct milliseconds in the warm-cache equivalence check.
+            let timestampMs = ms + Int64(index)
             let native = name == "native" ? 20 : 0
             try fixture.execute("INSERT INTO local_runtime_token_usage VALUES ('s', '\(name)', \(timestampMs), 0, 100, \(native), 0, 0, '{}', 'MiniMax-M3')")
             let thinking = name == "native" ? 20 : name == "paired" ? 80 : 100

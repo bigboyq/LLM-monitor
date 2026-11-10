@@ -65,7 +65,8 @@ extension AntigravityLocalUsageScanner {
         /// 分母精确为 f12 且排除了工具调用与零除尖峰。
         /// v11：清除 v10 伪 ttft；v10：伪 ttft；v9：.db 直读数据源。
         static let empty = CacheIndex(
-            version: 12,
+            // v13: rebuild dates previously truncated to whole seconds.
+            version: 13,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sessions: [:],
             dailyBySession: [:],

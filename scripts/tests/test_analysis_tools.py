@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import runpy
 import sqlite3
@@ -33,7 +34,7 @@ class AnalysisToolsTests(unittest.TestCase):
             fixture.write_text('\n'.join(json.dumps(ev) for ev in events))
             output = io.StringIO()
             # Only the fixture is enumerated, even when personal /tmp logs exist.
-            with patch.object(Path, 'glob', return_value=iter([fixture])), contextlib.redirect_stdout(output):
+            with patch.dict(os.environ, DSH_PLAIN_DIR=directory), contextlib.redirect_stdout(output):
                 namespace = runpy.run_path(str(SCRIPTS / script))
             return namespace, output.getvalue()
 
@@ -95,11 +96,113 @@ class AnalysisToolsTests(unittest.TestCase):
                         conn.execute('INSERT INTO local_runtime_token_usage VALUES (?, ?, 0, 0, 0, 0, 0)',
                                      ('minimax/MiniMax-M3', BASE))
                 output = io.StringIO()
-                with patch.object(sqlite3, 'connect', side_effect=lambda _: connect(db)), contextlib.redirect_stdout(output):
+                with patch.dict(os.environ, MINIMAX_USAGE_DB=db), contextlib.redirect_stdout(output):
                     ns = runpy.run_path(str(SCRIPTS / 'minimax_cost.py'))
                 ns['conn'].close()
                 self.assertIn('总成本**：¥0.00', output.getvalue())
                 self.assertIn('窗口成本 max' if with_row else '暂无窗口数据', output.getvalue())
+
+    def test_all_plaintext_suffixes_are_discovered_and_partial_lines_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for index, suffix in enumerate(('.zstd', '.zst', '.jsonl')):
+                (Path(directory) / f'session{suffix}').write_text(
+                    json.dumps(call(index, index, 100)) + '\n{"unfinished":')
+            (Path(directory) / 'unrelated.txt').write_text(json.dumps(call(4, 4, 999)))
+            for script in ('summary.py', 'analyze.py', 'cost.py'):
+                with self.subTest(script=script), patch.dict(os.environ, DSH_PLAIN_DIR=directory):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        ns = runpy.run_path(str(SCRIPTS / script))
+                    records = ns['call_totals'].values()
+                    key = 'i' if script == 'cost.py' else 'input'
+                    self.assertEqual(sum(row[key] for row in records), 300)
+
+    def test_reasoning_is_a_subset_of_raw_output(self):
+        event = call(0, 1, 100)
+        event['data']['usage'].update(outputTokens=50, reasoningTokens=20)
+        for script in ('summary.py', 'analyze.py'):
+            ns, _ = self.run_log_script(script, [event, retry(1, 'a', 1)])
+            row = next(iter(ns['call_totals'].values()))
+            self.assertEqual((row['output'], row['reasoning']), (30, 20))
+        _, output = self.run_log_script('cost.py', [])
+        self.assertNotIn('¥23.80', output)
+        self.assertNotIn('20 元、45M', output)
+
+    def test_final_daily_bucket_is_labelled_four_hours(self):
+        for script in ('summary.py', 'analyze.py', 'cost.py'):
+            with self.subTest(script=script):
+                _, output = self.run_log_script(script, [call(15 * 3600000, 1, 100)])
+                self.assertIn('20:00+4h', output)
+                self.assertNotIn('20:00+5h', output)
+
+    def test_minimax_cost_uses_raw_output_once_and_readonly_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / 'fixture.sqlite'
+            with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+                conn.execute('CREATE TABLE local_runtime_token_usage (model TEXT, ts INTEGER, '
+                             'input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, '
+                             'cache_read_tokens INTEGER, cache_write_tokens INTEGER)')
+                conn.execute('INSERT INTO local_runtime_token_usage VALUES (?, ?, 100, 50, 20, 30, 999)',
+                             ('minimax/MiniMax-M3', BASE))
+            with patch.dict(os.environ, MINIMAX_USAGE_DB=str(db)), contextlib.redirect_stdout(io.StringIO()):
+                ns = runpy.run_path(str(SCRIPTS / 'minimax_cost.py'))
+            self.assertAlmostEqual(ns['total_cost'], (100 * 2.1 + 30 * .42 + 50 * 8.4) / 1e6)
+            missing = Path(directory) / 'missing.sqlite'
+            with patch.dict(os.environ, MINIMAX_USAGE_DB=str(missing)), self.assertRaises(sqlite3.OperationalError):
+                runpy.run_path(str(SCRIPTS / 'minimax_cost.py'))
+            self.assertFalse(missing.exists())
+
+    def test_decompression_refreshes_large_files_and_protects_plaintext(self):
+        try:
+            from compression import zstd
+        except ImportError:
+            try:
+                import zstandard as zstd
+            except ImportError:
+                self.skipTest('Decompression requires Python 3.14 or the optional zstandard package')
+        decompress = runpy.run_path(str(SCRIPTS / 'decompress.py'))['decompress']
+        with tempfile.TemporaryDirectory() as directory:
+            src, out = Path(directory) / 'source', Path(directory) / 'out'
+            names = ('session.jsonl.zstd', 'session.jsonl.zst', 'session.jsonl',
+                     'session.v3.jsonl.zstd', 'session.v4.jsonl.zst')
+            for index, name in enumerate(names):
+                parent = src / str(index)
+                parent.mkdir(parents=True)
+                content = b'x' * 110_000
+                (parent / name).write_bytes(content if name.endswith('.jsonl') else zstd.compress(content))
+            with contextlib.redirect_stdout(io.StringIO()):
+                decompress(src, out)
+                for path in src.rglob('*'):
+                    if not path.is_file():
+                        continue
+                    content = b'new data\n' * 20_000
+                    path.write_bytes(zstd.compress(content) if path.suffix != '.jsonl' else content)
+                decompress(src, out)
+            self.assertEqual(out.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(len(list(out.iterdir())), len(names))
+            for path in out.iterdir():
+                self.assertEqual(path.read_bytes(), content)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            # Corrupt input must fail and leave the prior complete output intact.
+            (src / '0/session.jsonl.zstd').write_bytes(b'not zstd')
+            with self.assertRaises(zstd.ZstdError):
+                decompress(src, out)
+            self.assertEqual((out / '0__session.jsonl.zstd').read_bytes(), content)
+            self.assertEqual(len(list(out.iterdir())), len(names))
+
+    def test_opus_cache_input_zero_and_unknown_models(self):
+        for tokens in (0, 100):
+            with self.subTest(tokens=tokens), tempfile.TemporaryDirectory() as directory:
+                sample = {'modelName': 'claude-opus-4-6-thinking', 'completedAt': '2026-11-10T00:00:00Z',
+                          'inputTokens': tokens, 'cachedInputTokens': tokens, 'outputTokens': 0}
+                path = Path(directory) / 'index.json'
+                path.write_text(json.dumps({'samplesBySession': {'a': [sample, dict(sample, modelName='claude-opus-future')]}}))
+                output = io.StringIO()
+                with patch.dict(os.environ, ANTIGRAVITY_USAGE_INDEX=str(path)), contextlib.redirect_stdout(output):
+                    ns = runpy.run_path(str(SCRIPTS / 'antigravity_opus.py'))
+                self.assertEqual(ns['total_tokens'], tokens)
+                self.assertEqual(ns['opuses_total']['i'], 0)
+                self.assertEqual(ns['opuses_total']['n'], 1)
+                self.assertNotIn('2026-07-29', output.getvalue())
 
 
 if __name__ == '__main__':

@@ -2,6 +2,11 @@ import Foundation
 
 /// Local usage scanners shared versioned JSON cache read/write logic.
 enum ScannerIndexIO {
+    // Immutable value types are safe to share across scanner workers. Reuse the
+    // format styles rather than allocating a DateFormatter per cached sample.
+    private nonisolated static let fractionalDateStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private nonisolated static let legacyDateStyle = Date.ISO8601FormatStyle()
+
     /// 从 cache location 加载版本化索引。生产环境传入 `provider.json`；测试
     /// 仍可传入临时目录，兼容原有的 `directory/index.json` 约定。
     /// - `currentVersion`：当前期望版本号
@@ -26,7 +31,27 @@ enum ScannerIndexIO {
         // 完整文档，此量级保留一次性读入，不做流式拆解。
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            // Keep legacy whole-second dates readable; cache versions determine
+            // whether their already-lost sample precision requires a rebuild.
+            if value.hasSuffix("Z"), let dot = value.firstIndex(of: ".") {
+                let fraction = value[value.index(after: dot)..<value.index(before: value.endIndex)]
+                if (1...9).contains(fraction.count), fraction.allSatisfy({ $0.isASCII && $0.isNumber }),
+                   let digits = Int(fraction),
+                   let whole = try? legacyDateStyle.parse(String(value[..<dot]) + "Z") {
+                    // Parse only whole seconds through Foundation. Adding the
+                    // fraction in the reference epoch avoids a Unix-epoch
+                    // conversion discarding bits from the original Date.
+                    let denominator = pow(10.0, Double(fraction.count))
+                    return Date(timeIntervalSinceReferenceDate: whole.timeIntervalSinceReferenceDate + Double(digits) / denominator)
+                }
+            }
+            if let date = try? fractionalDateStyle.parse(value) { return date }
+            if let date = try? legacyDateStyle.parse(value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid cached ISO8601 date")
+        }
         do {
             var idx = try decoder.decode(Index.self, from: data)
             let v = version(idx)
@@ -54,7 +79,22 @@ enum ScannerIndexIO {
     ) throws {
         let url = indexURL(for: cacheDir)
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            let interval = date.timeIntervalSinceReferenceDate
+            guard interval.isFinite else {
+                throw EncodingError.invalidValue(date, .init(codingPath: encoder.codingPath, debugDescription: "Non-finite cached date"))
+            }
+            var seconds = floor(interval)
+            var nanos = Int(((interval - seconds) * 1_000_000_000).rounded())
+            if nanos == 1_000_000_000 {
+                seconds += 1
+                nanos = 0
+            }
+            let whole = legacyDateStyle.format(Date(timeIntervalSinceReferenceDate: seconds))
+            let fraction = String(format: "%09d", nanos)
+            try container.encode(String(whole.dropLast()) + "." + fraction + "Z")
+        }
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(index)
         try fileManager.writePrivate(data, to: url)
