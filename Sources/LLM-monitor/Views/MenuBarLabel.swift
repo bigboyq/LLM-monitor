@@ -39,6 +39,9 @@ struct MenuBarLabel: View {
         let showsHealthDot = configStore.config.effectiveStatusBarHealthDotEnabled
         let healthColors = configStore.config.effectiveStatusBarHealthColors
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
+        let selectedQuotaTitle = iconStyle.consumesQuotaMetrics
+            ? state.statusBarQuotaTitle(at: state.healthEvaluationDate)
+            : nil
         // 只对真的消费它的样式算指标：`statusBarQuotaMetrics` 要把全部 provider 的
         // 额度窗口聚合一遍，代价远高于这里其余几项。与 `rerenderIfNeeded` 的签名
         // 用同一个判据——只改签名不跳过计算的话，收益基本为零（每次额度广播照样
@@ -57,7 +60,8 @@ struct MenuBarLabel: View {
             healthColors: healthColors
         )
             .frame(width: 22, height: 22)
-            .accessibilityLabel(accessibilityTitle(health: health))
+            .accessibilityLabel(accessibilityTitle(health: health, quotaTitle: selectedQuotaTitle))
+            .help(selectedQuotaTitle ?? "LLM Monitor")
             .onAppear {
                 rerenderIfNeeded()
             }
@@ -329,8 +333,11 @@ struct MenuBarLabel: View {
         return NSImage(cgImage: cgImage, size: NSSize(width: 22, height: 22))
     }()
 
-    private func accessibilityTitle(health: HealthLevel?) -> String {
+    private func accessibilityTitle(health: HealthLevel?, quotaTitle: String? = nil) -> String {
         var title = "LLM Monitor"
+        if let quotaTitle {
+            title += " - \(quotaTitle)"
+        }
         if state.isRefreshing {
             title += " - 刷新中"
         } else if let health {

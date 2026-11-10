@@ -448,7 +448,9 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertEqual(weeklyOnlyMetrics.centerAvailable ?? -1, 0.70, accuracy: 0.001)
         let weeklyOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: weeklyOnlyMetrics)
         XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"interval-available\""))
-        XCTAssertTrue(weeklyOnlyStateSVG.contains("id=\"weekly-available\""))
+        XCTAssertTrue(weeklyOnlyStateSVG.contains("id=\"single-quota-available\""))
+        XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"weekly-track\""))
+        XCTAssertEqual(weeklyOnlyMetrics.singleQuota?.remainingFraction, 0.70)
 
         // 双窗口中周窗口耗尽时，5h 原始弧仍保留自身 75%；但有效额度（中心）归零。
         let exhaustedWeekly = try parsedCodexQuota(
@@ -475,7 +477,8 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertTrue(intervalOnlyMetrics.interval.isAvailable)
         XCTAssertFalse(intervalOnlyMetrics.weekly.isAvailable)
         let intervalOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: intervalOnlyMetrics)
-        XCTAssertTrue(intervalOnlyStateSVG.contains("id=\"interval-available\""))
+        XCTAssertTrue(intervalOnlyStateSVG.contains("id=\"single-quota-available\""))
+        XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"interval-track\""))
         XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"weekly-available\""))
     }
 
@@ -800,7 +803,8 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
 
         let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
-        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"4\""))
+        XCTAssertTrue(svg.contains("id=\"single-quota-value\" data-value=\"4%\""))
+        XCTAssertFalse(svg.contains("id=\"quota-dot-"))
         XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "仅周窗口应按原始百分比及周剩余时间判红")
     }
 

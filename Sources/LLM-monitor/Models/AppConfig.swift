@@ -468,8 +468,8 @@ struct AppConfig: Codable, Equatable {
     /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
     var providerCardOrder: [String]?
 
-    /// 状态栏小眼睛锚定的 Provider ID（nil 表示全 Provider 聚合，非零最小值）。
-    var statusBarPinnedProvider: String?
+    /// 状态栏指标来源。nil 表示全 Provider 聚合；非 nil 明确绑定 Provider 与额度池。
+    var statusBarQuotaSelection: StatusBarQuotaSelection?
 
     /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
     var bark: BarkConfig?
@@ -588,7 +588,7 @@ struct AppConfig: Codable, Equatable {
         statusBarHealthColors: StatusBarHealthColors? = nil,
         systemNotificationSoundEnabled: Bool? = nil,
         providerCardOrder: [String]? = nil,
-        statusBarPinnedProvider: String? = nil,
+        statusBarQuotaSelection: StatusBarQuotaSelection? = nil,
         bark: BarkConfig? = nil,
         edgeDock: EdgeDockConfig? = nil,
         holidaySource: String? = nil,
@@ -605,7 +605,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarHealthColors = statusBarHealthColors
         self.systemNotificationSoundEnabled = systemNotificationSoundEnabled
         self.providerCardOrder = providerCardOrder
-        self.statusBarPinnedProvider = statusBarPinnedProvider
+        self.statusBarQuotaSelection = statusBarQuotaSelection
         self.bark = bark
         self.edgeDock = edgeDock
         self.holidaySource = holidaySource
@@ -621,7 +621,7 @@ struct AppConfig: Codable, Equatable {
         case statusBarHealthColors
         case systemNotificationSoundEnabled
         case providerCardOrder
-        case statusBarPinnedProvider
+        case statusBarQuotaSelection
         case bark
         case edgeDock
         case holidaySource
@@ -631,8 +631,13 @@ struct AppConfig: Codable, Equatable {
         case periodicFullEveryN
     }
 
+    private enum LegacyCodingKeys: String, CodingKey {
+        case statusBarPinnedProvider
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         // schemaVersion 缺失代表首个无版本配置格式；历史归因开关一律忽略。
         let sourceVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         guard (0...Self.currentSchemaVersion).contains(sourceVersion) else {
@@ -702,11 +707,22 @@ struct AppConfig: Codable, Equatable {
             logWarn("[config] providerCardOrder 字段解析失败，已按缺省处理：\(error.localizedDescription)")
             self.providerCardOrder = nil
         }
-        do {
-            self.statusBarPinnedProvider = try container.decodeIfPresent(String.self, forKey: .statusBarPinnedProvider)
-        } catch {
-            logWarn("[config] statusBarPinnedProvider 字段解析失败，已按未配置处理：\(error.localizedDescription)")
-            self.statusBarPinnedProvider = nil
+        if container.contains(.statusBarQuotaSelection) {
+            do {
+                self.statusBarQuotaSelection = try container.decodeIfPresent(
+                    StatusBarQuotaSelection.self,
+                    forKey: .statusBarQuotaSelection
+                )
+            } catch {
+                logWarn("[config] statusBarQuotaSelection 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+                self.statusBarQuotaSelection = nil
+            }
+        } else {
+            // Legacy provider pin is migrated once to its default plan source.
+            self.statusBarQuotaSelection = (try? legacyContainer.decodeIfPresent(
+                String.self,
+                forKey: .statusBarPinnedProvider
+            ))?.map { StatusBarQuotaSelection(providerID: $0, source: .plan) }
         }
         // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
         //

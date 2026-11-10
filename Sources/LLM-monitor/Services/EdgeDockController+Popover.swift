@@ -80,7 +80,9 @@ extension EdgeDockController {
                 status: status,
                 dockEdge: config.edge,
                 fleet: state.fleetCardContext(for: status.kind),
-                isPinnedToStatusBar: configStore?.config.statusBarPinnedProvider == status.id,
+                selectedStatusBarSource: configStore?.config.statusBarQuotaSelection.flatMap {
+                    $0.providerID == status.id ? $0.source : nil
+                },
                 presentation: .edgePlan,
                 configStore: configStore
             )
@@ -217,6 +219,8 @@ extension EdgeDockController {
                 .environment(\.cardQuotaRefreshAction, cardQuotaRefreshAction)
                 .environment(\.cardUsageRefreshAction, cardUsageRefreshAction)
                 .environment(\.cardPinStatusBarAction, cardPinStatusBarAction)
+                .environment(\.cardStatusBarQuotaOptions, cardStatusBarQuotaOptions)
+                .environment(\.cardSelectStatusBarQuota, cardSelectStatusBarQuota)
         }
     }
 
@@ -227,6 +231,19 @@ extension EdgeDockController {
             if self?.selectedIndex != nil {
                 self?.updatePopover()
             }
+        }
+    }
+
+    private var cardStatusBarQuotaOptions: ((String) -> [StatusBarQuotaOption])? {
+        guard let state else { return nil }
+        return { [weak state] id in state?.statusBarQuotaOptions(providerID: id) ?? [] }
+    }
+
+    private var cardSelectStatusBarQuota: ((String, StatusBarQuotaSource) -> Void)? {
+        guard let state else { return nil }
+        return { [weak self, weak state] id, source in
+            state?.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: id, source: source))
+            if self?.selectedIndex != nil { self?.updatePopover() }
         }
     }
 

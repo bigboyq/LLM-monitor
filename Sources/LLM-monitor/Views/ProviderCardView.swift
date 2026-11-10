@@ -22,6 +22,14 @@ private struct CardPinStatusBarActionKey: EnvironmentKey {
     static let defaultValue: ((String) -> Void)? = nil
 }
 
+private struct CardStatusBarQuotaOptionsKey: EnvironmentKey {
+    static let defaultValue: ((String) -> [StatusBarQuotaOption])? = nil
+}
+
+private struct CardSelectStatusBarQuotaKey: EnvironmentKey {
+    static let defaultValue: ((String, StatusBarQuotaSource) -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var cardQuotaRefreshAction: ((String) -> Void)? {
         get { self[CardQuotaRefreshActionKey.self] }
@@ -36,6 +44,16 @@ extension EnvironmentValues {
     var cardPinStatusBarAction: ((String) -> Void)? {
         get { self[CardPinStatusBarActionKey.self] }
         set { self[CardPinStatusBarActionKey.self] = newValue }
+    }
+
+    var cardStatusBarQuotaOptions: ((String) -> [StatusBarQuotaOption])? {
+        get { self[CardStatusBarQuotaOptionsKey.self] }
+        set { self[CardStatusBarQuotaOptionsKey.self] = newValue }
+    }
+
+    var cardSelectStatusBarQuota: ((String, StatusBarQuotaSource) -> Void)? {
+        get { self[CardSelectStatusBarQuotaKey.self] }
+        set { self[CardSelectStatusBarQuotaKey.self] = newValue }
     }
 }
 
@@ -67,8 +85,8 @@ struct ProviderCardView: View, Equatable {
     /// 非 nil 时标题行出现「本机 / 全局」分段（仅 multiNode），额度读数走
     /// 生效额度（本机优先，否则 elected），「全局」scope 的用量区块读 fleet 快照。
     var fleet: FleetCardContext? = nil
-    /// 是否在状态栏小眼睛锚定
-    var isPinnedToStatusBar: Bool = false
+    /// 被状态栏选择的具体额度来源；nil 表示此 Provider 未选中。
+    var selectedStatusBarSource: StatusBarQuotaSource? = nil
     /// 同一张卡的共享呈现入口：完整详情、套餐或历史。
     var presentation: ProviderCardPresentation = .complete
     /// 配置存储，用于获取全局配置（如 periodicFullEveryN）
@@ -86,6 +104,8 @@ struct ProviderCardView: View, Equatable {
     @Environment(\.cardQuotaRefreshAction) private var cardQuotaRefreshAction
     @Environment(\.cardUsageRefreshAction) private var cardUsageRefreshAction
     @Environment(\.cardPinStatusBarAction) private var cardPinStatusBarAction
+    @Environment(\.cardStatusBarQuotaOptions) private var cardStatusBarQuotaOptions
+    @Environment(\.cardSelectStatusBarQuota) private var cardSelectStatusBarQuota
 
     /// 光标反馈用 `set` 覆盖而不是 `push/pop`：卡在光标下方被 orderOut 时
     /// `onHover(false)` 不保证送达，push 进栈的手型永远弹不出来（无凭据的
@@ -108,7 +128,7 @@ struct ProviderCardView: View, Equatable {
         lhs.status == rhs.status
             && lhs.dockEdge == rhs.dockEdge
             && lhs.fleet == rhs.fleet
-            && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
+            && lhs.selectedStatusBarSource == rhs.selectedStatusBarSource
             && lhs.presentation == rhs.presentation
     }
 
@@ -776,25 +796,16 @@ struct ProviderCardView: View, Equatable {
                     : "切换显示范围：全局 / 本机 / 各节点")
             }
             if ProviderKind.windowedKinds.contains(status.kind), let cardPinStatusBarAction {
-                Button {
-                    logInfo("ProviderCardView: 点击状态栏锚定切换 provider=\(status.id)")
-                    cardPinStatusBarAction(status.id)
-                } label: {
-                    Image(systemName: isPinnedToStatusBar ? "eye.fill" : "eye.slash")
-                        .font(.system(size: 11, weight: isPinnedToStatusBar ? .semibold : .regular))
-                        .foregroundStyle(isPinnedToStatusBar ? Color.primaryLabel : Color.secondaryLabel.opacity(0.6))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 3)
-                        .background(
-                            isPinnedToStatusBar
-                                ? Color.primary.opacity(0.12)
-                                : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 4)
-                        )
-                }
-                .buttonStyle(.plain)
+                StatusBarQuotaSelector(
+                    selectedSource: selectedStatusBarSource,
+                    options: cardStatusBarQuotaOptions?(status.id) ?? [],
+                    onToggle: {
+                        logInfo("ProviderCardView: 点击状态栏锚定切换 provider=\(status.id)")
+                        cardPinStatusBarAction(status.id)
+                    },
+                    onSelect: { source in cardSelectStatusBarQuota?(status.id, source) }
+                )
                 .onHover { updatePointingCursor($0) }
-                .help(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
             }
             // 额度状态/时间戳胶囊（保留点击刷新支持，保持双入口与既有手势一致）
             if let cardQuotaRefreshAction, !status.isLoading {

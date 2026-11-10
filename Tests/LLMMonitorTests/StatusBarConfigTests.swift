@@ -18,7 +18,10 @@ final class StatusBarConfigTests: XCTestCase {
             warningHex: "#ABCDEF",
             criticalHex: "#654321"
         )
-        config.statusBarPinnedProvider = "minimax"
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "minimax",
+            source: .apiCredit(keyID: "key-1")
+        )
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(config)
@@ -29,10 +32,45 @@ final class StatusBarConfigTests: XCTestCase {
         XCTAssertEqual(decoded.statusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.statusBarHealthDotEnabled, false)
         XCTAssertEqual(decoded.statusBarHealthColors, config.statusBarHealthColors)
-        XCTAssertEqual(decoded.statusBarPinnedProvider, "minimax")
+        XCTAssertEqual(decoded.statusBarQuotaSelection, config.statusBarQuotaSelection)
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .sparkles)
         XCTAssertFalse(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.effectiveStatusBarHealthColors, config.statusBarHealthColors)
+    }
+
+    func testLegacyProviderPinMigratesToPlanAndWritesOnlyNewSchema() throws {
+        let data = Data(#"{"refreshIntervalSeconds":300,"providers":{},"statusBarPinnedProvider":"codex_chatgpt"}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        XCTAssertEqual(
+            decoded.statusBarQuotaSelection,
+            StatusBarQuotaSelection(providerID: "codex_chatgpt", source: .plan)
+        )
+
+        let encoded = try JSONEncoder().encode(decoded)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["statusBarPinnedProvider"])
+        XCTAssertNotNil(object["statusBarQuotaSelection"])
+    }
+
+    func testExplicitNullSelectionWinsOverLegacyProviderPin() throws {
+        let data = Data(#"{"refreshIntervalSeconds":300,"providers":{},"statusBarQuotaSelection":null,"statusBarPinnedProvider":"codex_chatgpt"}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        XCTAssertNil(decoded.statusBarQuotaSelection)
+    }
+
+    func testProviderOnlySelectionDefaultsToPlanAndActivityIdentityRoundTrips() throws {
+        let data = Data(#"{"refreshIntervalSeconds":300,"providers":{},"statusBarQuotaSelection":{"providerID":"codex_chatgpt"}}"#.utf8)
+        var decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        XCTAssertEqual(decoded.statusBarQuotaSelection, StatusBarQuotaSelection(providerID: "codex_chatgpt"))
+        decoded.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "glm_coding_plan",
+            source: .activityPlan(planID: "plan-a", entitlementID: "entitlement-b")
+        )
+        let restored = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(decoded))
+        XCTAssertEqual(restored.statusBarQuotaSelection, decoded.statusBarQuotaSelection)
+        let draft = SettingsFormDraft(from: restored, descriptors: [])
+        XCTAssertEqual(draft.statusBarQuotaProvider, "glm_coding_plan")
+        XCTAssertEqual(draft.statusBarQuotaSource, .activityPlan(planID: "plan-a", entitlementID: "entitlement-b"))
     }
 
     /// 设置页 picker 与主面板 header 使用的 App 图标设计稿必须能从资源包加载；
@@ -58,7 +96,7 @@ final class StatusBarConfigTests: XCTestCase {
             .appendingPathComponent("llm-pinned-provider-test-\(UUID().uuidString)", isDirectory: true)
         let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
         var initial = store.config
-        initial.statusBarPinnedProvider = "minimax_token_plan"
+        initial.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "minimax_token_plan")
         try store.applyAndSave(initial)
 
         let state = AppState(descriptors: [], configStore: store)
@@ -73,11 +111,11 @@ final class StatusBarConfigTests: XCTestCase {
 
         // 1. 验证 hasFormRelevantChange 能正确识别 statusBarPinnedProvider 变化
         var changed = initial
-        changed.statusBarPinnedProvider = "codex_chatgpt"
+        changed.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "codex_chatgpt")
         XCTAssertTrue(SettingsView.hasFormRelevantChange(from: initial, to: changed))
 
         var cleared = initial
-        cleared.statusBarPinnedProvider = nil
+        cleared.statusBarQuotaSelection = nil
         XCTAssertTrue(SettingsView.hasFormRelevantChange(from: initial, to: cleared))
 
         XCTAssertFalse(SettingsView.hasFormRelevantChange(from: initial, to: initial))

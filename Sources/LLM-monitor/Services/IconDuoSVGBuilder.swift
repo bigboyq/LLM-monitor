@@ -36,6 +36,15 @@ enum IconDuoSVGBuilder {
         healthColors: StatusBarHealthColors = .default,
         energyHealth: HealthLevel? = nil
     ) -> String {
+        if let singleQuota = metrics.singleQuota {
+            return buildSingleQuotaSVG(
+                singleQuota,
+                healthColors: healthColors,
+                energyHealth: energyHealth,
+                alertThresholds: metrics.alertThresholds
+            )
+        }
+
         let trackColor = "#48484A"
         // 统一时间感知 colorLevel 判定：左弧（interval / 5h avg）与右弧（周 avg）
         // 均以最宽剩余时间比例作为 timeFraction 输入（分母 = 100% * timeFraction，
@@ -130,6 +139,78 @@ enum IconDuoSVGBuilder {
           \(rightTrack)\(rightAvail)
           \(centerSVG)
           \(dotsStr)
+        </svg>
+        """
+    }
+
+    /// One selected pool gets one near-complete circular gauge. The small break at
+    /// 12 o'clock gives the sleep indicator its own space; the value remains centered.
+    private static func buildSingleQuotaSVG(
+        _ quota: StatusBarSingleQuota,
+        healthColors: StatusBarHealthColors,
+        energyHealth: HealthLevel?,
+        alertThresholds: AlertThresholdConfig
+    ) -> String {
+        let ringRadius = 250.0
+        let ringWidth = 56.0
+        let startDegrees = -85.0
+        let trackEndDegrees = 265.0 // 350° track
+        let trackStart = point(degree: startDegrees, radius: ringRadius)
+        let trackEnd = point(degree: trackEndDegrees, radius: ringRadius)
+        let track = String(
+            format: "<path id=\"single-quota-track\" d=\"M %.2f %.2f A %.2f %.2f 0 1 1 %.2f %.2f\" fill=\"none\" stroke=\"#48484A\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+            trackStart.x, trackStart.y, ringRadius, ringRadius, trackEnd.x, trackEnd.y, ringWidth
+        )
+
+        let quotaColor: String
+        let available: String
+        let valueLabel: String
+        let valueMarkup: String
+        if let fraction = quota.remainingFraction {
+            let clamped = min(max(fraction, 0), 1)
+            let percent = clamped * 100
+            quotaColor = resolvedHex(
+                for: alertThresholds.colorLevel(
+                    percent: percent,
+                    timeFraction: quota.timeRemainingFraction
+                ),
+                colors: healthColors
+            )
+            valueLabel = "\(Int(percent.rounded()))%"
+            let isThreeDigitPercent = Int(percent.rounded()) >= 100
+            let numberSize = isThreeDigitPercent ? 145 : 190
+            let symbolSize = isThreeDigitPercent ? 70 : 90
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"374\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(Int(percent.rounded()))<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
+            if clamped > 0 {
+                let end = point(degree: startDegrees + 350.0 * clamped, radius: ringRadius)
+                let largeArc = clamped * 350 > 180 ? 1 : 0
+                available = String(
+                    format: "<path id=\"single-quota-available\" data-value=\"%d\" d=\"M %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+                    Int(percent.rounded()), trackStart.x, trackStart.y, ringRadius, ringRadius,
+                    largeArc, end.x, end.y, quotaColor, ringWidth
+                )
+            } else {
+                available = ""
+            }
+        } else {
+            quotaColor = defaultUnconfiguredColor
+            valueLabel = "—"
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"—\" x=\"352\" y=\"374\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"190\" font-weight=\"600\" fill=\"\(quotaColor)\">—</text>"
+            available = ""
+        }
+
+        let energyColor = energyHealth.map { resolvedHex(for: $0, colors: healthColors) }
+            ?? defaultUnconfiguredColor
+        let energyDot = String(
+            format: "<circle id=\"energy-dot\" cx=\"352\" cy=\"32\" r=\"30\" fill=\"%@\"/>",
+            energyColor
+        )
+        return """
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 704 704" role="img" aria-label="Selected quota">
+          \(track)
+          \(available)
+          \(valueMarkup)
+          \(energyDot)
         </svg>
         """
     }

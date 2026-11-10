@@ -491,9 +491,12 @@ struct SettingsView: View {
         config.statusBarHealthColors = draft.statusBarHealthColors == .default
             ? nil
             : draft.statusBarHealthColors
-        config.statusBarPinnedProvider = draft.statusBarPinnedProvider.isEmpty
+        config.statusBarQuotaSelection = draft.statusBarQuotaProvider.isEmpty
             ? nil
-            : draft.statusBarPinnedProvider
+            : StatusBarQuotaSelection(
+                providerID: draft.statusBarQuotaProvider,
+                source: draft.statusBarQuotaSource
+            )
         config.appearance = draft.appearance == .auto ? nil : draft.appearance
         config.systemNotificationSoundEnabled = draft.systemNotificationSoundEnabled ? nil : false
 

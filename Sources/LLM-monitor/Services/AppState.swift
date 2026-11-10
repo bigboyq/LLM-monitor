@@ -892,20 +892,22 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    /// 切换状态栏小眼睛锚定的 Provider ID。
-    /// 若当前已锚定该 provider 则取消（置 nil 回退到全 provider 聚合）；
-    /// 若未锚定则设为该 providerID 并持久化。
+    /// 卡片小眼睛：选择 Provider 的主额度，再次点击取消选择并回到全局聚合。
     func toggleStatusBarPinnedProvider(_ providerID: String) {
+        let selection = configStore.config.statusBarQuotaSelection?.providerID == providerID
+            ? nil
+            : StatusBarQuotaSelection(providerID: providerID, source: .plan)
+        setStatusBarQuotaSelection(selection)
+    }
+
+    /// 选择一个 Provider 的独立额度池；nil 表示恢复全 Provider 聚合。
+    func setStatusBarQuotaSelection(_ selection: StatusBarQuotaSelection?) {
         var cfg = configStore.config
-        if cfg.statusBarPinnedProvider == providerID {
-            cfg.statusBarPinnedProvider = nil
-        } else {
-            cfg.statusBarPinnedProvider = providerID
-        }
+        cfg.statusBarQuotaSelection = selection
         do {
             try configStore.applyAndSave(cfg)
         } catch {
-            logError("[AppState] 保存 statusBarPinnedProvider 失败: \(error)")
+            logError("[AppState] 保存 statusBarQuotaSelection 失败: \(error)")
         }
         objectWillChange.send()
         statusDidChange.send(())

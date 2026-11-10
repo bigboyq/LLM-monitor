@@ -157,8 +157,15 @@ extension SettingsView {
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
 
-                    SettingsControlRow("指标来源") {
-                        Picker("", selection: $draft.statusBarPinnedProvider) {
+                    SettingsControlRow("Provider") {
+                        Picker("", selection: Binding(
+                            get: { draft.statusBarQuotaProvider },
+                            set: { providerID in
+                                guard providerID != draft.statusBarQuotaProvider else { return }
+                                draft.statusBarQuotaProvider = providerID
+                                draft.statusBarQuotaSource = .plan
+                            }
+                        )) {
                             Text("全部聚合（非零最小值）").tag("")
                             ForEach(descriptors.filter { ProviderKind.windowedKinds.contains($0.kind) }, id: \.id) { descriptor in
                                 Text(descriptor.displayName).tag(descriptor.id)
@@ -166,6 +173,22 @@ extension SettingsView {
                         }
                         .pickerStyle(.menu)
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                    }
+
+                    if !draft.statusBarQuotaProvider.isEmpty {
+                        let options = state.statusBarQuotaOptions(providerID: draft.statusBarQuotaProvider)
+                        SettingsControlRow("额度类型") {
+                            Picker("", selection: $draft.statusBarQuotaSource) {
+                                ForEach(options) { option in
+                                    Text(option.title).tag(option.source)
+                                }
+                                if !options.contains(where: { $0.source == draft.statusBarQuotaSource }) {
+                                    Text("所选额度（暂不可用）").tag(draft.statusBarQuotaSource)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        }
                     }
 
                     SettingsToggleRow(label: "显示状态圆点", isOn: $draft.statusBarHealthDotEnabled)

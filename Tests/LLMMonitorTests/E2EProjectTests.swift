@@ -1195,7 +1195,10 @@ final class E2EProjectTests: StateTestCase {
         defer { state.stop() }
 
         state.toggleStatusBarPinnedProvider("codex_chatgpt")
-        XCTAssertEqual(store.config.statusBarPinnedProvider, "codex_chatgpt")
+        XCTAssertEqual(
+            store.config.statusBarQuotaSelection,
+            StatusBarQuotaSelection(providerID: "codex_chatgpt", source: .plan)
+        )
 
         await state.refreshOne(providerID: "codex_chatgpt")
 

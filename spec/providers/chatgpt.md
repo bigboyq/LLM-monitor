@@ -534,8 +534,11 @@ window, and the bar degrades to the single-window path (`SingleQuotaMetadataLine
 `SingleQuotaBar`, 1 segment).
 
 For a weekly-only primary window, the normalized weekly fields drive the **周** usage row,
-the status bar's right weekly arc and the center's raw weekly percentage. The left 5h arc
-has no reading from this provider; it is not a depleted 5h window. With both windows present,
+and selecting this provider's main plan displays a single status-bar gauge with the raw weekly
+percentage. In a mixed global dual-window aggregate this provider contributes only to the weekly
+arc; it supplies no depleted or synthetic 5h window. Each enabled API credit key can instead be
+selected as an independent single gauge via `statusBarQuotaSelection` (see
+[status-bar source selection](../runtime.md#health-algorithm)). With both plan windows present,
 effective quota remains `min(5h remaining, weekly remaining × 6)`: a present weekly `0%`
 forces effective quota to `0%`, while an absent weekly window does not constrain 5h.
 

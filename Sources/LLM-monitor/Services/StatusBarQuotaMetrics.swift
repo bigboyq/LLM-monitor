@@ -20,6 +20,9 @@ struct QuotaRingMetrics: Equatable, Sendable {
 
 /// 状态栏动态额度指标快照。
 struct StatusBarQuotaMetrics: Equatable, Sendable {
+    /// A selected quota source is drawn as one circular gauge. A nil percentage means
+    /// that the selection exists but currently has no reading.
+    var singleQuota: StatusBarSingleQuota?
     /// 右弧：周额度（原始物理剩余比例，无时间系数）。
     var weekly: QuotaRingMetrics
     /// 左弧：5 小时额度（原始物理剩余比例，无时间系数）。
@@ -57,8 +60,15 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         weeklyTimeFraction: Double? = nil,
         centerTimeFraction: Double? = nil,
         intervalTimeFraction: Double? = nil,
-        alertThresholds: AlertThresholdConfig = .default
+        alertThresholds: AlertThresholdConfig = .default,
+        singleQuota: StatusBarSingleQuota? = nil
     ) {
+        self.singleQuota = singleQuota.map {
+            StatusBarSingleQuota(
+                remainingFraction: $0.remainingFraction.map { min(max($0, 0), 1) },
+                timeRemainingFraction: $0.timeRemainingFraction.map { min(max($0, 0), 1) }
+            )
+        }
         self.weekly = weekly
         self.interval = interval
         self.centerAvailable = centerAvailable.map { min(max($0, 0.0), 1.0) }
@@ -82,4 +92,10 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         centerAvailable: 1.0,
         quotaHealthLevels: Array(repeating: .healthy, count: 3)
     )
+}
+
+/// The single source selected for the compact status-bar gauge.
+struct StatusBarSingleQuota: Equatable, Sendable {
+    let remainingFraction: Double?
+    let timeRemainingFraction: Double?
 }

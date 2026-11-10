@@ -991,9 +991,15 @@ struct MenuQuotaOverviewView: View {
                     status: status,
                     localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
                     fleet: state.fleetCardContext(for: status.kind),
-                    isPinnedToStatusBar: state.configStore.config.statusBarPinnedProvider == status.id,
+                    selectedStatusBarSource: state.configStore.config.statusBarQuotaSelection.flatMap {
+                        $0.providerID == status.id ? $0.source : nil
+                    },
+                    statusBarQuotaOptions: state.statusBarQuotaOptions(providerID: status.id),
                     configStore: state.configStore,
                     onTogglePin: { state.toggleStatusBarPinnedProvider(status.id) },
+                    onSelectStatusBarQuota: { source in
+                        state.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: status.id, source: source))
+                    },
                     onRefresh: { onRefreshProvider(status.id) },
                     onUsageRefresh: { Task { await state.triggerLocalUsageRescan() } },
                     onSettings: { onOpenSettings(status.kind) },
@@ -1018,9 +1024,11 @@ private struct MenuQuotaProviderRow: View {
     let status: ProviderStatus
     let localStatus: ProviderStatus
     let fleet: FleetCardContext?
-    var isPinnedToStatusBar: Bool = false
+    var selectedStatusBarSource: StatusBarQuotaSource? = nil
+    var statusBarQuotaOptions: [StatusBarQuotaOption] = []
     var configStore: ConfigStore? = nil
     var onTogglePin: (() -> Void)? = nil
+    var onSelectStatusBarQuota: ((StatusBarQuotaSource) -> Void)? = nil
     let onRefresh: () -> Void
     let onUsageRefresh: () -> Void
     let onSettings: () -> Void
@@ -1065,22 +1073,15 @@ private struct MenuQuotaProviderRow: View {
                         .help("额度数据更新时间；\(status.displayName)额度请求时间，不代表本机用量更新时间")
                 }
                 if ProviderKind.windowedKinds.contains(status.kind), let onTogglePin {
-                    Button(action: onTogglePin) {
-                        Image(systemName: isPinnedToStatusBar ? "eye.fill" : "eye.slash")
-                            .font(.system(size: 10, weight: isPinnedToStatusBar ? .semibold : .regular))
-                            .foregroundStyle(isPinnedToStatusBar ? Color.primaryLabel : Color.secondaryLabel.opacity(0.6))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            .background(
-                                isPinnedToStatusBar
-                                    ? Color.primary.opacity(0.12)
-                                    : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 4)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
-                    .accessibilityLabel(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
+                    StatusBarQuotaSelector(
+                        selectedSource: selectedStatusBarSource,
+                        options: statusBarQuotaOptions,
+                        iconSize: 10,
+                        horizontalPadding: 4,
+                        verticalPadding: 2,
+                        onToggle: onTogglePin,
+                        onSelect: { onSelectStatusBarQuota?($0) }
+                    )
                 }
                 if case .loading = localStatus.state {
                     ProgressView()

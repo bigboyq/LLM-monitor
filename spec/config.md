@@ -63,7 +63,7 @@ The app reads and writes this shape:
 | `holidaySource` | global | 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。缺省（不写键）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；**显式空串** = 只用随 App 打包的内置快照、不联网；其余值按 http(s) URL 或本地文件路径解析。类型写错按缺失处理（回退缺省语义）。缓存文件、取数触发与设置页展示见 `spec/ui/settings.md` 的「节假日数据源」。 |
 | `appearance` | global | 应用外观（`AppAppearance`：`light` / `dark` / 缺省=自动跟随系统）。`AppState.applyAppearance` 写 `NSApp.appearance`，start 与每次配置变更时应用；设置页界面 pane「外观」节随普通表单草稿保存，选「自动」时字段不落盘。 |
 | `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
-| `statusBarPinnedProvider` | global | 状态栏小眼睛锚定的 Provider ID（规范化 ID，如 `minimax`、`antigravity` 等）。缺省或 nil 表示全 Provider 聚合（取已启用且有有效配额的各 Provider 5h/周非零最小值）；非空且对应的 Provider 已启用且有有效配额时，状态栏双环（Icon Duo）与健康度圆点仅展示该服务商指标。卡片小眼睛点击单选/再点取消即时写穿。类型错误按缺失（nil）容错处理。 |
+| `statusBarQuotaSelection` | global | 状态栏指标来源（`StatusBarQuotaSelection`）。缺省 / `null` = 全 Provider 接力聚合；`providerID` 使用抓取配置 ID（如 `codex_chatgpt`、`glm_coding_plan`）。`source` 缺省为主套餐，显式形状为 `{"kind":"plan"}`、`{"kind":"apiCredit","keyID":"…"}` 或 `{"kind":"activityPlan","planID":"…","entitlementID":"…"}`。来源暂缺时保留所选值并显示暂无数据，不静默切换。旧 `statusBarPinnedProvider` 仅在新字段缺省时迁移为主套餐；写回只使用新字段。 |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |

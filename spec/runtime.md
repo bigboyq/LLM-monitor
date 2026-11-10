@@ -393,10 +393,25 @@ GPT models）/ `gemini_argon`（Gemini 4 Argon）。这些都是独立配额池�
 2026-10 用户裁定不计入聚合；滤后为空回退 `activeModels`（排除只允许「少算」）。卡片逐 model
 展示与通知管线（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
 
-状态栏双环（Icon Duo）与健康度圆点支持服务商小眼睛锚定（`statusBarPinnedProvider`）：
-- 缺省或为 nil 时，`AppState.statusBarQuotaMetrics` 与 `systemHealthLevel(at:)` 综合所有已启用 Provider 计算全局非零最小值与健康度；
-- 当 `statusBarPinnedProvider` 指定了有效的窗口服务商 ID，且该服务商在可见列表中已启用并持有有效额度数据时，状态栏双环指标与健康度圆点仅计算该服务商的数据；
-- 若锚定的服务商被禁用、未配置凭据或尚无有效配额读数，系统自动回退到全 Provider 聚合，避免状态栏出现空白。
+状态栏以 `StatusBarQuotaSelection` 表达 Provider + 独立额度来源，配置入口为
+`statusBarQuotaSelection`（旧 `statusBarPinnedProvider` 仅作 JSON 迁移）：
+- 缺省或 nil：主套餐仍走全局接力聚合，中心取非零最小有效余量；双窗原始左右弧保留 min/avg 口径。API 赠金与活动权益不自动加入此集合。
+- 选 Provider 默认 `.plan`：跟随其主套餐真实窗口，双窗显示原双弧；仅一个窗口类别（5h / 周 / 月等）显示单环。保存的是主套餐身份，套餐窗口变化不会使选择失效。
+- `.apiCredit(keyID:)` 精确选择单个 Admin API Key；`.activityPlan(planID:entitlementID:)` 精确选择一份 ZCode 活动权益。均为单环，不与主套餐或其他 Key / 权益混算。
+- 显式选择无读数、被删除或 Provider 被禁用：保留选择，单环灰色 `—` / tooltip「暂无数据」，**不回退全局**。SF Symbol 健康点同样只反映被选来源，无数据为 nil。
+
+`AppState.statusBarQuotaPools` 是来源目录，选项与读数来自同一组 `StatusBarQuotaPool`。
+`statusBarQuotaOptions` 提供设置 / 小眼睛菜单选项，`statusBarQuotaTitle` 提供来源与读数提示；
+`StatusBarQuotaProjection.metrics` 单源计算主套餐聚合。绘图只消费
+`StatusBarQuotaMetrics`：`singleQuota != nil` 表示单环（其中 `remainingFraction == nil`
+表示未知），否则走双窗绘图。全局只剩一个窗口类别时也使用单环，保留非零最小有效余量。
+
+API 选项来自启用赠金监测后的 `effectiveAdminKeys`，以持久 Key ID 匹配抓取结果，不依赖列表顺序或组织名。
+首次抓取失败且没有成功时间时为未知；有成功缓存的失败可保留读数并提示「可能过期」。
+账期已变化但尚无新快照时为未知，不把上期余额当成新一期可用额度；有效账期以自己的起止时间判色。
+ZCode JWT 扩展开启后列出余额与待生效权益；余额按 remaining / total，total ≤ 0 为未知，
+已到期为 0，待生效为未知。因余额快照未提供周期起点，不合成时间比例，按固定阈值判色。
+主套餐继续走 `fleetEffectiveQuota`；API Key / ZCode 扩展权益目前仅使用本机快照，现有 Fleet wire 未传输这些独立来源。
 
 ## Error And Fallback
 

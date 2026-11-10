@@ -85,7 +85,9 @@ struct ProviderDetailWindowView: View {
                         ProviderCardView(
                             status: status,
                             fleet: state.fleetCardContext(for: status.kind),
-                            isPinnedToStatusBar: configStore.config.statusBarPinnedProvider == status.id,
+                            selectedStatusBarSource: configStore.config.statusBarQuotaSelection.flatMap {
+                                $0.providerID == status.id ? $0.source : nil
+                            },
                             presentation: .complete,
                             configStore: configStore
                         )
@@ -106,6 +108,10 @@ struct ProviderDetailWindowView: View {
                 })
                 .environment(\.cardPinStatusBarAction, { id in
                     state.toggleStatusBarPinnedProvider(id)
+                })
+                .environment(\.cardStatusBarQuotaOptions, { id in state.statusBarQuotaOptions(providerID: id) })
+                .environment(\.cardSelectStatusBarQuota, { id, source in
+                    state.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: id, source: source))
                 })
             }
             .onAppear { displayClock.start() }

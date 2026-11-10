@@ -10,7 +10,8 @@ struct SettingsFormDraft: Equatable {
     var statusBarIconStyle: StatusBarIconStyle = .chartBar
     var statusBarHealthDotEnabled: Bool = true
     var statusBarHealthColors: StatusBarHealthColors = .default
-    var statusBarPinnedProvider: String = ""
+    var statusBarQuotaProvider: String = ""
+    var statusBarQuotaSource: StatusBarQuotaSource = .plan
     var appearance: AppAppearance = .auto
     var systemNotificationSoundEnabled: Bool = true
     var edgeDockMode: EdgeDockMode = EdgeDockConfig.default.mode
@@ -124,7 +125,8 @@ struct SettingsFormDraft: Equatable {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
-        statusBarPinnedProvider = config.statusBarPinnedProvider ?? ""
+        statusBarQuotaProvider = config.statusBarQuotaSelection?.providerID ?? ""
+        statusBarQuotaSource = config.statusBarQuotaSelection?.source ?? .plan
         appearance = config.effectiveAppearance
         systemNotificationSoundEnabled = config.effectiveSystemNotificationSoundEnabled
 

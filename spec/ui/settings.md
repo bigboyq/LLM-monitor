@@ -230,10 +230,10 @@ Interface pane 的「外观」节（`SettingsGeneralPane.swift`）行标签「�
 
 Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图标样式与监控目标配置：
 - **图标主题 Picker**（`StatusBarIconStyle`）：App 图标、Icon Duo 双环仪表盘、系统符号等样式及实时烘焙预览；
-- **指标来源 Picker**（`statusBarPinnedProvider`）：
-  - 「全部聚合（非零最小值）」（缺省 / tag `""` / 落盘 `nil`）：综合所有已启用 Provider 计算非零最小值；
-  - 窗口 Provider（MiniMax、ChatGPT、Antigravity、GLM 等）：将状态栏 Icon Duo 双环及健康度圆点单选锚定至该 Provider；
-  - 与 Provider 卡片标题栏的「小眼睛」按钮双向联动，保存时写回 `config.json` 的 `statusBarPinnedProvider` 字段；
+- **Provider + 额度来源 Picker**（`statusBarQuotaSelection`）：
+  - Provider「全部聚合（非零最小值）」对应 nil，沿用所有有效 Provider 的全局接力读数；
+  - 选中 Provider 后显示其可用额度来源：主套餐（双窗口或单窗口）、每个独立 Admin API Key、每份 ZCode Start Plan entitlement；切换 Provider 将来源重置为主套餐；
+  - 暂无数据或暂时不可用的已保存来源保留为占位选项，不会自动改选；Provider 卡片眼睛单击选择/取消主套餐，右键菜单可直选同一 Provider 的其它额度来源；设置与卡片双向同步；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
 ### GLM API Key、ZCode JWT 扩展与高峰期提示

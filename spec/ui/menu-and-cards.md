@@ -48,7 +48,8 @@ builder therefore also deleted `StatusBarQuotaMetrics.waterHealth` and
 gauge resolves every color from `healthColors` through its own `colorLevel` rule, so
 neither was needed.
 
-The `iconDuo` dashboard (`IconDuoSVGBuilder`) uses a left 5h arc and right weekly arc, both being concentric
+The `iconDuo` dashboard (`IconDuoSVGBuilder`) has two presentations. The global aggregate and a selected
+provider's paired 5h / weekly source use the dual-window dashboard: a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
 available segments (a missing window keeps only its gray track). The center uses the minimum
 actual available ratio across active models — per model, `min(5h remaining, weekly remaining × N)`
@@ -76,8 +77,21 @@ fraction across models for their dynamic thresholds). DeepSeek balance health is
 by balance thresholds (`< 3` red, `< 10` yellow; default `deepseekBalanceCritical = 3.0`,
 `deepseekBalanceWarning = 10.0`). During GLM peak hours a peak
 floor raises a provider's composite status to at least `.warning` (red wins); the floor
-only applies to the iconDuo bottom dots and the card header dots — arcs and the center
-sector are exempt.
+only applies to the dual-window bottom dots and the card header dots — quota arcs,
+the center sector and the single-window percentage gauge are exempt.
+
+When a single-window quota source is selected (for example a weekly-only ChatGPT plan, one API
+credit key, or one GLM Start Plan entitlement), `StatusBarQuotaMetrics.singleQuota` selects
+the one-source gauge. It draws one **350°** circular track and remaining arc, a centered
+numeric percentage (`—` while the chosen source has no current data), and only the Energy
+sleep-health indicator at 12 o'clock. The centered numeric value uses a reduced-size `%`
+glyph so a 100% label still fits at the menu-bar icon size. The old split 5h / weekly arcs, center sector and
+three quota-health dots are omitted. Zero is shown as a critical-colored `0%` with an empty
+track; absent data is gray. The gauge arc follows the same time-aware `AlertThresholdConfig`
+color rule as the other quota elements. The small gap at the top keeps the sleep indicator
+separate from the quota arc.
+The global aggregate also uses this gauge when only one window category is present,
+retaining its nonzero-minimum effective percentage.
 
 **聚合 model 集合排除独立小池（2026-10 用户裁定）。** iconDuo 的四个读数（左右弧、
 中心扇形、底部三点）与 SF Symbol 状态点 / 边缘窗圆环 / provider 综合健康度读的都是
@@ -170,7 +184,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧放置状态栏锚定小眼睛切换按钮（`eye.fill` / `eye.slash`，单选勾选将该服务商写入 `config.statusBarPinnedProvider`，再次点击取消锚定回退全局聚合）与额度更新时间，贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
+右侧放置状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键可选具体额度，写入 `config.statusBarQuotaSelection`）与额度更新时间，贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -643,8 +657,11 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
   只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期；
 - **状态栏锚定小眼睛**（窗口型 Provider 标题行刷新胶囊左侧，`eye.fill` / `eye.slash`）：经环境键
   `\.cardPinStatusBarAction`（`((String) -> Void)?`，参数 `status.id`）→
-  `AppState.toggleStatusBarPinnedProvider(_:)`：单选勾选将该服务商写入 `config.statusBarPinnedProvider`
-  （状态栏双环与健康点独占展示该服务商指标），再点同一卡片取消锚定（置 `nil` 回退全 Provider 聚合）。
+  `AppState.toggleStatusBarPinnedProvider(_:)`：单击选择该 Provider 的主套餐，再点同一卡片取消选择（置 `nil` 回到全 Provider 聚合）。
+  `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`，
+  用 `setStatusBarQuotaSelection` 选择独立来源。详情卡经 `\.cardStatusBarQuotaOptions` /
+  `\.cardSelectStatusBarQuota` 注入选项和动作。`selectedStatusBarSource` 参与卡片 Equatable，
+  同 Provider 切换 Key / 权益时也会更新，菜单勾选与 help 指向具体来源。
 
 在飞事务由 `beginExternalJob` 闸门合并，反馈交给既有状态胶囊自然变化。动作经环境键
 传递（默认 `nil` = 无操作，只读渲染免注入）——`ProviderCardView` 是 `Equatable`

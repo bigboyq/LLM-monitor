@@ -108,6 +108,16 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(plan, ProviderCardView(status: status, presentation: .plan))
     }
 
+    func testSelectedQuotaSourceParticipatesInProviderCardEquatableIdentity() {
+        let status = Self.codexFixture()
+        let plan = ProviderCardView(status: status, selectedStatusBarSource: .plan)
+        let api = ProviderCardView(status: status, selectedStatusBarSource: .apiCredit(keyID: "workspace-a"))
+        let unselected = ProviderCardView(status: status)
+        XCTAssertNotEqual(plan, api)
+        XCTAssertNotEqual(plan, unselected)
+        XCTAssertEqual(api, ProviderCardView(status: status, selectedStatusBarSource: .apiCredit(keyID: "workspace-a")))
+    }
+
     func testProviderHistorySectionTitleNamesTheBroaderHistoryMetrics() {
         XCTAssertEqual(ProviderCardView.localUsageSectionTitleText, "最近7天使用历史")
     }

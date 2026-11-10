@@ -120,12 +120,67 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertEqual(image?.size.height, 22)
     }
 
+    func testSelectedSingleQuotaUsesOneGaugeAndSleepIndicatorOnly() {
+        let metrics = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.2),
+            interval: QuotaRingMetrics(minAvailable: 0.7, avgAvailable: 0.7),
+            centerAvailable: 0.2,
+            quotaHealthLevels: [.critical, .warning, .healthy],
+            singleQuota: StatusBarSingleQuota(remainingFraction: 0.72, timeRemainingFraction: 0.6)
+        )
+
+        let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics, energyHealth: .healthy)
+        XCTAssertTrue(svg.contains("id=\"single-quota-track\""))
+        XCTAssertTrue(svg.contains("id=\"single-quota-available\" data-value=\"72\""))
+        XCTAssertTrue(svg.contains("id=\"single-quota-value\" data-value=\"72%\""))
+        XCTAssertTrue(svg.contains("font-size=\"190\""))
+        XCTAssertTrue(svg.contains("<tspan font-size=\"90\">%</tspan>"))
+        XCTAssertTrue(svg.contains("id=\"energy-dot\""), "单环仍保留12点位置的睡眠状态灯")
+        XCTAssertFalse(svg.contains("interval-track"))
+        XCTAssertFalse(svg.contains("weekly-track"))
+        XCTAssertFalse(svg.contains("center-sector"))
+        XCTAssertFalse(svg.contains("quota-dot-"), "单额度图标不画下面的套餐红黄绿点")
+
+        let image = IconDuoSVGBuilder.buildImage(metrics: metrics, energyHealth: .healthy)
+        XCTAssertNotNil(image)
+        XCTAssertEqual(image?.size.width, 22)
+        XCTAssertEqual(image?.size.height, 22)
+    }
+
+    func testSelectedSingleQuotaDistinguishesEmptyFromUnknown() {
+        let base = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1),
+            interval: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1)
+        )
+        let unknown = IconDuoSVGBuilder.buildSVG(
+            metrics: StatusBarQuotaMetrics(
+                weekly: base.weekly,
+                interval: base.interval,
+                singleQuota: StatusBarSingleQuota(remainingFraction: nil, timeRemainingFraction: nil)
+            )
+        )
+        XCTAssertTrue(unknown.contains("id=\"single-quota-value\" data-value=\"—\""))
+        XCTAssertFalse(unknown.contains("id=\"single-quota-available\""))
+        XCTAssertTrue(unknown.contains("fill=\"#8E8E93\""))
+
+        let exhausted = IconDuoSVGBuilder.buildSVG(
+            metrics: StatusBarQuotaMetrics(
+                weekly: base.weekly,
+                interval: base.interval,
+                singleQuota: StatusBarSingleQuota(remainingFraction: 0, timeRemainingFraction: 0)
+            )
+        )
+        XCTAssertTrue(exhausted.contains("id=\"single-quota-value\" data-value=\"0%\""))
+        XCTAssertFalse(exhausted.contains("id=\"single-quota-available\""))
+        XCTAssertTrue(exhausted.contains("fill=\"#FF453A\""))
+    }
+
     /// 左弧的动态黄线透传（修复回归）：ChatGPT Plan 单 7d 主窗口下，左弧与
     /// 中心扇形必须同向——20% 额度 + 20% 窗口时间时两者都按动态黄线
     /// min(time%, 50) 判绿，而不是左弧固定 30% 黄线判黄、与中心反向。
     /// 5h 短窗口（<24h）行为不变：固定 30% 黄线，20% 仍为黄。
     @MainActor
-    func testIconDuoLeftArcUsesLongIntervalTimeFraction() {
+    func testSingleWindowGaugeUsesTimeAwareColor() {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -177,14 +232,16 @@ final class IconDuoSVGBuilderTests: XCTestCase {
             }
         }
 
-        // 1. 长 interval 窗口（7d）：20% 额度 + 20% 窗口时间 → 左弧与中心同绿。
+        // 1. 长 interval 窗口（7d）：只有一个额度来源，因此显示单环与中心同尺度。
         setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: sevenDays)
         let metrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(metrics.interval.avgAvailable, 0.2, accuracy: 0.001)
         XCTAssertEqual(metrics.intervalTimeFraction ?? -1, 0.2, accuracy: 0.001)
         XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(metrics.singleQuota?.remainingFraction ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(metrics.singleQuota?.timeRemainingFraction ?? -1, 0.2, accuracy: 0.001)
         let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
-        XCTAssertTrue(svg.contains("id=\"interval-available\""))
+        XCTAssertTrue(svg.contains("id=\"single-quota-available\""))
         XCTAssertFalse(svg.contains("#FFD60A"), "长窗口 20%+20% 时左弧与中心都按动态黄线判绿，不得出现黄色")
         XCTAssertTrue(svg.contains("#34C759"), "左弧应与中心扇形一致为绿色")
 
@@ -192,6 +249,7 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: 5 * 3600)
         let shortMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(shortMetrics.intervalTimeFraction ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(shortMetrics.singleQuota?.remainingFraction ?? -1, 0.2, accuracy: 0.001)
         let shortSVG = IconDuoSVGBuilder.buildSVG(metrics: shortMetrics)
         XCTAssertFalse(shortSVG.contains("#FFD60A"), "5h 短窗口 20%+20% 时按统一时间感知判绿，不应为黄")
         XCTAssertTrue(shortSVG.contains("#34C759"), "5h 短窗口应与周窗口一致为绿色")
