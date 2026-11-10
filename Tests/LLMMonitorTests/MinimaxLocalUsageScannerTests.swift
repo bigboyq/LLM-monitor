@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 19,
+            version: 20,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 19,
+            version: 20,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -323,9 +323,9 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(split[0].outputTokens, 250)
         XCTAssertEqual(split[0].durationSeconds, 12.5, "调用级重建同样必须原样保留 durationSeconds")
         XCTAssertEqual(split[0].ttftSeconds, 1.5)
-        // 未配对样本：日级比例 750/1400 × 400 ≈ 214。
-        XCTAssertEqual(split[1].reasoningOutputTokens, 214, "未配对样本维持日级比例路径")
-        XCTAssertEqual(split[1].outputTokens, 186)
+        // 当天 reasoning 已全部分配给配对调用，未配对残余不再二次分配。
+        XCTAssertEqual(split[1].reasoningOutputTokens, 0, "配对 reasoning 必须先从当日预算扣除")
+        XCTAssertEqual(split[1].outputTokens, 400)
         XCTAssertNil(split[1].durationSeconds)
         XCTAssertEqual(split[1].ttftSeconds, 1.5)
     }
@@ -449,14 +449,14 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(today.inputTokens, 200)
         XCTAssertEqual(today.totalTokens, 1700, "input 200 + output 500 + reason 1000")
 
-        // samples：turn-a 调用级精确；turn-b 未配对 → 日级比例 1000/1500 × 500 ≈ 333。
+        // samples：turn-a 调用级精确；turn-b 只分配残余 reasoning250。
         let samples = try XCTUnwrap(result.recentSamples)
         XCTAssertEqual(samples.count, 2)
         XCTAssertEqual(samples[0].reasoningOutputTokens, 750)
         XCTAssertEqual(samples[0].outputTokens, 250)
         XCTAssertEqual(samples[0].durationSeconds, 5.0, "调用级重建不丢时长")
-        XCTAssertEqual(samples[1].reasoningOutputTokens, 333, "未配对样本维持日级比例路径")
-        XCTAssertEqual(samples[1].outputTokens, 167)
+        XCTAssertEqual(samples[1].reasoningOutputTokens, 250, "未配对样本使用扣除配对调用后的残余预算")
+        XCTAssertEqual(samples[1].outputTokens, 250)
         XCTAssertNil(samples[1].durationSeconds, "未配对 → 无时长")
     }
 
@@ -517,9 +517,9 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(rebuilt[0].ttftSeconds, 7.778, "重建样本 ttftSeconds 原样保留")
         XCTAssertNil(rebuilt[1].ttftSeconds, "重建样本 ttftSeconds 的 nil 同样保留")
 
-        // 缓存版本钉 19：调用级 reasoning 拆分口径变更必须让旧缓存全量重建。
+        // 缓存版本钉 20：修复残余 reasoning 分配后必须让旧缓存全量重建。
         let saved = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: FileManagerBox())
-        XCTAssertEqual(saved.version, 19)
+        XCTAssertEqual(saved.version, 20)
     }
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
@@ -542,7 +542,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 19)
+        XCTAssertEqual(current.version, 20)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

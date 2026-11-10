@@ -99,13 +99,16 @@ identical to the ZCode provider slices, the MiniMax Code runtime, and DSH M3:
 | Priority | Condition | Result |
 |---|---|---|
 | ① native | `tokens.reasoning > 0` | passed through unchanged (two independent columns, no reclassification) |
-| ② char split | providerID lowercased prefix is `minimax` **and** the day / row carries reasoning text in `part` | `round(output × rchars / (rchars + vchars))` split into `reasoning` + `output`, conserving `reasoning + output == raw output` |
+| ② char split | providerID lowercased prefix is `minimax` **and** the row carries reasoning text in `part` | `round(output × rchars / (rchars + vchars))` split into `reasoning` + `output`, conserving `reasoning + output == raw output` |
 | ③ fallback | neither of the above | `reasoning = 0`, `output` unchanged |
 
 The minimax gate is deliberate and not a generic rule: for every other provider a split
-would overwrite a genuine native value. The SQL side narrows with `LIKE 'minimax%'` and
-the Swift side re-checks the lowercased prefix (`needsCharSplit`) so both sides state the
-same rule explicitly (SQLite `LIKE` is case-insensitive for ASCII by default).
+would overwrite a genuine native value. `needsCharSplit` checks the lowercased prefix
+before applying the row's character counts. The split happens once per message; daily
+output/reasoning are the sums of those same normalized samples, with the same cutoff.
+There is no independent day-level character split: differing character/token ratios
+between calls must not make the projection's current-day max merge create tokens.
+Cache index v3 invalidates the previous day-level split snapshots.
 
 Character buckets are identical to the ZCode slices — measured in `opencode.db`, a tool
 part stores its arguments at the same path as ZCode:
@@ -116,15 +119,14 @@ part stores its arguments at the same path as ZCode:
 | visible | `$.type = 'text'` | `$.text` |
 | visible | `$.type = 'tool'` | `$.state.input` (tool arguments are model-generated output, equivalent to MiniMax Code's `tool_call_args`) |
 
-Granularity: daily aggregation (`queryPerDay` + `queryMinimaxReasoningChars`) is a
-**day-level** split — characters are grouped by provider × local calendar day; recent
-samples (`querySamples`) are a **row-level** split — two correlated subqueries fetch the
-part characters of that one message. The split conserves the bucket, so recomputing
-`totalTokens` still yields the original `in + out + rsn + cacheRead`.
+Granularity: `querySamples` performs the split **per row** — two correlated subqueries
+fetch the part characters of that one message. Daily and sample queries have the same
+cutoff; `aggregate` accumulates the row-level output/reasoning into the daily buckets,
+preserving the SQL input/cache/round/turn fields. `totalTokens` remains conserved.
 
 Very old `opencode.db` files have no `part` table at all (this reader never depended on it
 before). `partTableExists()` checks `sqlite_master` before any character query, so the
-char aggregation returns empty and the sample SQL degrades those two columns to constant
+sample SQL degrades those two columns to constant
 `0` — reasoning stays `0` and aggregation still succeeds, instead of failing at
 `sqlite3_prepare` time on the missing table.
 

@@ -396,7 +396,7 @@ final class MinimaxDBReader {
               t.ts,
               t.input_tokens,
               t.output_tokens,
-              t.reasoning_tokens,
+              \(perRowReasoningExpr) AS reasoning_tokens,
               t.cache_read_tokens,
               \(sessionRelativeDirExpression) AS session_relative_dir
             FROM \(resolvedTableName) t

@@ -76,7 +76,8 @@ enum UsageReportBuilder {
                 case .scanning:
                     reason = .scanning
                 case .clean, .dirty:
-                    reason = status.isScanningLocalUsage ? .scanning : nil
+                    reason = status.isScanningLocalUsage
+                        || status.localUsageFreshness.isAwaitingInitialScan(consumer.source) ? .scanning : nil
                 }
                 if let reason {
                     Self.markUnavailable(consumer, reason: reason, in: &unavailableSourcesByKey)
@@ -388,6 +389,9 @@ enum UsageReportBuilder {
     private static func localUsageUnavailable(_ status: ProviderStatus) -> Bool {
         let freshness = status.effectiveLocalUsageFreshness
         return status.isScanningLocalUsage || freshness == .scanning || freshness == .failed
+            || status.localUsageConsumers.contains {
+                status.localUsageFreshness.isAwaitingInitialScan($0.source)
+            }
     }
 
     private static func markUnavailable(

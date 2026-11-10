@@ -227,6 +227,14 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   实际消费者。所有来源不可用时仍发 partial 桶，不宣称完整零值。
   对应 provider 的窗口行保持原有整 provider 省略保护，其他 provider 窗口和有效
   `lastSuccess` 额度照常构建。
+- **首轮来源核对**：`LocalUsageFreshnessSnapshot` 另外记录 `isAwaitingInitialScan`，
+  AppState 新建来源及停用后重新激活的来源先置为待核对；不能把此时的 nil 缓存解释为完整零值。
+  builder 将待核对来源按 `.scanning` 上报不可用标记，并省略该 Provider 的窗口行，让 hub 保留旧贡献。
+  完整扫描结果先同步应用，再由 `onValidatedResult` 解除标记；扫描期间又发生变化时只保留 dirty，不能继续冒充未核对。
+  扫描成功（包括完整空结果）或明确确认数据源不存在后解除标记；扫描失败继续按 `.failed` 保留旧值。
+  明确缺源会清除本机旧快照，下一份健康零桶能正常清除 hub 旧贡献；停用 Provider 不制造不可用标记，重新启用后重新核对。
+  Codex 冷启动尚无成功 QuotaInfo 时仍可扫描并缓存本地 sessions，但 `applyCodexUsageDetails` 返回未接纳；
+  编排不据此解除待核对或宣告有效零值，保留 hub 旧贡献，现有本机展示边界不变。配置代际已变的扫描同样不能消费新来源的初始化状态。
 - `unavailableSources` 为可选 v1 扩展：健康报告仍省略此字段；新版 hub 兼容旧版
   complete 日桶，旧版 hub 会拒收新 partial 日桶，因此多机部署应先升级 hub。
 - 窗口行：按各 model 的真实窗口边界（`LocalUsageSummaryBuilder.windowBounds`

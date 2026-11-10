@@ -43,16 +43,16 @@
 
 ## Schema versioning
 
-`config.json` 当前 schema 为 v2；历史文件缺少 `schemaVersion` 时按 v0 解码并在内存中
-规范化到 v2，后续保存会写出版本字段。未来不支持的版本会拒绝加载，并禁止旧版本
+`config.json` 当前 schema 为 v3；历史文件缺少 `schemaVersion` 时按 v0 解码并在内存中
+规范化到 v3，后续保存会写出版本字段。未来不支持的版本会拒绝加载，并禁止旧版本
 自动写回，避免覆盖新版本配置。`ProviderConfig` 仍对可选字段使用 `decodeIfPresent`，
 保留字段级向前兼容。损坏配置兜底（
 [ConfigStore.swift:653](../../Sources/LLM-monitor/Services/ConfigStore.swift:653)）：解析失败
 → 备份到 `config.json.corrupt-<UUID>.json`（0600）→ 备份成功用 `.default` 空配置运行
 （不覆盖原文件）→ 备份失败 `persistenceAllowed = false` 禁止自动写回。
-6× scanner 用 `ScannerIndexIO` 版本不匹配时按各自策略处理：Antigravity 有
-v2…v6 → v7 的迁移闭包（`AntigravityFilesystem.loadIndex`），其余 5 个无迁移路径，
-版本不匹配直接重扫全量重建。当前版本号：Antigravity 7 / Minimax 14 / GLM-Zcode 11 /
-OpenCode 2 / DSH 5 / Agy 2。
+6× scanner 用 `ScannerIndexIO` 加载缓存，版本不匹配直接重扫全量重建；Antigravity
+切换为数据库直读后也不再迁移旧 RPC 索引（`AntigravityFilesystem.loadIndex`）。
+当前版本号：Antigravity 12 / Minimax 20 / GLM-Zcode 14 /
+OpenCode 3 / DSH 7 / Agy 8。Codex JSONL 索引为 v2。
 `SQLiteTempCopy.read` 把生产 `.db` 复制到 `NSTemporaryDirectory()` 绕开 IDE/Antigravity WAL
 锁（`CANTOPEN`/`BUSY`），per-scan UUID，权限 0600。

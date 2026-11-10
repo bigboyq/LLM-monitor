@@ -1297,7 +1297,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
         XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 7, "重建后的索引以 v7 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 8, "重建后的索引以 v8 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

@@ -438,6 +438,9 @@ actor BarkSendQueue {
         }
         while !pending.isEmpty, !Task.isCancelled, gen == self.generation {
             let operation = pending.removeFirst()
+            // An operation can enter the queue before an earlier send with
+            // the same key succeeds. Recheck the now-current cooldown here.
+            if let key = operation.cooldownKey, isCoolingDown(key) { continue }
             await send(operation)
         }
     }

@@ -15,7 +15,7 @@ final class OpencodeUsageTests: XCTestCase {
             scannedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         let index = OpencodeUsageScanner.CacheIndex(
-            version: 2,
+            version: 3,
             dbMtimeMs: 1,
             dbSizeBytes: 1,
             walMtimeMs: 0,

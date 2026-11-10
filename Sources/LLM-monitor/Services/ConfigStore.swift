@@ -326,6 +326,9 @@ final class ConfigStore: ObservableObject, BarkConfigProviding {
         source.resume()
         self.configMonitorSource = source
         configWatcherRetryAttempt = 0
+        // The replacement may have appeared while no fd was attached. Its
+        // creation event has already passed, so consume its contents now.
+        scheduleConfigReload()
         logInfo("ConfigStore: 配置文件监听启动 (基于 config.json 单文件 DispatchSource)")
     }
 

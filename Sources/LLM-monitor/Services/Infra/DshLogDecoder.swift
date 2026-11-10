@@ -36,7 +36,7 @@ enum DshLogDecoder {
     /// （文件被隔离且每轮重试，永远进不了统计）。
     nonisolated static let maximumDecompressedBytes = 1024 * 1024 * 1024
 
-    /// 注入式内存解压的结果校验：与流式路径的 checkOutputSize 同一上限，
+    /// 注入式内存解压的结果校验：与流式路径的 maximumOutputBytes 同一默认上限，
     /// 防止测试外的注入点把无界解压结果整体载入堆。
     nonisolated static func checkDecompressedByteCount(_ count: Int) throws {
         guard count <= maximumDecompressedBytes else {
@@ -50,21 +50,35 @@ enum DshLogDecoder {
     nonisolated static func decompressToFile(
         input: URL,
         output: URL,
-        fileManager: FileManagerBox
+        fileManager: FileManagerBox,
+        maximumOutputBytes: Int = maximumDecompressedBytes,
+        executableLocator: ((_ name: String, _ preferred: [String]) -> URL?)? = nil
     ) throws {
-        if let zstd = existingExecutable(named: "zstd", preferred: ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]) {
+        let locate = executableLocator ?? { existingExecutable(named: $0, preferred: $1) }
+        if let zstd = locate("zstd", ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]) {
             do {
-                try runZstdToFile(input: input, output: output, executable: zstd, fileManager: fileManager)
+                try runZstdToFile(input: input, output: output, executable: zstd, maximumOutputBytes: maximumOutputBytes)
                 return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as ProcessRunner.RunnerError {
+                if case .outputTooLarge(let limit) = error {
+                    throw DecoderError.outputTooLarge(bytes: SaturatingArithmetic.add(limit, 1))
+                }
+                logWarn("[dsh-scan] zstd CLI 流式解压失败，尝试 Node zlib: \(error.localizedDescription)")
             } catch {
                 logWarn("[dsh-scan] zstd CLI 流式解压失败，尝试 Node zlib: \(error.localizedDescription)")
             }
         }
-        if let node = existingExecutable(
-            named: "node",
-            preferred: ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
-        ) {
-            try runNodeToFile(input: input, output: output, executable: node, fileManager: fileManager)
+        if let node = locate("node", ["/opt/homebrew/bin/node", "/usr/local/bin/node"]) {
+            do {
+                try runNodeToFile(input: input, output: output, executable: node, maximumOutputBytes: maximumOutputBytes)
+            } catch let error as ProcessRunner.RunnerError {
+                if case .outputTooLarge(let limit) = error {
+                    throw DecoderError.outputTooLarge(bytes: SaturatingArithmetic.add(limit, 1))
+                }
+                throw error
+            }
             return
         }
         throw DecoderError.unavailable
@@ -74,13 +88,14 @@ enum DshLogDecoder {
         input: URL,
         output: URL,
         executable: URL,
-        fileManager: FileManagerBox
+        maximumOutputBytes: Int
     ) throws {
         let result = try ProcessRunner.run(
             executable: executable,
             arguments: ["-q", "-d", "-c", input.path],
             timeout: 30,
-            standardOutputFile: output
+            standardOutputFile: output,
+            maximumOutputBytes: maximumOutputBytes
         )
         guard result.terminationStatus == 0 else {
             throw DecoderError.commandFailed(
@@ -89,14 +104,13 @@ enum DshLogDecoder {
                 stderr: result.standardError
             )
         }
-        try checkOutputSize(fileManager.attributesOfItem(atPath: output.path)[.size] as? NSNumber)
     }
 
     private static func runNodeToFile(
         input: URL,
         output: URL,
         executable: URL,
-        fileManager: FileManagerBox
+        maximumOutputBytes: Int
     ) throws {
         let script = """
         const fs = require("node:fs");
@@ -112,7 +126,8 @@ enum DshLogDecoder {
             executable: executable,
             arguments: ["-e", script, input.path],
             timeout: 30,
-            standardOutputFile: output
+            standardOutputFile: output,
+            maximumOutputBytes: maximumOutputBytes
         )
         guard result.terminationStatus == 0 else {
             throw DecoderError.commandFailed(
@@ -121,7 +136,6 @@ enum DshLogDecoder {
                 stderr: result.standardError
             )
         }
-        try checkOutputSize(fileManager.attributesOfItem(atPath: output.path)[.size] as? NSNumber)
     }
 
     private static func existingExecutable(
@@ -139,11 +153,4 @@ enum DshLogDecoder {
         return nil
     }
 
-    private static func checkOutputSize(_ bytes: NSNumber?) throws {
-        guard let bytes else { throw DecoderError.unsupportedData }
-        // 用 int64Value 比较：intValue 是 Int32，超过 2GB 时会溢出为负数绕过上限。
-        guard bytes.int64Value <= Int64(maximumDecompressedBytes) else {
-            throw DecoderError.outputTooLarge(bytes: Int(bytes.int64Value))
-        }
-    }
 }

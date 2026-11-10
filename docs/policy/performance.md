@@ -16,7 +16,7 @@ macOS 菜单栏常驻 app（所有 provider 默认 5 分钟/300s 一刷）。以
 | Provider | 默认间隔 | 失败重试 |
 | --- | --- | --- |
 | minimax / GLM / Codex / Antigravity / DeepSeek | 300s | 固定间隔：失败后仍按 baseInterval 随下一定时周期重试（不做指数退避，拉长重试间隔只会推迟恢复） |
-| 5 协议 scanner（minimax / antigravity / glm / opencode / dsh） | 在每批 Provider 刷新 settled 后由独立 reconcile pass 触发；首次启动与自然日切换做 Full Scan，其他批次按 scanner 的 dirty/fingerprint 状态决定是否重算 | single attempt，失败由下一批 settled reconcile 自然重试；FSEvents 只负责标记 dirty |
+| 6 协议 scanner（minimax / antigravity / glm / opencode / dsh / agy） | 在每批 Provider 刷新 settled 后由独立 reconcile pass 触发；首次启动与自然日切换做 Full Scan，其他批次按 scanner 的 dirty/fingerprint 状态决定是否重算 | single attempt，失败由下一批 settled reconcile 自然重试；FSEvents 只负责标记 dirty |
 | Codex JSONL 本地用量 | 与同一批 Provider settled 后的 LocalUsage reconcile 一起按需读取；Codex 源文件 watcher 标记 dirty | on-demand，失败由下一次 reconcile 自然重试 |
 
 [`AppConfig.effectiveRefreshInterval`](../../Sources/LLM-monitor/Services/ConfigStore.swift)
@@ -34,9 +34,9 @@ clamp 到 10s～30d：下限防止 0/负数导致 `Task.sleep` 立即返回 → 
 ## 主线程约束
 
 - 重 I/O 全部 background（SQL 聚合、文件遍历、缓存读写）
-- 5 scanner 模板：`@MainActor` 实例只改 `@Published` 状态；`performScanPure` 是
+- 6 scanner 模板：`@MainActor` 实例只改 `@Published` 状态；`performScanPure` 是
   `nonisolated static`；pipeline 在 `AsyncMutex.pipelineMutex` 内串行
 - 主线程不调 `Data.write(to:)` / `FileManager.moveItem` / `Process.run`
 - `AppLog` 走专用 `DispatchQueue` 异步写，UI 线程零阻塞；stdout 也异步
-- 图表 re-render on data change only（`@Published` 驱动）；7 天窗口用 `pow(value, 0.3)`
-  非线性缩放 [TokenChart.swift:35](../../Sources/LLM-monitor/Views/TokenChart.swift:35)
+- 七日趋势使用当前显示值的 min/max 线性归一化并限制在绘图区，见
+  [SevenDayUsageHistoryChart.swift](../../Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift)。

@@ -119,9 +119,12 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v14 | 重新规范化样本 `inputTokens` 为 `uncached + cache_read`（cache-inclusive），与 Codex/DSH 的 sample 字段语义对齐；`tokenComponents` 统一假设 cache-inclusive 输入后，无需再为 Minimax 走特殊分支。旧 snapshots 全量重建 |
    | v15 | 模型名改从 session 目录的 `llm-call.json` 取**真实模型**（见 §Model resolution for samples），账本/投影里的 `minimax/MiniMax-M3` 泛化标签不再当模型名用。旧 samples 带的是错标模型名，必须全量重建才能改对 |
    | v16 | 样本 `durationSeconds` 改由 `local_runtime_message_rows.$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，供窗口 tok/s 分母，见 §SQL aggregation strategy 的 "request_duration_ms 回填"）。旧 samples 没有时长值，必须全量重建才能补上 |
+   | v17 / v18 | v17 显式零 TTFT；v18 改为 request−decode 原生差分推导，移除伪零值 |
+   | v19 | 配对调用按本行字符拆分，未配对调用保留日级残余估算 |
+   | v20 | 未配对样本只分配扣除配对/原生 reasoning 后的残余预算，按 output 权重结算并保留整数舍入余数；daily output/reasoning 取最终样本按日累计 |
 
-   当前 scanner 的 `currentVersion` 是 16（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 16)` 两处一致）。v16 的 bump 理由见
+   当前 scanner 的 `currentVersion` 是 20（`CacheIndex.empty.version` 与
+   `loadIndex(currentVersion: 20)` 两处一致）。v20 的 bump 理由见
    `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），
    v12 / v13 / v14 / v15 见上表。
 
@@ -393,7 +396,7 @@ columnar 表待更多样本确认；若不落，只读 db 的 scanner 会漏 bra
 （`(session, turn)` FIFO + input/output tokens 双核对）已把 `local_runtime_message_rows`
 的 assistant 行与 token 行 100% 配对，同一查询顺带取出该行 `$.thinking_content` /
 `$.msg_content`（msg 侧含 tool_call_args，与日级字符聚合同口径）字符，配对成功的调用
-**逐调用**执行 `ReasoningCharSplit.split`（`MinimaxLocalUsageAggregation.callLevelSplit`）；
+**逐调用**执行 `ReasoningCharSplit.split`（`MinimaxDBReader.callLevelSplit`）；
 按日 Σ 出配对产物（`MinimaxPairedSplitDay`）。
 
 `applyReasoningSplit` 现为三条路径：
@@ -421,7 +424,11 @@ if usage.reasoningTokens > 0 {
 ```
 
 samples 侧同理：配对下标直接用调用级结果（`perSampleCallSplits` 与 samples 同下标
-对齐），未配对样本维持日级比例路径；重建构造点 `rebuiltSample` 对
+对齐），未配对样本仅分配 `adjustedPerDay.reasoning − 已配对/原生 reasoning`
+的非负残余预算，按剩余 output 权重逐条分配、最后一条承接整数舍入余数。
+最终 daily 的 output/reasoning 从这些样本按日累计，保持逐桶一致；不得把整天
+reasoning 比例再次乘到未配对调用。缓存 v20 一次性重建旧错误结果。
+重建构造点 `rebuiltSample` 对
 `sourceProviderID` / `durationSeconds` / `ttftSeconds` 原样透传。
 `outputTokens` itself is clamped with `max(usage.outputTokens, 0)` before the branch, so a
 negative ledger value cannot produce a negative split on any path.
@@ -655,7 +662,7 @@ The 7-day hover displays 4 stacked categories (input / cache / output / reason) 
 
 ### Why the chart has four categories
 
-历史问题。Reasoning 不再总是 0——`applyReasoningSplit(perDay:perDayChars:)`（定义在 `Services/MinimaxLocalUsageAggregation.swift`）已经从 `local_runtime_message_rows.data_json` 的 `thinking_content` 字符数按比例分摊出 reasoning(实测全期 37.2% output 实际是 thinking,v6 修后;v4 84% / v5 15% 都是修 bug 过程中的中间值,详见 "Reasoning split" 段踩坑记录)。Reason 栏现在有真实数字显示。分摊比例同时按 day 级比例回写到每条 sample（`applyReasoningSplit(samples:rawPerDay:adjustedPerDay:calendar:)`），让 recent samples 与 7 天柱图口径一致。
+历史问题。Reasoning 不再总是 0——`applyReasoningSplit(perDay:perDayChars:)`（定义在 `Services/MinimaxLocalUsageAggregation.swift`）已经从 `local_runtime_message_rows.data_json` 的 `thinking_content` 字符数按比例分摊出 reasoning(实测全期 37.2% output 实际是 thinking,v6 修后;v4 84% / v5 15% 都是修 bug 过程中的中间值,详见 "Reasoning split" 段踩坑记录)。Reason 栏现在有真实数字显示。配对调用使用调用级结果，未配对样本按残余预算守恒分配（`applyReasoningSplit(samples:perSampleCallSplits:rawPerDay:adjustedPerDay:calendar:)`），7 天柱图的 output/reasoning 从最终样本按日累计。
 
 The hover chart is **shared** across every local-usage client via `SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>`. 4th column 保持兼容(其他客户端已经在用),minimax 之前 placeholder 现在有数据。
 

@@ -345,13 +345,16 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     ) throws -> (total: Int, used: Int, remainingPercent: Double, resetsAt: Date?) {
         let total = limit.usage ?? 0
         let used = limit.currentValue ?? 0
+        guard total > 0, used >= 0 else {
+            throw QuotaError.decodingError("GLM Coding Plan 积分额度字段非法: total=\(total), used=\(used)")
+        }
         // remaining 缺失时退回 total - used；服务端取整可能让 remaining 与 total-used 差 1，
         // 这属正常。Coding Plan 按任务扣积分，单个任务可能让 currentValue 超过窗口
         // 的 nominal usage（例如 total=2000、used=2011、remaining=0），这应显示为
         // 0% 可用，而不是让整个 provider 刷新失败。
         let remaining = limit.remaining ?? max(total - used, 0)
 
-        guard total > 0, used >= 0, remaining >= 0 else {
+        guard remaining >= 0 else {
             throw QuotaError.decodingError(
                 "GLM Coding Plan 积分额度字段非法: total=\(total), used=\(used), remaining=\(remaining)"
             )

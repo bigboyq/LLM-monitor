@@ -138,8 +138,14 @@ extension EdgeDockController {
     /// 同一 index 保持原计时推进，换行即刻重排，避免 0.08s 巡检陷入防抖饿死。
     func scheduleSelection(_ index: Int) {
         cancelPendingDeselection()
+        let entries = orderedEntries()
+        let providerID = entries.indices.contains(index) ? entries[index].id : nil
         selectionTask.schedule(key: index, delay: Self.hoverOpenDelay) { [weak self] in
             guard let self, self.hoveredIndex == index, self.selectedIndex != index else { return }
+            if let providerID {
+                let current = self.orderedEntries()
+                guard current.indices.contains(index), current[index].id == providerID else { return }
+            }
             self.selectedIndex = index
             self.updatePopover()
         }

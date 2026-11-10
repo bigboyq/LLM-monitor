@@ -358,21 +358,40 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                     perDayChars: safeChars,
                     pairedSplits: aggregate.perDayPairedSplits
                 )
-
-                var newDaily: [String: MinimaxDailyUsage] = [:]
-                for (day, usage) in adjustedPerDay {
-                    newDaily[LocalUsageDayKey.make(day, calendar: calendar)] = usage
-                }
-
-                index.dailyBySource[key] = newDaily
-                var samplesBySource = index.samplesBySource ?? [:]
-                samplesBySource[key] = Self.applyReasoningSplit(
+                let adjustedSamples = Self.applyReasoningSplit(
                     samples: aggregate.samples,
                     perSampleCallSplits: aggregate.perSampleCallSplits,
                     rawPerDay: aggregate.perDay,
                     adjustedPerDay: adjustedPerDay,
                     calendar: calendar
                 )
+                let sampleDays = Dictionary(uniqueKeysWithValues: UnifiedTokenUsageAggregator.days(
+                    from: adjustedSamples, calendar: calendar
+                ).map { ($0.dayStart, $0) })
+
+                var newDaily: [String: MinimaxDailyUsage] = [:]
+                for (day, usage) in adjustedPerDay {
+                    // output/reasoning 只以最终样本按日累计为准（含原生/配对/残余
+                    // 三路混合与整数舍入），不能让 today 逐桶 max 再造 token。
+                    let calls = sampleDays[day]
+                    let output = calls?.output ?? usage.outputTokens
+                    let reasoning = calls?.reasoning ?? usage.reasoningTokens
+                    newDaily[LocalUsageDayKey.make(day, calendar: calendar)] = MinimaxDailyUsage(
+                        dayStart: usage.dayStart,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: output,
+                        cacheReadTokens: usage.cacheReadTokens,
+                        cacheWriteTokens: usage.cacheWriteTokens,
+                        reasoningTokens: reasoning,
+                        totalTokens: SaturatingArithmetic.sum(usage.inputTokens, usage.cacheReadTokens, output, reasoning),
+                        turns: usage.turns,
+                        rounds: usage.rounds
+                    )
+                }
+
+                index.dailyBySource[key] = newDaily
+                var samplesBySource = index.samplesBySource ?? [:]
+                samplesBySource[key] = adjustedSamples
                 index.samplesBySource = samplesBySource
                 index.sources[key] = SourceIndexEntry(
                     mtimeMs: info.mtimeMs,
@@ -556,6 +575,8 @@ extension MinimaxLocalUsageScanner {
         var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
+            // v20：未配对样本仅分配扣除已配对/原生 reasoning 后的残余预算；
+            // 舍入余数守恒，daily output/reasoning 同取最终样本按日累计。
             // v19：reasoning 拆分从日级大锅饭升级为调用级——`local_runtime_message_rows`
             // 的 thinking_content / msg_content 字符随 (session, turn) FIFO 配对逐
             // 调用分摊（配对样本走 `ReasoningCharSplit` 调用级结果，未配对残余按
@@ -572,7 +593,7 @@ extension MinimaxLocalUsageScanner {
             // `$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，
             // 供窗口 tok/s 分母）。旧 samples 没有时长字段值，必须全量重建才能
             // 补上，指纹推进不够。
-            version: 19,
+            version: 20,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -678,7 +699,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 19,
+            currentVersion: 20,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"

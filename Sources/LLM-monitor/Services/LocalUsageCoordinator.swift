@@ -53,7 +53,8 @@ final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
         setScanning: SetScanning? = nil,
         onDirty: FreshnessChange? = nil,
         onFresh: FreshnessChange? = nil,
-        onFailed: FreshnessChange? = nil
+        onFailed: FreshnessChange? = nil,
+        onValidatedResult: FreshnessChange? = nil
     ) {
         self.providerID = providerID
         self.logTag = logTag
@@ -63,11 +64,13 @@ final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
         self.onDirty = onDirty
         self.onFresh = onFresh
         self.onFailed = onFailed
+        self.onValidatedResult = onValidatedResult
     }
 
     private let onDirty: FreshnessChange?
     private let onFresh: FreshnessChange?
     private let onFailed: FreshnessChange?
+    private let onValidatedResult: FreshnessChange?
 
     /// 触发一次显式 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 状态与
     /// freshness hooks；之后复用。
@@ -93,6 +96,7 @@ final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
             base.onDirty = { [weak self] in self?.onDirty?() }
             base.onFresh = { [weak self] in self?.onFresh?() }
             base.onFailed = { [weak self] in self?.onFailed?() }
+            base.onValidatedResult = { [weak self] in self?.onValidatedResult?() }
         }
         wireSinks(s)
         logInfo("[\(logTag)] LocalUsageCoordinator: scanner wired up (providerID=\(providerID))")
@@ -152,7 +156,8 @@ final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
 
     private func wireSinks(_ s: any LocalUsageScanner<Usage>) {
         s.lastResultPublisher
-            .receive(on: DispatchQueue.main)
+            // Publications are MainActor-isolated. Apply inline before a
+            // validation hook can make this source reportable to Fleet.
             .sink { [weak self] result in
                 guard let self else { return }
                 // 用 debug 级别 + 简单摘要：完整 usage 对象含 7 天 daily token 数组，
@@ -165,7 +170,6 @@ final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
 
         if let setScanning {
             s.isScanningPublisher
-                .receive(on: DispatchQueue.main)
                 .sink { isScanning in
                     setScanning(isScanning)
                 }

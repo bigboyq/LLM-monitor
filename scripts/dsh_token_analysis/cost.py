@@ -29,30 +29,31 @@ rl_events = []
 seen = set()
 for path in sorted(PLAIN_DIR.glob("*.zstd")):
     sid = path.stem
-    for line in path.open():
-        ev = json.loads(line) if (l := line.strip()) else None
-        if not ev:
-            continue
-        t, data, ts = ev.get("type"), ev.get("data") or {}, ev.get("time")
-        if t == "assistant/message":
-            src = (data.get("message") or {}).get("source") or {}
-            if src.get("provider") != "minimax-cn" or src.get("model") != "MiniMax-M3":
+    with path.open() as fh:
+        for line in fh:
+            ev = json.loads(line) if (l := line.strip()) else None
+            if not ev:
                 continue
-            u = data.get("usage") or {}
-            k = (sid, data.get("turn"), data.get("step"))
-            r = call_totals.setdefault(k, {"i": 0, "c": 0, "o": 0, "ts": ts, "sid": sid})
-            r["i"] += u.get("inputTokens") or 0
-            r["c"] += u.get("cacheReadTokens") or 0
-            r["o"] += u.get("outputTokens") or 0
-            r["ts"] = min(r["ts"], ts)
-        elif t == "llm/retry":
-            rid = data.get("retryId")
-            if rid in seen:
-                continue
-            f = data.get("failure") or {}
-            if f.get("code") == "RATE_LIMIT" and data.get("provider") == "minimax-cn":
-                seen.add(rid)
-                rl_events.append((ts, sid, data.get("turn"), data.get("step")))
+            t, data, ts = ev.get("type"), ev.get("data") or {}, ev.get("time")
+            if t == "assistant/message":
+                src = (data.get("message") or {}).get("source") or {}
+                if src.get("provider") != "minimax-cn" or src.get("model") != "MiniMax-M3":
+                    continue
+                u = data.get("usage") or {}
+                k = (sid, data.get("turn"), data.get("step"))
+                r = call_totals.setdefault(k, {"i": 0, "c": 0, "o": 0, "ts": ts, "sid": sid})
+                r["i"] += u.get("inputTokens") or 0
+                r["c"] += u.get("cacheReadTokens") or 0
+                r["o"] += u.get("outputTokens") or 0
+                r["ts"] = min(r["ts"], ts)
+            elif t == "llm/retry":
+                rid = data.get("retryId")
+                if rid in seen:
+                    continue
+                f = data.get("failure") or {}
+                if f.get("code") == "RATE_LIMIT" and data.get("provider") == "minimax-cn":
+                    seen.add(rid)
+                    rl_events.append((ts, sid, data.get("turn"), data.get("step")))
 
 calls = sorted(call_totals.values(), key=lambda r: r["ts"])
 rl_events.sort()
@@ -89,25 +90,31 @@ print("```")
 print(f"{'日期':<12}  {'窗口':<22}  {'cache-read':>11}  {'input':>9}  {'output':>7}  "
       f"{'total':>9}  {'成本':>8}  {'calls':>5}  {'RL':>3}  bar")
 print("-" * 110)
-max_cost = max(cost(r["i"], r["c"], r["o"]) for _, r in rows)
+max_cost = max((cost(r["i"], r["c"], r["o"]) for _, r in rows), default=0)
 for (day, hour), r in rows:
     c = cost(r["i"], r["c"], r["o"])
     total = r["i"] + r["c"] + r["o"]
-    bar_len = int(round(c / max_cost * 30))
+    bar_len = int(round(c / max_cost * 30)) if max_cost > 0 else 0
     bar = "█" * bar_len + "·" * (30 - bar_len)
     flag = "🔥" if r["rl"] > 0 else "  "
-    first = parse_ts(r["first"]).strftime("%H:%M")
-    last = parse_ts(r["last"]).strftime("%H:%M")
+    first = parse_ts(r["first"]).strftime("%H:%M") if r["first"] is not None else "--:--"
+    last = parse_ts(r["last"]).strftime("%H:%M") if r["last"] is not None else "--:--"
     print(f"{day:<12}  {hour:02d}:00+5h ({first}-{last})  "
           f"{fmt_m(r['c']):>11}  {fmt_m(r['i']):>9}  {fmt_m(r['o']):>7}  "
           f"{fmt_m(total):>9}  ¥{c:>6.2f}  {r['n']:>5}  {r['rl']:>3}  {flag} {bar}")
 print("```")
 print()
 print(f"### 触发 rate_limit 的窗口（共 {len(hit_costs)} 个）")
-print(f"- 成本范围：¥{min(hit_costs):.2f} – ¥{max(hit_costs):.2f}，平均 **¥{sum(hit_costs)/len(hit_costs):.2f}**")
+if hit_costs:
+    print(f"- 成本范围：¥{min(hit_costs):.2f} – ¥{max(hit_costs):.2f}，平均 **¥{sum(hit_costs)/len(hit_costs):.2f}**")
+else:
+    print("- 暂无窗口数据")
 print()
 print(f"### 未触发 rate_limit 的窗口（共 {len(miss_costs)} 个）")
-print(f"- 成本范围：¥{min(miss_costs):.2f} – ¥{max(miss_costs):.2f}，平均 **¥{sum(miss_costs)/len(miss_costs):.2f}**")
+if miss_costs:
+    print(f"- 成本范围：¥{min(miss_costs):.2f} – ¥{max(miss_costs):.2f}，平均 **¥{sum(miss_costs)/len(miss_costs):.2f}**")
+else:
+    print("- 暂无窗口数据")
 print()
 print("### 总计")
 total_cost = sum(cost(r["i"], r["c"], r["o"]) for _, r in rows)

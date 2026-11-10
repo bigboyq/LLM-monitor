@@ -71,16 +71,40 @@ struct LocalUsageConsumer: Equatable, Hashable, Sendable {
 /// compatible until AppState starts writing freshness transitions explicitly.
 struct LocalUsageFreshnessSnapshot: Equatable, Sendable {
     private var states: [LocalUsageSource: LocalUsageFreshness]
+    /// A fresh process/source activation has not established whether this
+    /// source contains usage or a verified zero yet. Kept separate from UI
+    /// freshness so an ordinary dirty snapshot remains reportable.
+    private var awaitingInitialScan: Set<LocalUsageSource> = []
 
     init(states: [LocalUsageSource: LocalUsageFreshness] = [:]) {
         self.states = states
     }
 
     static let clean = Self()
+    static var uninitialized: Self {
+        var snapshot = Self()
+        snapshot.awaitingInitialScan = Set(LocalUsageSource.allCases)
+        return snapshot
+    }
+
+    func isAwaitingInitialScan(_ source: LocalUsageSource) -> Bool {
+        awaitingInitialScan.contains(source)
+    }
+
+    mutating func requireInitialScan(for source: LocalUsageSource) {
+        awaitingInitialScan.insert(source)
+    }
+
+    mutating func completeInitialScan(for source: LocalUsageSource) {
+        awaitingInitialScan.remove(source)
+    }
 
     subscript(source: LocalUsageSource) -> LocalUsageFreshness {
         get { states[source] ?? .clean }
-        set { states[source] = newValue }
+        set {
+            states[source] = newValue
+            if newValue == .clean { awaitingInitialScan.remove(source) }
+        }
     }
 
     func resolved(for sources: [LocalUsageSource]) -> LocalUsageFreshness {

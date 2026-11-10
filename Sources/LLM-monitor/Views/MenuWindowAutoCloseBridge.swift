@@ -215,6 +215,7 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
                     if let window {
                         self?.alignToMenuBar(window: window)
                     }
+                    self?.timer.startOrReset()
                     self?.onPanelOpen?()
                 }
             })

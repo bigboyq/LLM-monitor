@@ -10,8 +10,8 @@ extension MinimaxLocalUsageScanner {
     /// v19 起两路并存：
     /// - **配对样本（`perSampleCallSplits[index]` 非 nil）**：直接采用 reader 的
     ///   调用级字符拆分结果（本行字符拆本行 output，不走日级平均）；
-    /// - **未配对样本**：维持既有日级比例路径（`adjustedPerDay` 的当日 reasoning
-    ///   占 `rawPerDay` 当日 output 的比例 × 样本 output）。
+    /// - **未配对样本**：只分配扣除配对/原生 reasoning 后的当日残余；按 output
+    ///   权重逐条结算剩余预算，最后一条承接舍入余数，保证样本日合计与 daily 一致。
     nonisolated static func applyReasoningSplit(
         samples: [LocalTokenUsageSample],
         perSampleCallSplits: [MinimaxCallSplit?],
@@ -19,7 +19,7 @@ extension MinimaxLocalUsageScanner {
         adjustedPerDay: [Date: MinimaxDailyUsage],
         calendar: Calendar
     ) -> [LocalTokenUsageSample] {
-        samples.enumerated().map { index, sample in
+        var result = samples.enumerated().map { index, sample in
             // 配对成功 → 调用级结果（`callLevelSplit` 守恒：reason + output ==
             // 该样本的账面 output）。
             if index < perSampleCallSplits.count, let split = perSampleCallSplits[index] {
@@ -29,29 +29,38 @@ extension MinimaxLocalUsageScanner {
                     visibleOutputTokens: split.outputTokens
                 )
             }
-            guard sample.reasoningOutputTokens == 0 else { return sample }
-            let day = calendar.startOfDay(for: sample.completedAt)
-            guard let raw = rawPerDay[day],
-                  let adjusted = adjustedPerDay[day],
-                  raw.outputTokens > 0,
-                  adjusted.reasoningTokens > 0 else {
-                return sample
-            }
-
-            let ratio = min(
-                max(Double(adjusted.reasoningTokens) / Double(raw.outputTokens), 0),
-                1
-            )
-            let reasoning = min(
-                Int((Double(sample.outputTokens) * ratio).rounded()),
-                sample.outputTokens
-            )
-            return rebuiltSample(
-                sample,
-                reasoningTokens: reasoning,
-                visibleOutputTokens: max(sample.outputTokens - reasoning, 0)
-            )
+            return sample
         }
+        let indexesByDay = Dictionary(grouping: samples.indices) {
+            calendar.startOfDay(for: samples[$0].completedAt)
+        }
+        for (day, indexes) in indexesByDay {
+            guard rawPerDay[day] != nil, let adjusted = adjustedPerDay[day] else { continue }
+            let fallbackIndexes = indexes.filter { index in
+                (index >= perSampleCallSplits.count || perSampleCallSplits[index] == nil)
+                    && samples[index].reasoningOutputTokens == 0
+            }
+            let fallbackSet = Set(fallbackIndexes)
+            let fixedReasoning = SaturatingArithmetic.sum(indexes.lazy.filter { !fallbackSet.contains($0) }.map {
+                result[$0].reasoningOutputTokens
+            })
+            var remainingOutput = SaturatingArithmetic.sum(fallbackIndexes.lazy.map { max(samples[$0].outputTokens, 0) })
+            var remainingReasoning = min(max(adjusted.reasoningTokens - fixedReasoning, 0), remainingOutput)
+            for index in fallbackIndexes {
+                let output = min(max(samples[index].outputTokens, 0), remainingOutput)
+                let estimate = ReasoningCharSplit.split(
+                    outputTokens: output,
+                    reasoningChars: remainingReasoning,
+                    visibleChars: remainingOutput - remainingReasoning
+                )?.reasoning ?? 0
+                let restOutput = remainingOutput - output
+                let reasoning = min(max(estimate, max(remainingReasoning - restOutput, 0)), min(output, remainingReasoning))
+                result[index] = rebuiltSample(samples[index], reasoningTokens: reasoning, visibleOutputTokens: output - reasoning)
+                remainingReasoning -= reasoning
+                remainingOutput = restOutput
+            }
+        }
+        return result
     }
 
     /// 重建 sample 的唯一构造点：诊断字段（sourceProviderID / durationSeconds /

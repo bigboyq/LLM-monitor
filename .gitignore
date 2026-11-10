@@ -32,6 +32,7 @@ build/
 docs/plans/
 
 # Python tooling leftovers
+/.venv
 __pycache__/
 *.pyc
 

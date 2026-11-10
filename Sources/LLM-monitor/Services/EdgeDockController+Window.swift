@@ -117,10 +117,8 @@ extension EdgeDockController {
         // 选中项按 **id** 跟着 provider 走，而不是钉在下标上：用户在设置页改了顺序，
         // 下标会指向另一个 provider，已经展开的卡片就会无声地换成别人的。
         //
-        // `resolvedIndex` 把"下标还在范围内吗"和"取它"合成一次判断：写成两个独立
-        // 表达式就必须靠 `!` 去断言前面那个 guard，拆开时编译器帮不上忙。
-        let resolvedIndex = selectedIndex.flatMap { entries.indices.contains($0) ? $0 : nil }
-        let selectedID = resolvedIndex.map { entries[$0].id }
+        // 身份在选中时保存，不能再用旧下标去新 entries 里取“旧身份”。
+        let selectedID = selectedProviderID
         // 只在真的变了才写回——`@Published` 每次赋值都会广播，而 reconcile 每次
         // 状态广播都跑，无条件赋值等于每 provider 一次无谓的视图刷新。
         //
@@ -135,6 +133,11 @@ extension EdgeDockController {
         if let selectedID {
             let reanchored = entries.firstIndex(where: { $0.id == selectedID })
             if selectedIndex != reanchored { selectedIndex = reanchored }
+            if reanchored == nil {
+                hoveredIndex = nil
+                cancelPendingSelection()
+                updatePopover()
+            }
         } else if selectedIndex != nil, entryCount == 0 {
             // 条目全没了（provider 停用/删除）→ 钉住的卡片没有对象，直接收起。
             selectedIndex = nil

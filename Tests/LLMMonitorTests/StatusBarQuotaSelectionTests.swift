@@ -7,6 +7,32 @@ import Foundation
 /// and an empty quota.
 final class StatusBarQuotaSelectionTests: XCTestCase {
     @MainActor
+    func testMenuPlanCardKeepsSelectedSourceAndRoutesEachSourceToItsProvider() throws {
+        let (state, store, directory) = try makeFixture()
+        defer { state.stop(); try? FileManager.default.removeItem(at: directory) }
+        let cases: [(String, StatusBarQuotaSource)] = [
+            ("codex_chatgpt", .plan),
+            ("codex_chatgpt", .apiCredit(keyID: "workspace-a")),
+            ("glm_coding_plan", .activityPlan(planID: "start", entitlementID: "entitlement-a")),
+        ]
+        for (providerID, source) in cases {
+            let status = try XCTUnwrap(state.statuses.first { $0.id == providerID })
+            let row = MenuQuotaProviderRow(
+                status: status, localStatus: status, fleet: nil,
+                selectedStatusBarSource: source, configStore: store,
+                onSelectStatusBarQuota: { selected in
+                    state.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: providerID, source: selected))
+                },
+                onRefresh: {}, onUsageRefresh: {}, onSettings: {}, onOpenDetails: {}
+            )
+            XCTAssertEqual(row.planCard.selectedStatusBarSource, source)
+            XCTAssertEqual(row.planCard.presentation, .plan)
+            row.selectPlanQuotaSource(source)
+            XCTAssertEqual(store.config.statusBarQuotaSelection, StatusBarQuotaSelection(providerID: providerID, source: source))
+        }
+    }
+
+    @MainActor
     private func makeFixture(
         adminEnabled: Bool = false,
         adminKeys: [CodexAdminKeyConfig] = [],

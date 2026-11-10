@@ -62,6 +62,8 @@ final class HolidayCalendarService: ObservableObject {
     /// 最近一次看到的配置源；config 变更检测基线（`adoptSource` seed，不触发取数）。
     private var lastSeenSource: String?
     private var refreshTask: Task<Void, Never>?
+    /// 已提交配置源的代际；旧源请求返回后不得覆盖新源的表或刷新状态。
+    private var sourceGeneration: UInt64 = 0
 
     init(
         cacheURL: URL? = nil,
@@ -83,9 +85,15 @@ final class HolidayCalendarService: ObservableObject {
     func start(source rawSource: String) {
         adoptSource(rawSource)
         let source = rawSource
+        sourceGeneration &+= 1
+        let generation = sourceGeneration
         refreshTask?.cancel()
+        // 手动更新由设置页持有 Task，不能只靠取消 startup Task 使它失效。
+        // 新源可以立即开始；旧请求的结果与 defer 都由 generation 守门。
+        isRefreshing = false
+        lastRefreshMessage = nil
         refreshTask = Task { [weak self] in
-            await self?.startupFlow(source: source)
+            await self?.startupFlow(source: source, generation: generation)
         }
     }
 
@@ -101,7 +109,8 @@ final class HolidayCalendarService: ObservableObject {
         lastSeenSource = rawSource
     }
 
-    private func startupFlow(source: String) async {
+    private func startupFlow(source: String, generation: UInt64) async {
+        guard generation == sourceGeneration, !Task.isCancelled else { return }
         // 1. 解析链：本地缓存（存在且可解析）→ 内置快照（可能退化空表）。
         //    bundledOnly 跳过缓存：该语义就是「只用内置快照」。
         if case .bundledOnly = HolidayCalendar.parseSource(source) {
@@ -113,6 +122,7 @@ final class HolidayCalendarService: ObservableObject {
             HolidayCalendar.applyResolved(calendar)
             resolvedFromCache = usedCache
         }
+        onCalendarApplied()
         // 2. 按需取数（缓存缺失 / 过期 / 源变更；非 force 受新鲜度窗口约束）。
         await refreshIfPossible(source: source, force: false)
     }
@@ -122,7 +132,6 @@ final class HolidayCalendarService: ObservableObject {
     /// 设置页「立即更新」：强制取数一次（不受新鲜度窗口限制），返回结果文案。
     func refreshNow(source rawSource: String) async -> String {
         let source = rawSource.trimmingCharacters(in: .whitespacesAndNewlines)
-        lastSeenSource = source
         return await refresh(source: source, force: true)
     }
 
@@ -135,14 +144,24 @@ final class HolidayCalendarService: ObservableObject {
     private func refresh(source: String, force: Bool) async -> String {
         guard !isRefreshing else { return force ? "已有节假日更新在进行中" : "" }
         if case .bundledOnly = HolidayCalendar.parseSource(source) {
+            HolidayCalendar.applyResolved(HolidayCalendar.loadBundled())
+            resolvedFromCache = false
+            onCalendarApplied()
             let message = "节假日数据源为空：仅使用内置快照，不联网更新"
             if force { lastRefreshMessage = message }
             return message
         }
+        let generation = sourceGeneration
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            if generation == sourceGeneration { isRefreshing = false }
+        }
 
-        switch await fetch(from: source) {
+        let result = await fetch(from: source)
+        guard generation == sourceGeneration, !Task.isCancelled else {
+            return "节假日数据源已变更或请求已取消，本次更新结果已忽略"
+        }
+        switch result {
         case .success(let document):
             // 写缓存（best-effort；写失败不影响应用新表）。
             writeCache(document)

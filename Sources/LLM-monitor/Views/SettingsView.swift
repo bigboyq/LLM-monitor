@@ -142,11 +142,11 @@ struct SettingsView: View {
             loadCurrentConfig()
             // 主面板 footer「节能」等入口可能在窗口创建前就置了跳转信号；
             // 出现时兜底消费一次，规避订阅时机竞态。
-            consumePendingSettingsTab()
+            consumePendingSettingsTab(state.pendingSettingsTab)
             refreshNotificationAuthorization()
         }
-        .onReceive(state.$pendingSettingsTab) { _ in
-            consumePendingSettingsTab()
+        .onReceive(state.$pendingSettingsTab.receive(on: RunLoop.main)) { pending in
+            consumePendingSettingsTab(pending)
         }
         .onReceive(configStore.$config.dropFirst()) { newConfig in
             // 更新设置页草稿。两道闸门：
@@ -214,10 +214,23 @@ struct SettingsView: View {
     /// 消费主面板的设置跳转信号：切到目标 tab 并清空。
     /// onAppear + onReceive 双兜底：信号可能在设置窗口尚未创建（订阅未挂上）
     /// 时就被置值，窗口出现后靠 onAppear 再消费一次。
-    func consumePendingSettingsTab() {
-        guard let pending = state.pendingSettingsTab else { return }
-        currentTab = pending
-        state.pendingSettingsTab = nil
+    func consumePendingSettingsTab(_ pending: SettingsTab?) {
+        Self.consumeSettingsTabRequest(pending, state: state) {
+            currentTab = $0
+        }
+    }
+
+    /// publisher 请求在主循环投递后消费，避免 willSet 中重读旧值或清空后被外层赋值覆盖。
+    static func consumeSettingsTabRequest(
+        _ pending: SettingsTab?,
+        state: AppState,
+        select: (SettingsTab) -> Void
+    ) {
+        guard let pending else { return }
+        select(pending)
+        if state.pendingSettingsTab?.id == pending.id {
+            state.pendingSettingsTab = nil
+        }
     }
 
     var sidebar: some View {

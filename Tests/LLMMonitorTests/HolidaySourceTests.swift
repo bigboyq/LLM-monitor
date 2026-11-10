@@ -413,12 +413,12 @@ final class HolidaySourceTests: XCTestCase {
         var appliedCount = 0
         let service = HolidayCalendarService(cacheURL: cacheURL) { appliedCount += 1 }
 
-        let before = HolidayCalendar.shared
+        HolidayCalendar.applyResolved(.make(holidays: ["2026-11-11"], source: "custom", fetchedAt: "2026-11-10"))
         let message = await service.refreshNow(source: "")
         XCTAssertTrue(message.contains("仅使用内置快照"), "实际文案：\(message)")
-        XCTAssertEqual(HolidayCalendar.shared, before)
+        XCTAssertEqual(HolidayCalendar.shared, HolidayCalendar.loadBundled())
         XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
-        XCTAssertEqual(appliedCount, 0)
+        XCTAssertEqual(appliedCount, 1, "应用内置表必须通知高峰判定与UI重算")
     }
 
     @MainActor

@@ -181,6 +181,7 @@ final class AppState: ObservableObject {
     /// Startup 错峰期间先等待所有首拍 quota 结算，再只做一次 full reconcile。
     private var startupReconcilePendingProviderIDs: Set<String> = []
     private var startupReconcileCompleted = false
+    private var isRunning = false
     /// 上次推送 ZCode 运营活动通知的时间（按 delivery.id 记录，1 小时内不重复通知）
     private var lastMarketingNotificationTimes: [String: Date] = [:]
 
@@ -312,6 +313,7 @@ final class AppState: ObservableObject {
             onJobActivityChange: { [weak self] active in
                 guard let self else { return }
                 self.isRefreshJobActive = active
+                if !active { self.scheduleStartupReconcileIfReady() }
                 guard !active, self.pendingWakeup else { return }
                 self.pendingWakeup = false
                 Task { await self.handleSystemWake() }
@@ -391,6 +393,7 @@ final class AppState: ObservableObject {
     // MARK: - 生命周期
 
     func start() {
+        isRunning = true
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
         applyAppearance()
@@ -424,6 +427,7 @@ final class AppState: ObservableObject {
     }
 
     func stop() {
+        isRunning = false
         pendingWakeup = false
         cancelAllRefreshTasks()
         manualRefreshGate.reset()
@@ -686,10 +690,27 @@ final class AppState: ObservableObject {
         let managedProviderIDs = statuses
             .filter { shouldAutoRefresh(providerID: $0.id) }
             .map(\.id)
+        // A disabled/unconfigured provider can disappear before its staggered
+        // first request. It must stop participating in the startup barrier.
+        startupReconcilePendingProviderIDs.formIntersection(managedProviderIDs)
         logInfo("AppState.rescheduleAll: 配置重载差异化重排，\(managedProviderIDs.count)/\(statuses.count) 个 provider 进入额度循环")
         refreshScheduler.reconfigure(managed: managedProviderIDs)
         refreshScheduler.updatePeriodicFullEveryN(configStore.config.effectivePeriodicFullEveryN)
         rescheduleHealthBoundary(updateEvaluationDate: true)
+        scheduleStartupReconcileIfReady()
+    }
+
+    private func scheduleStartupReconcileIfReady() {
+        guard isRunning, !startupReconcileCompleted,
+              startupReconcilePendingProviderIDs.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.isRunning, !self.startupReconcileCompleted,
+                  self.startupReconcilePendingProviderIDs.isEmpty,
+                  let token = self.refreshScheduler.beginExternalJob() else { return }
+            defer { self.refreshScheduler.endExternalJob(token) }
+            self.startupReconcileCompleted = true
+            await self.localUsage.triggerStartupFullScanAll()
+        }
     }
 
     // MARK: - 公开操作
@@ -964,6 +985,8 @@ final class AppState: ObservableObject {
     }
 
     func rebuildStatuses() {
+        let previouslyActiveSources = Set(statuses.filter(\.isEnabled)
+            .flatMap { $0.localUsageConsumers.map(\.source) })
         statuses = descriptors.map { d in
             let pc = configStore.config.providers[d.id]
             // 抓一份"老的" status 用来保留 UI 状态（lastRefreshedAt /
@@ -992,6 +1015,10 @@ final class AppState: ObservableObject {
             // lastSuccess: oldInfo)，UI 半透明保留旧数据 + 离线提示。
             let finalState: ProviderStatus.State
             switch (derived, preserved.previousState) {
+            case (.ready, .some(.loading(let previous?))):
+                // Config publication invalidates the request generation. Keep
+                // its successful data, but do not retain an orphaned spinner.
+                finalState = .ok(previous)
             case (.ready, let .some(oldState))
                 where Self.stateHasSuccessData(oldState):
                 finalState = oldState
@@ -1057,6 +1084,12 @@ final class AppState: ObservableObject {
             statusItem.opencodeUsage = preserved.opencodeUsage
             statusItem.dshUsage = preserved.dshUsage
             statusItem.agyUsage = preserved.agyUsage
+            if statusItem.isEnabled {
+                for consumer in statusItem.localUsageConsumers
+                    where !previouslyActiveSources.contains(consumer.source) {
+                    statusItem.localUsageFreshness.requireInitialScan(for: consumer.source)
+                }
+            }
             // 窗口与倍率同源于 Provider 配置，缺省沿用官方默认值。
             let peakWindow = (pc ?? ProviderConfig()).effectivePeakWindow(for: d.kind)
             statusItem.glmPeakWindow = d.kind == .glmCodingPlan ? peakWindow : nil
@@ -1477,20 +1510,21 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
+    @discardableResult
     func applyCodexUsageDetails(
         _ details: CodexUsageDetails?,
         providerID: String,
         fetchedAt: Date,
         configurationGeneration: Int
-    ) {
+    ) -> Bool {
         logDebug("[codex/detail] applyCodexUsageDetails: providerID=\(providerID), details is nil?=\(details == nil)")
         guard configurationGeneration == self.configurationGeneration else {
             logDebug("[codex/detail] apply aborted: configurationGeneration mismatch (\(configurationGeneration) != \(self.configurationGeneration))")
-            return
+            return false
         }
         guard let idx = statuses.firstIndex(where: { $0.id == providerID }) else {
             logDebug("[codex/detail] apply aborted: providerID not found")
-            return
+            return false
         }
 
         var changed = false
@@ -1530,6 +1564,7 @@ final class AppState: ObservableObject {
         } else {
             logDebug("[codex/detail] apply skipped: no changes")
         }
+        return statuses[idx].lastSuccess?.codexUsageDetails == details
     }
 
     /// 把 provider 登记进 `ProviderRefreshScheduler`（单 Task 调度器，到期即并发
@@ -1546,6 +1581,18 @@ final class AppState: ObservableObject {
         }
         // 走统一的 mutateStatus：copy → modify → assign + statusDidChange.send。
         mutateStatus(at: idx) { $0.isScanningLocalUsage = isScanning }
+    }
+
+    func markLocalUsageSourceInitialized(_ source: LocalUsageSource) {
+        mutateStatuses { copy in
+            var changed = false
+            for idx in copy.indices where copy[idx].localUsageConsumers.contains(where: { $0.source == source }) {
+                guard copy[idx].localUsageFreshness.isAwaitingInitialScan(source) else { continue }
+                copy[idx].localUsageFreshness.completeInitialScan(for: source)
+                changed = true
+            }
+            return changed
+        }
     }
 
     /// Project a scanner-owned freshness transition onto every card that
@@ -1570,7 +1617,8 @@ final class AppState: ObservableObject {
         var copy = statuses
         var changed = false
         for idx in copy.indices where affectedKinds.contains(copy[idx].kind) {
-            guard copy[idx].localUsageFreshness[source] != freshness else { continue }
+            guard copy[idx].localUsageFreshness[source] != freshness
+                || (freshness == .clean && copy[idx].localUsageFreshness.isAwaitingInitialScan(source)) else { continue }
             logDebug("[local-usage] \(copy[idx].id) source=\(source.rawValue) freshness=\(freshness.rawValue)")
             copy[idx].localUsageFreshness[source] = freshness
             changed = true

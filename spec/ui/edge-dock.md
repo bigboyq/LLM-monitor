@@ -196,7 +196,12 @@ Two consequences worth keeping in mind:
 
 - **Selection is anchored by id, not by index.** Reordering while a card is open
   would otherwise silently swap the open card to a different provider, so
-  `reconcile` re-derives `selectedIndex` from the provider id it was showing.
+  selecting `selectedIndex` also records `selectedProviderID`; `reconcile` derives
+  the new index from that saved identity instead of looking up the old index in
+  the new entries. Removing the selected provider closes its popover even when
+  that index remains valid for another provider. Deselect, drag, hide and teardown
+  clear both the index and saved identity. A pending hover selection also checks
+  that its target index still belongs to the provider it originally scheduled.
 - **Duplicate config keys must not trap.** `DisplayOrder.ordered` builds its
   lookup with an explicit loop rather than `Dictionary(uniqueKeysWithValues:)`,
   which would crash on two statuses sharing one `quotaProviderID` — and the dock

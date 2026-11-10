@@ -74,7 +74,7 @@ Both GLM and DeepSeek decide peak hours in Beijing time (Asia/Shanghai), by defa
 
 - **Fetches over the network by default.** On launch the app pulls the JSON published by the chinese-days project (`https://cdn.jsdelivr.net/npm/chinese-days/dist/chinese-days.json`) and caches it at `~/Library/Application Support/LLM-monitor/holidays-cache.json` (mode 0600). A fresh cache is reused for 7 days before another request.
 - **Bundled snapshot only.** Clear the "节假日数据源" field under Settings → General to an empty string. The app then uses only the `ChinaHolidays.json` snapshot shipped with the bundle — no network, no cache read.
-- **Refresh on demand.** The section has a "立即更新" (Refresh now) button that re-fetches and rewrites the cache. The status line shows the current source (cache or bundle) and the fetch date. A failed fetch keeps the existing data instead of wiping the table.
+- **Refresh on demand.** "立即更新" (Refresh now) fetches the current draft source and immediately applies and caches a successful result; an empty draft applies the bundled snapshot. Save the settings to persist the source. Once a different source is saved, an old request cannot overwrite it. The status line shows the current source (cache or bundle) and fetch date. A failed fetch keeps the existing data.
 - **Years not covered.** Holiday data is published year by year. When neither the cache nor the bundled snapshot covers a year, that year falls back to a plain Mon–Fri rule, so a public holiday on a weekday is temporarily treated as a peak candidate. Update the data source for exact coverage.
 
 ## Everyday controls

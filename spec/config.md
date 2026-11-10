@@ -211,6 +211,10 @@ value when local model samples are available.
 
 The footer has buttons to open the config file and reveal the log file in Finder.
 
+`ConfigStore.startConfigWatcher` 在 rename/delete/revoke 后重开单文件监听；文件暂时
+不存在时保留重试。每次成功重挂都会安排一次防抖内容比对读取，确保监听空窗期间
+重建的文件也被加载，随后继续监听原子替换写入。
+
 ## Build And Packaging
 
 Development run:
@@ -231,6 +235,10 @@ Package a DMG after building the app:
 ```bash
 ./scripts/build-dmg.sh
 ```
+
+`scripts/build-release.sh [version] [build-number]` 依次构建 App、DMG 和 SHA-256。
+构建号优先使用显式参数，否则读取 `.build_number`；新检出仓库缺少该忽略文件时使用
+`1`。此入口始终向 `build-app.sh` 传入显式构建号，不创建或递增 `.build_number`。
 
 需要 notarization 时，先用 `xcrun notarytool store-credentials` 保存凭据，再显式启用：
 

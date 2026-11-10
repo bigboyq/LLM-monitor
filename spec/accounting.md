@@ -36,7 +36,7 @@ completion，而不是仅可见文字。
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
 | Antigravity | event `inputTokens` = uncached | 独立字段 | `outputTokens` **含思考**（`thinkingOutputTokens` 是子集；实测全量事件 100% 满足 `outputTokens == thinking + response`） | catalog `output: .reasoningIncluded`：`Output = rawOutput − thinking`、`Reason = thinking`，四桶守恒（修掉历史思考双重计量）；daily 与 sample 同经 catalog 统一；sample 保留 cache-inclusive input |
 | agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input。agy 在 `TokenAccountingCatalog` 里没有独立条目，计数口径与 `antigravity` 一致，在 reader 层直接映射（见「唯一入口」的例外说明） |
-| OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
+| OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例逐调用 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily output/reasoning 从同窗口样本按日累计；sample 保留 cache-inclusive input |
 | ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 原生 `reasoning_tokens` 列实测 0 行有值；reasoning 来自 part 表字符 | daily 先减 cache；sample 保留完整 input；不再二次拆分。**智谱行与非智谱分片统一字符分摊三段式**（2026-11-08 起，Method A 整轮归类废止——实测思考行 100% 同时含可见 text、`output_tokens` 含思考）：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例**行级**分摊 → ③ 都没有保持 `Reason=0`。**日聚合的 output/reasoning 直接取行级分摊的按日累计**（同日二次修订：日级 / 行级双轨经 `includingCurrentDay` 逐桶 max() 会凭空膨胀，触发「明细采样已达上限」误报） |
 
 ## 字段边界
@@ -87,7 +87,7 @@ DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时�
 | Harness | 估算粒度 | 字符来源 | 限制 |
 |---|---|---|---|
 | DSH | 同一个 `assistant/message` 事件 | `reasoning`、`text`、`tool-call.arguments` 内容块 | 事件级比例估算；内容块缺失时不猜，`Reason = 0` |
-| MiniMax Code | 按本地自然日聚合 | `thinking_content`、`msg_content`、`tool_call_args` | token usage 与 message 行无法可靠逐请求配对，只能日级比例估算 |
+| MiniMax Code | 已配对调用逐行，未配对残余按本地自然日 | `thinking_content`、`msg_content`、`tool_call_args` | 配对调用用本行字符；未配对样本仅分配扣除配对/原生 reasoning 后的日残余预算，并保留整数舍入余数；daily output/reasoning 从最终样本累计 |
 
 两条路径都保持 `Output + Reason = raw output`，但结果是估算值，精度受字符与 token
 分布差异影响。不要把两种来源的字符统计直接合并，也不要把估算的 Reason 当作 provider
@@ -99,7 +99,11 @@ DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时�
 agy 的 transcript 行复用，字符桶口径一致：思考取 reasoning part（agy 取行内
 `thinking` 字段），可见输出取 text part + tool 参数（`$.state.input` / DSH
 `tool-call.arguments` / agy `content` + `tool_calls` 序列化文本）；粒度分别是 ZCode
-分片 day 级聚合 / 行级样本、OpenCode day 级聚合 / 行级样本、agy 行级样本。
+分片行级样本（daily 同源累计）、OpenCode 行级样本（daily 同源累计）、agy 行级样本。
+
+OpenCode 与 MiniMax Code 的 daily output/reasoning 必须与同窗口样本按日累计逐桶
+一致（缓存分别 v3 / v20）。投影的 `includingCurrentDay` 逐桶 max 只修补真实滞后，
+不能用于协调两套不同的拆分；否则它会分别挑出偏大的 output 与 reasoning、凭空增量。
 
 ### 唯一入口：raw → 桶
 
@@ -173,7 +177,7 @@ TTFT）的读数介于解码速度与含 TTFT 速度之间，tooltip 已注明�
 | Codex | `token_usage_record` 混合差分：发起锚 = max(上一条 `token_count` 时刻, 上一条 record 时刻)，回退 `task_started`；token 计量保持 `token_count` 单源，record 只计时（详见 `harnesses/codex.md` Rules） |
 | Antigravity | 方案 B：纯文本流式输出（`!isToolCall && f12 >= 0.5s`）供给 `(ttftSeconds ?? 0) + streamingSeconds`（解码分母 `duration − ttft` 恒等于 `f12`）；工具调用或短流式为 `nil`（避免除零虚高）；无 `gen_metadata` 夹具回退 `steps` 表 `f7 − f1` 差分；缓存 v12 重建 |
 | MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
-| agy | 方案 B：`conversations/<session>.db` 的 `llmCallTimingByStepIndex` 供给（纯文本流式 `(ttft ?? 0) + streaming`，工具调用 `nil`；无 gen_metadata 回退 steps 差分）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v7 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
+| agy | 方案 B：`conversations/<session>.db` 的 `llmCallTimingByStepIndex` 供给（纯文本流式 `(ttft ?? 0) + streaming`，工具调用 `nil`；无 gen_metadata 回退 steps 差分）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v8 重建；已有原生 timing 明确排除的调用不得再走 GENERIC fallback。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
 
 上游 TTFT 字段可得性（2026-11-08 调研落地，见下节）：ZCode `model_usage`
 原生 `time_to_first_token_ms`（逐调用，71% 覆盖，缺口行 nil）、Codex `task_complete` payload 原生
@@ -214,7 +218,7 @@ TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内
 | ZCode | `model_usage.time_to_first_token_ms` 显式列 ÷ 1000（主表与非智谱分片同口径；NULL-aware 读取，NULL → nil；缓存 v12 重建） |
 | Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
 | Antigravity | 方案 B：`.db` 的 `gen_metadata` 解析 `f1.f11` Duration 秒数（中位数 ~3.0s - 4.6s）；缓存 v12 重建 |
-| agy | 方案 B：同 Antigravity，经 `AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 读取 `f1.f11`；缓存 v7 重建 |
+| agy | 方案 B：同 Antigravity，经 `AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 读取 `f1.f11`；当前缓存 v8 重建 |
 | DSH | 双路径：v1 首个独立 `assistant/chunk.time − step/start.time` ÷ 1000（字节级预过滤 + 每 step 首 chunk 节流解码）；v3 / v4 取 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（缓存 v7 重建。见 `harnesses/dsh.md` § TTFT 调研记录） |
 | MiniMax | `(request_duration_ms − decode_duration_ms) / 1000`（同一时长守门窗口查询补取 decode 键、同一 `(session, turn)` FIFO 配对；decode 缺失 / 差值 < 0 → nil。缓存 v18 重建。见 `harnesses/minimaxcode.md` § TTFT 调研记录） |
 | OpenCode | 无（恒 nil） |

@@ -48,7 +48,7 @@
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` | 「思考字符数 → 思考 token 数」的守恒拆分纯函数（`reasoning + output == 账面 output` 恒成立）；5 处调用方：GLM/ZCode（`GlmZcodeDBReader`）、MiniMax Code（`MinimaxLocalUsageAggregation`）、Dsh M3（`DshLocalUsageScanner`）、OpenCode（`OpencodeDBReader`）、Agy（`AgyLocalUsageAggregation`） |
 | `Sources/LLM-monitor/Models/LocalUsageRetentionWindow.swift` | 本地用量「落盘前保留窗口」的唯一口径（`LocalUsageRetentionWindow`，Antigravity / Agy / DSH / GLM-ZCode / Minimax / OpenCode 六个 scanner 共享）；刻意区别于展示层 7 天窗口，契约由 `ScannerRetentionContractTests` 锁定——该契约逐条覆盖其中五个（Antigravity / Minimax / DSH / Opencode / GLM-ZCode），Agy 尚无逐条断言 |
-| `Sources/LLM-monitor/Models/LocalUsageFreshness.swift` | 本地用量数据新鲜度（clean / dirty / scanning / failed），独立于额度健康度；LocalUsageSource.clientID 与 LocalUsageConsumer 映射 scanner 到 client/provider，用于 Fleet 来源隔离 |
+| `Sources/LLM-monitor/Models/LocalUsageFreshness.swift` | 本地用量数据新鲜度（clean / dirty / scanning / failed）与独立的首次核对标记；LocalUsageSource.clientID 与 LocalUsageConsumer 映射 scanner 到 client/provider，用于 Fleet 来源隔离 |
 | `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift` | Provider × Harness 投影内核：`HarnessUsageFrame` 适配（clientID/sourceKey/quota 归属）→ `UsageProjectionKernel.project` 出 per-client × per-provider 投影（daily + per-model 桶 + 名义价值）；promptID 命名空间规则表（`UsageSampleNamespace`）与 DSH 帧适配（`DshHarnessFrames`）在此，旧 `DshUsageMerger` / `OpencodeUsageMerger` 已吸收删除 |
@@ -109,7 +109,7 @@
 | `Sources/LLM-monitor/Services/Formatters.swift` | 基础格式化工具：Token 紧凑计数（K/M/G 阶梯）、速度三字符数值与数量级后缀、格式化整数、百分比与额度百分比（去无效 .0）、FormatterCache 缓存 |
 | `Sources/LLM-monitor/Services/Formatters+Time.swift` | 时间与倒计时格式化扩展：统一相对倒计时格式化（`formatRelativeCountdown`）、相对时间（`formatRelativeShort`）、英文压缩倒计时（`formatResetSuffix`）、中文紧凑倒计时（`formatPeakDuration`）、数字时钟持续时长（`formatDigitalDuration`）、绝对时钟与日期（`formatClock` / `formatTimeOfDay` / `formatMonthDayMinute` 等）及 Codex 窗口标签与刷新间隔 |
 | `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
-| `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
+| `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器；MainActor 同步应用结果，再转发完整结果验证/新鲜度回调 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓）；loop 带实例 token（`cancelAll` 后旧 loop 收尾不再清新 loop 的 sleepTask、不再进入下一轮迭代） |
 | `Sources/LLM-monitor/Services/ManualRefreshGate.swift` | 手动 full refresh 与 in-flight background refresh 的合并协议（pending 登记 / 取消撤销 / 一次性补跑） |
 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：按触发原因分层为 `.dirty` / `.full`（cache-assisted） / `.hardFull`（绕过各 provider 自己的 fingerprint / offset / cache），请求按 `dirty < full < hardFull` 优先级折叠成一次；`.hardFull` 只在启动首拍、日历签名失效与 `bypassesProviderCache` 时触发。Provider batch settled 后每拍都投递一次 reconcile（scanner 内部指纹短路决定是否真扫），不持有 Timer |
@@ -119,7 +119,7 @@
 | `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger`（含多 Key 独立匹配、降级 stale 保留与组织名跨模式保留）、`GlmFillingMissingMerger` 与 `AntigravityFillingMissingMerger`：次要信息跨模式保留、主额度与金额采用新值（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/Infra/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |
 | `Sources/LLM-monitor/Services/Infra/StringUtilities.swift` | 字符串小工具（trim / firstTrimmed） |
-| `Sources/LLM-monitor/Services/Infra/ProcessRunner.swift` | 同步短命令子进程执行器（pgrep / lsof / pmset / zstd / node；持续排空 pipe + 超时与取消检查）；产出文件以 0600 出生（会话明文不落 world-readable） |
+| `Sources/LLM-monitor/Services/Infra/ProcessRunner.swift` | 同步短命令子进程执行器（pgrep / lsof / pmset / zstd / node；持续排空 pipe + 超时与取消检查）；文件输出可选流式硬限额，超限终止；产出文件以 0600 出生 |
 | `Sources/LLM-monitor/Models/SaturatingArithmetic.swift` | 非负计数饱和算术（负值归零、溢出封顶 `Int.max`），聚合入口防损坏输入 |
 | `Sources/LLM-monitor/Services/LocalUsageDayKey.swift` | `yyyy-MM-dd` day key（跟 SQLite `strftime` 对齐） |
 | `Sources/LLM-monitor/Services/LocalUsageCalendarSignature.swift` | 决定本地日桶的日历输入签名（`LocalUsageCalendarSignature.make(calendar)`），随 provider 缓存落盘；冷启动时源文件没变也不会把按旧时区分组的快照当成当前数据 |
@@ -242,12 +242,23 @@
 | `scripts/test-build-config.sh` | `build-app.sh` 构建期常量的 shell 冒烟测试（BUNDLE_ID 等「格式对但值被改」的回归护栏，自带框架） |
 | `scripts/build-dmg.sh` | DMG packaging from the built `.app` |
 | `scripts/test.sh` | 运行 `swift test`；仅显式设置 `INCREMENT_BUILD_NUMBER=1` 时递增 build 编号 |
-| `scripts/audit.sh` | Shell syntax、Package、测试、Release 和 Swift 6 门禁 |
+| `scripts/audit.sh` | Shell syntax、Package、Swift 测试、Python 分析/发布脚本回归、Release 和 Swift 6 门禁（Python 优先 .venv，否则 python3；仅标准库） |
 | `scripts/archive-source.sh` | 从 Git HEAD 生成源码归档 |
 | `scripts/export-antigravity-quota.sh` | 导出 Antigravity 本地 quota 数据 |
 | `scripts/generate-icns.sh` | 从源图生成 AppIcon.icns（由 sync-icon-assets.sh 调用，也可独立使用） |
 | `scripts/sync-icon-assets.sh` | 图标资产唯一同步入口：IconPreview 副本 + 回退 icns 重生成 + sidecar 新鲜度记录；`--check` 供构建前置校验 |
 | `scripts/sync-holiday-data.sh` | 法定节假日快照唯一同步入口：拉取上游 chinese-days JSON，抽取 `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A）生成 ChinaHolidays.json，幂等 + `--check` 只读校验 |
+| `Tests/LLMMonitorTests/DataSourceRegressionTests.swift` | OpenCode/MiniMax 分拆守恒、Agy 耗时排除与数据库变更、数值极值、DSH 流式输出上限回归 |
+| `Tests/LLMMonitorTests/RuntimeLifecycleRegressionTests.swift` | 配置重建、启动收敛、取消恢复、Fleet 首扫保护与 Bark 队列冷却回归 |
+| `Tests/LLMMonitorTests/HolidaySourceLifecycleTests.swift` | 节假日草稿/已保存源隔离、旧请求拒收与新请求刷新状态回归 |
+| `Tests/LLMMonitorTests/SettingsNavigationTests.swift` | 实际消费设置页发布目标并清理导航请求 |
+| `Tests/LLMMonitorTests/EdgeDockSelectionTests.swift` | Dock 稳定 Provider 身份、重排与停用清理回归 |
+| `scripts/tests/test_analysis_tools.py` | 合成日志/SQLite 测试分析脚本的累计去重、时间边界、空与零成本；不读取用户数据 |
+| `scripts/tests/test_release_script.py` | 临时干净仓库与桩构建器验证发布入口的构建号优先级及不写回约束 |
+| `scripts/dsh_token_analysis/summary.py` | DSH 离线 RATE_LIMIT 与窗口汇总；全部 call 区间累计、retryId 去重 |
+| `scripts/dsh_token_analysis/analyze.py` | DSH 离线明细分析；触发时刻窗口/日累计按 call 时间统计 |
+| `scripts/dsh_token_analysis/cost.py` | DSH 离线窗口成本与分组统计；空组/零成本可输出 |
+| `scripts/dsh_token_analysis/minimax_cost.py` | MiniMax 本地 SQLite 离线窗口成本分析；空库/零成本可输出 |
 
 ## Test Suite
 

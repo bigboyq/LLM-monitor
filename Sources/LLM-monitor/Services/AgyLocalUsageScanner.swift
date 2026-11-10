@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Combine
 
 /// agy（Antigravity CLI 分支）本地 transcript token 用量扫描预算。
@@ -184,8 +185,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         // brain 下的 transcript（jsonl）与 log 下的 cli log（log）都触发 dirty；
         // transcript 追加是高频事件，指纹 diff + 缓存短路负责消化。
         configureSourceLifecycle(
-            paths: [brainRoot, logDirectory],
-            dynamicExtensions: ["jsonl", "log"]
+            paths: [brainRoot, logDirectory, Self.conversationsDirectory(for: brainRoot)],
+            dynamicExtensions: ["jsonl", "log", "db", "db-wal"]
         )
     }
 
@@ -359,7 +360,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             )
             try saveIndex(
                 AgyCacheIndex(
-                    version: 7,
+                    version: 8,
                     files: [],
                     snapshot: empty,
                     calendarSignature: currentCalendarSignature
@@ -379,15 +380,33 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             fileManager: fileManager,
             limits: limits
         )
+        let conversationsRoot = conversationsDirectory ?? Self.conversationsDirectory(for: brainRoot)
+        let sessionIDs = Set(selection.snapshots.map { sessionID(for: $0.url, in: brainRoot) })
+        var databaseFiles: [AgyLogFileFingerprint] = []
+        var databaseReadFailed = false
+        for session in sessionIDs.sorted() {
+            for suffix in [".db", ".db-wal"] {
+                let url = conversationsRoot.appendingPathComponent(session + suffix)
+                do {
+                    databaseFiles.append(try LogFileSnapshot(url: url, fileManager: fileManager).fingerprint)
+                } catch {
+                    if !ScannerFileError.isExplicitlyMissing(error) {
+                        databaseReadFailed = true
+                        logWarn("[agy-scan] 会话 DB 属性读取失败，增强数据下轮重试: \(url.path)")
+                    }
+                }
+            }
+        }
         let fingerprint = CacheFingerprint(
             files: selection.snapshots.map(\.fingerprint),
-            timelineSignature: timelineSignature(for: timeline)
+            timelineSignature: timelineSignature(for: timeline),
+            databaseFiles: databaseFiles
         )
         let calendarChanged = index.calendarSignature != currentCalendarSignature
         if calendarChanged {
             logInfo("[agy-scan] calendar signature changed，重新解析文件以重建当前日桶")
         }
-        if !forceFull, !calendarChanged, index.matches(fingerprint), let cached = index.snapshot {
+        if !forceFull, !calendarChanged, !databaseReadFailed, index.matches(fingerprint), let cached = index.snapshot {
             let scanNow = now()
             let rebased = AgyLocalUsageAggregation.rebaseCached(
                 cached,
@@ -406,8 +425,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         let outcome = try aggregateFiles(
             snapshots: selection.snapshots,
             brainRoot: brainRoot,
-            conversationsDirectory: conversationsDirectory
-                ?? Self.conversationsDirectory(for: brainRoot),
+            conversationsDirectory: conversationsRoot,
             fileManager: fileManager,
             timeline: timeline,
             calendar: calendar,
@@ -439,11 +457,13 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         )
         try saveIndex(
             AgyCacheIndex(
-                version: 7,
+                version: 8,
                 files: outcome.processedFingerprints,
                 snapshot: snapshot,
                 calendarSignature: currentCalendarSignature,
-                timelineSignature: timelineSignature(for: timeline)
+                timelineSignature: timelineSignature(for: timeline),
+                databaseFiles: databaseFiles,
+                databaseReadFailed: databaseReadFailed || outcome.databaseReadFailed
             ),
             cacheDir: cacheDir,
             fileManager: fileManager
@@ -542,6 +562,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         /// 完整读取并解析成功的文件指纹。失败文件刻意不入缓存，下一轮重试。
         var processedFingerprints: [AgyLogFileFingerprint] = []
         var failedFileCount = 0
+        var databaseReadFailed = false
     }
 
     private nonisolated static func aggregateFiles(
@@ -579,12 +600,14 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             let planA = loadPlanADurations(
                 sessionID: session,
                 conversationsDirectory: conversationsDirectory,
-                fileManager: fileManager
+                fileManager: fileManager,
+                databaseReadFailed: &outcome.databaseReadFailed
             )
             let planTimings = loadPlanATimings(
                 sessionID: session,
                 conversationsDirectory: conversationsDirectory,
-                fileManager: fileManager
+                fileManager: fileManager,
+                databaseReadFailed: &outcome.databaseReadFailed
             )
             // 同一 .db 的原生 usage（gen_metadata f1.f4，f9/f10/f3）：reasoning/
             // visible 拆分的真值来源；连接不命中 / 不守恒的行由 makeUsage 回退
@@ -592,7 +615,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             let planNativeUsage = loadPlanANativeUsage(
                 sessionID: session,
                 conversationsDirectory: conversationsDirectory,
-                fileManager: fileManager
+                fileManager: fileManager,
+                databaseReadFailed: &outcome.databaseReadFailed
             )
             var context = AgyLocalUsageAggregation.AgySessionDurationContext(
                 planATimings: planTimings,
@@ -653,7 +677,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
     private nonisolated static func loadPlanADurations(
         sessionID: String,
         conversationsDirectory: URL,
-        fileManager: FileManagerBox
+        fileManager: FileManagerBox,
+        databaseReadFailed: inout Bool
     ) -> [Int: Double] {
         let dbURL = conversationsDirectory.appendingPathComponent("\(sessionID).db")
         guard fileManager.fileExists(atPath: dbURL.path) else { return [:] }
@@ -672,6 +697,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             }
             return durations
         } catch {
+            databaseReadFailed = databaseReadFailed || isRetryableDatabaseFailure(error)
             logWarn(
                 "[agy-scan] 读取会话步骤时长失败（该会话走 GENERIC 后继降级）: "
                     + "\(dbURL.path), error: \(errorSummary(error))"
@@ -692,7 +718,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
     private nonisolated static func loadPlanANativeUsage(
         sessionID: String,
         conversationsDirectory: URL,
-        fileManager: FileManagerBox
+        fileManager: FileManagerBox,
+        databaseReadFailed: inout Bool
     ) -> [Int: AntigravityStepTimestampReader.LLMCallNativeUsage] {
         let dbURL = conversationsDirectory.appendingPathComponent("\(sessionID).db")
         guard fileManager.fileExists(atPath: dbURL.path) else { return [:] }
@@ -704,6 +731,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                 try AntigravityStepTimestampReader.llmCallNativeUsageByStepIndex(dbPath: dbPath)
             }
         } catch {
+            databaseReadFailed = databaseReadFailed || isRetryableDatabaseFailure(error)
             logWarn(
                 "[agy-scan] 读取会话原生 usage 失败（该会话回退字符估算）: "
                     + "\(dbURL.path), error: \(errorSummary(error))"
@@ -716,7 +744,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
     private nonisolated static func loadPlanATimings(
         sessionID: String,
         conversationsDirectory: URL,
-        fileManager: FileManagerBox
+        fileManager: FileManagerBox,
+        databaseReadFailed: inout Bool
     ) -> [Int: AntigravityStepTimestampReader.LLMCallTiming] {
         let dbURL = conversationsDirectory.appendingPathComponent("\(sessionID).db")
         guard fileManager.fileExists(atPath: dbURL.path) else { return [:] }
@@ -728,11 +757,26 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                 try AntigravityStepTimestampReader.llmCallTimingByStepIndex(dbPath: dbPath)
             }
         } catch {
+            databaseReadFailed = databaseReadFailed || isRetryableDatabaseFailure(error)
             logWarn(
                 "[agy-scan] 读取会话调用时延失败（该会话时长/TTFT 保持 nil）: "
                     + "\(dbURL.path), error: \(errorSummary(error))"
             )
             return [:]
+        }
+    }
+
+    /// 旧 schema/损坏字节需文件变化才可能恢复；权限、锁、快照等故障即使
+    /// mtime/size 未变也必须重试，不能把 fallback 永久当增强数据完整。
+    private nonisolated static func isRetryableDatabaseFailure(_ error: Error) -> Bool {
+        guard let error = error as? SQLiteConnectionError else { return true }
+        switch error {
+        case .openFailed(_, let code, _, _), .prepareFailed(let code, _, _, _), .stepFailed(let code, _, _):
+            return ![SQLITE_ERROR, SQLITE_NOTADB, SQLITE_CORRUPT].contains(code & 0xFF)
+        case .lostImmutableRace:
+            return true
+        case .bindFailed, .nullColumn:
+            return false
         }
     }
 
@@ -942,6 +986,7 @@ private struct CacheFingerprint: Sendable {
     /// cli log 时间线签名（空时间线 → nil）：log-only 变化会改变签名，
     /// 防止指纹短路吞掉模型名刷新。
     let timelineSignature: String?
+    let databaseFiles: [AgyLogFileFingerprint]
 }
 
 private struct AgyCacheIndex: Codable, Equatable, Sendable {
@@ -951,15 +996,20 @@ private struct AgyCacheIndex: Codable, Equatable, Sendable {
     var calendarSignature: String?
     /// 指纹短路必须同时比对的时间线签名；v2 起生效（旧 v1 缓存一次性失效重建）。
     var timelineSignature: String? = nil
+    var databaseFiles: [AgyLogFileFingerprint]? = nil
+    var databaseReadFailed: Bool? = nil
 
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
+        // v8：DB/WAL 指纹与增强读取重试；清除工具响应错误 fallback 时长。
         // v7（2026-11-08）：样本接入 ttftSeconds（f1.f11），流式解码时长 durationSeconds
         // 仅对非工具流式调用（f12 >= 0.5s）按 (ttft+f12) 供给，工具调用保持 nil；
         // 版本不匹配即整体重建。
         // （v6：清除伪 ttftSeconds；v5：原生真值拆分；v4：旧伪 ttft；v3：旧 duration。）
-        version == 7
+        version == 8
             && files == fingerprint.files
             && timelineSignature == fingerprint.timelineSignature
+            && databaseFiles == fingerprint.databaseFiles
+            && databaseReadFailed != true
     }
 }
 
@@ -971,8 +1021,8 @@ private extension AgyLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 7,
-            empty: AgyCacheIndex(version: 7, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 8,
+            empty: AgyCacheIndex(version: 8, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[agy-scan]"
         )

@@ -228,5 +228,5 @@ final class ReconcileNoopWriter: LocalUsageStatusWriting {
     func applyAgyUsage(_ usage: AgyLocalUsage?) {}
     func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
     func codexConfiguredAuthPath() -> String? { nil }
-    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) -> Bool { true }
 }

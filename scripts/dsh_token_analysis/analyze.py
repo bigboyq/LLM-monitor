@@ -164,22 +164,12 @@ print(f"{'#':>3}  {'timestamp':<20}  {'turn/step':>9}  {'sid':<14}  "
       f"{'this call (in+cache+out+reas)':<35}  {'window total so far':<26}  {'day total so far':<26}")
 print("-" * 110)
 
-last_day_total: dict = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "count": 0}
-last_window_total: dict = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "count": 0}
-current_day = None
-current_window_start = None
-
 for i, (ts, rid, sid, turn, step, code, msg) in enumerate(rate_limit_events, 1):
     ts_dt = parse_ts(ts)
-    day_str = ts_dt.strftime("%Y-%m-%d")
     win_start_dt = window_start(ts_dt)
-    # Reset running totals if day changed
-    if day_str != current_day:
-        current_day = day_str
-        last_day_total = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "count": 0}
-    if win_start_dt != current_window_start:
-        current_window_start = win_start_dt
-        last_window_total = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "count": 0}
+    day_start_dt = ts_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    last_day_total = total_for_range(int(day_start_dt.timestamp() * 1000), ts + 1)
+    last_window_total = total_for_range(int(win_start_dt.timestamp() * 1000), ts + 1)
 
     # Find the matching call: same (sid, turn, step) — when missing (e.g. the
     # assistant/message wasn't logged because the request was throttled before
@@ -195,13 +185,6 @@ for i, (ts, rid, sid, turn, step, code, msg) in enumerate(rate_limit_events, 1):
                 break
     if call is None:
         call = {"input": 0, "cache": 0, "output": 0, "reasoning": 0, "ts": ts, "sid": sid}
-
-    # Add this call's tokens to running totals
-    for k in ("input", "cache", "output", "reasoning"):
-        last_day_total[k] += call[k]
-        last_window_total[k] += call[k]
-    last_day_total["count"] += 1
-    last_window_total["count"] += 1
 
     call_str = (
         f"in={format_num(call['input'])} "

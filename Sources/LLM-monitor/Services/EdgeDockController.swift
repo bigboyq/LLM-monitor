@@ -113,7 +113,16 @@ final class EdgeDockController: ObservableObject {
     /// 重新计时，扫过去就不会依次展开又收起每张卡）；鼠标压在卡片上时维持原值
     /// 不变，那是同一张卡的延续。真正的清理由 `releaseMouseCapture` 在离开整个
     /// 保持区后统一做。
-    @Published var selectedIndex: Int?
+    @Published var selectedIndex: Int? {
+        didSet {
+            selectedProviderID = selectedIndex.flatMap {
+                let entries = orderedEntries()
+                return entries.indices.contains($0) ? entries[$0].id : nil
+            }
+        }
+    }
+    /// 下标只用于当前布局；跨刷新/重排保留的身份必须独立于新 entries。
+    private(set) var selectedProviderID: String?
 
     /// 「状态窗（自动隐藏）」形态下是否处于**展开**形态。其余形态恒为 false 且
     /// 无意义（外观由 `isCompactAppearance` 统一推导）。

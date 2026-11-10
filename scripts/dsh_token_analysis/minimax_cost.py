@@ -98,7 +98,7 @@ rows.sort(key=lambda x: x[2])
 max_cost = max((cost(r) for _, r, _ in rows), default=1)
 for c, r, (day, win) in rows:
     total = r["i"] + r["o"] + r["r"] + r["c"]
-    bar_len = int(round(c / max_cost * 30))
+    bar_len = int(round(c / max_cost * 30)) if max_cost > 0 else 0
     bar = "█" * bar_len + "·" * (30 - bar_len)
     first = datetime.fromtimestamp(r["first"] / 1000.0, tz=TZ).strftime("%m-%d %H:%M")
     last = datetime.fromtimestamp(r["last"] / 1000.0, tz=TZ).strftime("%m-%d %H:%M")
@@ -120,10 +120,13 @@ print(f"- **总成本**：{fmt_yuan(total_cost)}")
 print(f"- **总 token**（input + cache + output + reasoning）：{sum(r['i']+r['c']+r['o']+r['r'] for r in agg.values())/1e6:,.1f}M")
 print(f"- **总 rounds**（LLM 调用数）：{sum(r['n'] for r in agg.values()):,}")
 print()
-print(f"- **窗口成本中位数**：{fmt_yuan(all_costs[n//2])}")
-print(f"- **窗口成本 P75**：{fmt_yuan(all_costs[int(n*0.75)])}")
-print(f"- **窗口成本 P90**：{fmt_yuan(all_costs[min(n-1, int(n*0.90))])}")
-print(f"- **窗口成本 max**：{fmt_yuan(max(all_costs))}")
+if all_costs:
+    print(f"- **窗口成本中位数**：{fmt_yuan(all_costs[n//2])}")
+    print(f"- **窗口成本 P75**：{fmt_yuan(all_costs[int(n*0.75)])}")
+    print(f"- **窗口成本 P90**：{fmt_yuan(all_costs[min(n-1, int(n*0.90))])}")
+    print(f"- **窗口成本 max**：{fmt_yuan(max(all_costs))}")
+else:
+    print("- 暂无窗口数据，无法计算成本分位数")
 print()
 print("## 时间分布")
 print()

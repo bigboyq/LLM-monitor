@@ -91,6 +91,9 @@ final class LocalUsageOrchestration {
             },
             onFailed: { [weak writer] in
                 writer?.setLocalUsageFreshness(.failed, for: source)
+            },
+            onValidatedResult: { [weak writer] in
+                writer?.markLocalUsageSourceInitialized(source)
             }
         )
     }
@@ -199,9 +202,12 @@ final class LocalUsageOrchestration {
     private let now: @Sendable () -> Date
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
     private var clientReadinessCache: [String: Bool] = [:]
+    private var verifiedMissingClients: Set<String> = []
     private var activeSources = ActiveSources()
     /// 仅供测试注入客户端就绪判定覆写
     var testReadinessOverride: ((String) -> Bool)?
+    /// Distinguish an inaccessible source from a confirmed ENOENT in tests.
+    var testSourceMissingOverride: ((String) -> Bool)?
     /// 测试用 reconcile pass 注入点；生产路径仍使用 `scanAllClients(mode:)`。
     var testReconcilePass: (@MainActor (LocalUsageScanMode) async -> Void)?
     /// 测试用 teardown 注入点：模拟 chain 已经取到空 pending 后，另一个
@@ -242,6 +248,22 @@ final class LocalUsageOrchestration {
     /// active only while their explicit consumer set is non-empty; scanner/cache
     /// values themselves are retained when a source is disabled.
     func updateActiveSources(_ active: ActiveSources) {
+        // Re-enabling a stopped source requires another readiness check. In
+        // particular, a now-missing source is a verified zero rather than an
+        // indefinitely uninitialized contribution.
+        let activations: [(String, Bool, Bool)] = [
+            ("codex", activeSources.codex, active.codex),
+            ("antigravity", activeSources.antigravity, active.antigravity),
+            ("minimax_code", activeSources.minimax, active.minimax),
+            ("zcode-glm", activeSources.glm, active.glm),
+            ("dsh", activeSources.dsh, active.dsh),
+            ("opencode", activeSources.opencode, active.opencode),
+            ("agy", activeSources.agy, active.agy)
+        ]
+        for (client, wasActive, isActive) in activations where !wasActive && isActive {
+            clientReadinessCache.removeValue(forKey: client)
+            verifiedMissingClients.remove(client)
+        }
         activeSources = active
         antigravityCoordinator.setActive(active.antigravity)
         minimaxCoordinator.setActive(active.minimax)
@@ -387,48 +409,60 @@ final class LocalUsageOrchestration {
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "minimax_code",
+                source: .minimaxCode,
                 mode: mode,
-                isActive: { self.activeSources.minimax }
+                isActive: { self.activeSources.minimax },
+                clearMissing: { self.writer.applyMinimaxLocalUsage(nil) }
             ) { self.minimaxCoordinator }
         }
         let glm: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "zcode-glm",
+                source: .zcode,
                 mode: mode,
-                isActive: { self.activeSources.glm }
+                isActive: { self.activeSources.glm },
+                clearMissing: { self.writer.applyGlmLocalUsage(nil) }
             ) { self.glmCoordinator }
         }
         let opencode: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "opencode",
+                source: .opencode,
                 mode: mode,
-                isActive: { self.activeSources.opencode }
+                isActive: { self.activeSources.opencode },
+                clearMissing: { self.writer.applyOpencodeUsage(nil) }
             ) { self.opencodeCoordinator }
         }
         let dsh: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "dsh",
+                source: .dsh,
                 mode: mode,
-                isActive: { self.activeSources.dsh }
+                isActive: { self.activeSources.dsh },
+                clearMissing: { self.writer.applyDshUsage(nil) }
             ) { self.dshCoordinator }
         }
         let antigravity: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "antigravity",
+                source: .antigravity,
                 mode: mode,
-                isActive: { self.activeSources.antigravity }
+                isActive: { self.activeSources.antigravity },
+                clearMissing: { self.writer.applyAntigravityLocalUsage(nil) }
             ) { self.antigravityCoordinator }
         }
         let agy: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
             await self.scanClient(
                 "agy",
+                source: .agy,
                 mode: mode,
-                isActive: { self.activeSources.agy }
+                isActive: { self.activeSources.agy },
+                clearMissing: { self.writer.applyAgyUsage(nil) }
             ) { self.agyCoordinator }
         }
         let codex: @MainActor () async -> Void = { [weak self] in
@@ -464,7 +498,15 @@ final class LocalUsageOrchestration {
         let codexWasReady = clientReadinessCache["codex"] == true
         updateReadinessAndLog(for: "codex", isReady: codexReady)
         if codexReady || codexWasReady {
+            verifiedMissingClients.remove("codex")
             _ = await scanCodexUsageDetails(mode: mode)
+        } else {
+            reconcileMissingSource("codex", source: .codex) {
+                if let target = writer.codexEnrichmentTarget() {
+                    writer.applyCodexUsageDetails(nil, providerID: target.providerID,
+                                                 fetchedAt: target.fetchedAt, configurationGeneration: target.generation)
+                }
+            }
         }
     }
 
@@ -472,8 +514,10 @@ final class LocalUsageOrchestration {
     /// interface 决定，而不是依赖具体 scanner 类型。
     private func scanClient<Usage: Equatable & Sendable>(
         _ clientID: String,
+        source: LocalUsageSource,
         mode: LocalUsageScanMode,
         isActive: () -> Bool,
+        clearMissing: () -> Void,
         coordinator: () -> LocalUsageCoordinator<Usage>
     ) async {
         guard !Task.isCancelled else { return }
@@ -484,7 +528,11 @@ final class LocalUsageOrchestration {
         let isReady = checkClientReadiness(clientID)
         let wasReady = clientReadinessCache[clientID] == true
         updateReadinessAndLog(for: clientID, isReady: isReady)
-        guard isReady || wasReady else { return }
+        guard isReady || wasReady else {
+            reconcileMissingSource(clientID, source: source, clearMissing: clearMissing)
+            return
+        }
+        verifiedMissingClients.remove(clientID)
         let becameMissing = wasReady && !isReady
         let current = coordinator()
         guard current.active else { return }
@@ -495,6 +543,24 @@ final class LocalUsageOrchestration {
         guard !Task.isCancelled else { return }
         current.trigger(mode: mode, markDirty: false)
         try? await current.waitUntilSettled()
+    }
+
+    private func reconcileMissingSource(
+        _ clientID: String,
+        source: LocalUsageSource,
+        clearMissing: () -> Void
+    ) {
+        // A previous readiness=false may mean EACCES rather than absence.
+        // Re-stat every pass so a later ENOENT can become a verified zero;
+        // publish that zero only on the transition into confirmed absence.
+        if sourceIsExplicitlyMissing(clientID) {
+            guard verifiedMissingClients.insert(clientID).inserted else { return }
+            clearMissing()
+            writer.setLocalUsageFreshness(.clean, for: source)
+        } else {
+            verifiedMissingClients.remove(clientID)
+            writer.setLocalUsageFreshness(.failed, for: source)
+        }
     }
 
     private func performReconcile(mode: LocalUsageScanMode) async {
@@ -583,12 +649,14 @@ final class LocalUsageOrchestration {
         )
         guard !Task.isCancelled else { return false }
         guard let details else { return false }
-        writer.applyCodexUsageDetails(
+        guard writer.codexEnrichmentTarget()?.generation == target.generation else { return false }
+        guard writer.applyCodexUsageDetails(
             details,
             providerID: target.providerID,
             fetchedAt: target.fetchedAt,
             configurationGeneration: target.generation
-        )
+        ) else { return false }
+        writer.markLocalUsageSourceInitialized(.codex)
         codexSourceLifecycle?.refreshHotFiles()
         if codexSourceLifecycle?.eventGeneration == startedEventGeneration {
             writer.setLocalUsageFreshness(.clean, for: .codex)
@@ -630,31 +698,41 @@ final class LocalUsageOrchestration {
         if let override = testReadinessOverride {
             return override(clientID)
         }
-        let fileManager = FileManager.default
+        if clientID == "antigravity" { return true }
+        guard let url = clientSourceURL(clientID) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private func sourceIsExplicitlyMissing(_ clientID: String) -> Bool {
+        if let override = testSourceMissingOverride { return override(clientID) }
+        if let override = testReadinessOverride { return !override(clientID) }
+        guard let url = clientSourceURL(clientID) else { return false }
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return false
+        } catch {
+            return ScannerFileError.isExplicitlyMissing(error)
+        }
+    }
+
+    private func clientSourceURL(_ clientID: String) -> URL? {
         switch clientID {
         case "minimax_code":
-            return fileManager.fileExists(atPath: MinimaxLocalUsageScanner.defaultRuntimeDBURL.path)
+            return MinimaxLocalUsageScanner.defaultRuntimeDBURL
         case "zcode-glm":
-            return fileManager.fileExists(atPath: GlmZcodeLocalUsageScanner.defaultDBURL.path)
+            return GlmZcodeLocalUsageScanner.defaultDBURL
         case "opencode":
-            return fileManager.fileExists(atPath: OpencodeUsageScanner.defaultDBURL.path)
+            return OpencodeUsageScanner.defaultDBURL
         case "dsh":
-            return fileManager.fileExists(atPath: DshLocalUsageScanner.defaultSessionsRoot.path)
+            return DshLocalUsageScanner.defaultSessionsRoot
         case "agy":
-            return fileManager.fileExists(atPath: AgyLocalUsageScanner.defaultBrainRoot.path)
-        case "antigravity":
-            // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的凭据
-            // 探测（读一次登录钥匙串）推迟到 async checkLocalAuth()/fetch()，
-            // 这里直接短路，避免每轮 reconcile 都构造一个 fetcher。
-            return true
+            return AgyLocalUsageScanner.defaultBrainRoot
         case "codex":
             // 与 CodexFetcher 相同的解析链（config authPath → CODEX_HOME → ~/.codex），
             // 自定义 CODEX_HOME 的用户也能被正确判定。
-            return fileManager.fileExists(
-                atPath: CodexFetcher.codexHomeDirectory(authPath: writer.codexConfiguredAuthPath()).path
-            )
+            return CodexFetcher.codexHomeDirectory(authPath: writer.codexConfiguredAuthPath())
         default:
-            return false
+            return nil
         }
     }
 
@@ -679,6 +757,7 @@ protocol LocalUsageStatusWriting: AnyObject {
     func providerID(for kind: ProviderKind) -> String?
     func setScanningState(_ isScanning: Bool, for providerID: String)
     func setLocalUsageFreshness(_ freshness: LocalUsageFreshness, for source: LocalUsageSource)
+    func markLocalUsageSourceInitialized(_ source: LocalUsageSource)
     func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?)
     func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?)
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?)
@@ -689,11 +768,13 @@ protocol LocalUsageStatusWriting: AnyObject {
     /// codex 在 config.json 中配置的 authPath（未配置 provider 时返回 nil，不要求
     /// enabled / lastSuccess）—— 供 readiness 沿 CodexFetcher 的解析链定位 codex home。
     func codexConfiguredAuthPath() -> String?
-    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int)
+    @discardableResult
+    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) -> Bool
 }
 
 extension LocalUsageStatusWriting {
     /// Compatibility default for diagnostic/test writers that do not render
     /// provider cards. AppState overrides this to project source freshness.
     func setLocalUsageFreshness(_ freshness: LocalUsageFreshness, for source: LocalUsageSource) {}
+    func markLocalUsageSourceInitialized(_ source: LocalUsageSource) {}
 }

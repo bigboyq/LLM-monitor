@@ -82,26 +82,16 @@ rate_limit_events.sort(key=lambda r: r[0])
 # ---------------------------------------------------------------------------
 print("## 每次 Rate Limit 触发时的 M3 token 使用")
 print()
-print("按 retryId 去重后共 14 次 RATE_LIMIT。\"本次调用\"指 rate-limit 那个请求的 assistant/message 上报（input = uncached input，cache = cache-read，out = output，reas = reasoning）。\"窗口累计 / 日累计\"是自当天 / 当窗口起点以来的累计 calls。")
+print(f"按 retryId 去重后共 {len(rate_limit_events)} 次 RATE_LIMIT。\"本次调用\"指 rate-limit 那个请求的 assistant/message 上报（input = uncached input，cache = cache-read，out = output，reas = reasoning）。\"窗口累计 / 日累计\"是自当天 / 当窗口起点以来的累计 calls。")
 print()
 print("| # | 时间 | session | turn/step | input | cache-read | output | reasoning | 窗口累计 tokens | 日累计 tokens |")
 print("|---|------|---------|-----------|------:|-----------:|-------:|----------:|---------------:|-------------:|")
 
-# Running totals per day / window
-day_running = None
-win_running = None
-cur_day = None
-cur_win = None
 for i, (ts, rid, sid, turn, step) in enumerate(rate_limit_events, 1):
     ts_dt = parse_ts(ts)
-    day = ts_dt.strftime("%Y-%m-%d")
     win = window_start(ts_dt)
-    if day != cur_day:
-        cur_day = day
-        day_running = {"input": 0, "cache": 0, "output": 0, "reasoning": 0}
-    if win != cur_win:
-        cur_win = win
-        win_running = {"input": 0, "cache": 0, "output": 0, "reasoning": 0}
+    day_start_ms = int(ts_dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+    win_start_ms = int(win.timestamp() * 1000)
     call = call_totals.get((sid, turn, step))
     if call is None:
         for r in reversed(call_list):
@@ -110,11 +100,17 @@ for i, (ts, rid, sid, turn, step) in enumerate(rate_limit_events, 1):
                 break
     if call is None:
         call = {"input": 0, "cache": 0, "output": 0, "reasoning": 0}
-    for k in ("input", "cache", "output", "reasoning"):
-        day_running[k] += call[k]
-        win_running[k] += call[k]
-    win_total = sum(win_running.values())
-    day_total = sum(day_running.values())
+    # Count every call in the interval once, including calls with no retry.
+    day_total = 0
+    win_total = 0
+    for record in call_list:
+        if record["ts"] > ts:
+            break
+        total = sum(record[k] for k in ("input", "cache", "output", "reasoning"))
+        if record["ts"] >= day_start_ms:
+            day_total += total
+        if record["ts"] >= win_start_ms:
+            win_total += total
     short_sid = sid[:14] + ("…" if len(sid) > 14 else "")
     print(f"| {i} | {ts_dt.strftime('%Y-%m-%d %H:%M:%S')} | `{short_sid}` | {turn}/{step} | "
           f"{fmt(call['input'])} | {fmt(call['cache'])} | {fmt(call['output'])} | {fmt(call['reasoning'])} | "

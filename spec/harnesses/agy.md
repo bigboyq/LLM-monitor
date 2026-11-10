@@ -94,10 +94,14 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 `transcript.jsonl` 先于 `chunks/transcript/*.jsonl` 解析是确定性约定
 （`AgyLocalUsageScanner.orderedSessionFiles`，路径排序下 chunks 恰好在主文件之前，需显式重排）。
 
+`settleFallbackDurations` 仅回填**没有原生 timing 映射**的调用；已有映射而
+`duration = nil` 的工具/非流式响应是明确排除，不得由 GENERIC 后继重新纳入计速。
+
 **禁止前驱差分**：transcript `created_at` 是整秒级且记录的是该 step 的**发起**
 时刻 ⌊f1⌋（不是完成时刻），`row[i] − row[i−1]` 仅 21.8% 落入有效域，完全失真。
 
-缓存：指纹缓存升级 `AgyCacheIndex` v7——旧版本快照版本不匹配一次性失效重建。
+缓存：当前 `AgyCacheIndex` v8——DB/WAL 指纹和增强读取重试纳入缓存判定，并清除
+旧工具响应错误回填的时长；旧版本快照一次性失效重建。
 
 ## TTFT（ttftSeconds）
 
@@ -107,7 +111,7 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 - 全量调用统一采集 `ttftSeconds = f1.f11`（中位数 ~3.0s - 4.6s，包含 prefill 与内部思考）；
 - 纯文本流式调用的解码速度按 `(Think + Visible) / f12` 准确反映硬件吞吐；
 - 工具调用不提供流式耗时（`duration = nil`），但保留 `ttftSeconds`；
-- 缓存升级为 `AgyCacheIndex` **v7** 一次性重建，清除旧版本指标。聚合口径见
+- TTFT 于 v7 接入，当前 `AgyCacheIndex` **v8** 同时重建旧版本指标。聚合口径见
 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 ## Provider mapping
@@ -167,12 +171,14 @@ Recent samples 的 promptID 以裸格式落盘；`agy:` 命名空间由帧构造
   尾部数据永久缺失。单文件行数超过预算（`maxSessionFiles × 10_000` 行）同样
   必须抛错（`AgyLineBudgetExceededError`）：超预算文件按失败隔离（partial），
   不入指纹，下一轮重试，而不是静默半结果入库。
-- 指纹缓存 `AgyCacheIndex` v3（per-file mtime/size 指纹 + **cli log 时间线签名**
-  + 全量快照 + 日历签名）：指纹含 transcript 文件与时间线签名两部分，任一变化
-  都触发重聚合（log-only 变化由此刷新模型名）；全部未变只做 midnight rebase
+- 指纹缓存 `AgyCacheIndex` v8（per-file mtime/size 指纹 + **cli log 时间线签名**
+  + 对应 conversations `.db` / `.db-wal` 指纹 + 全量快照 + 日历签名）：任一变化
+  都触发重聚合（log-only 更新模型名，DB-only 更新原生 usage/TTFT/时长）；全部未变只做 midnight rebase
   （按当前日历重算 7 天窗口并重剪样本，业务字段原样保留）；日历签名变更强制
   重建日桶；显式 hard-full 才绕过缓存。时间线为空签名记 nil，空 log 目录不破坏
-  短路；v2 → v3 无迁移（样本新增 durationSeconds），旧缓存一次性失效重建。
+  短路；旧缓存无迁移，一次性失效重建。DB stat/权限/锁等可重试故障不阻断
+  transcript 计量，但保存 `databaseReadFailed`，下一轮绕过短路重试；旧 schema/
+  损坏字节不强制重复增强查询，等待 DB/WAL 指纹变化恢复。
 - **partial 永不入盘**不变量：stat 失败或聚合中有坏文件（含行数熔断）时保留
   last-good cache 并按 partial 暴露（`scanResultIsComplete`）；stat 失败的
   last-good 视图按当前日历 rebase 7 天窗口并推进 `scannedAt`（对齐 DSH 同分支），
@@ -181,7 +187,8 @@ Recent samples 的 promptID 以裸格式落盘；`agy:` 命名空间由帧构造
 - `isPartial` 出相等 / `isTruncated` 入相等（`AgyLocalUsage.==`，`scannedAt` 同样
   排除）：partialness 走 freshness 通道、不参与结果内容相等；truncation 描述
   数字本身的口径且没有旁路通道，翻转必须能重新发布 UI。
-- brain 与 log 两个目录都挂 FSEvents watcher（`jsonl` / `log` 扩展名）；
+- brain、log 与 conversations 三个目录都挂 FSEvents watcher（`jsonl` / `log` /
+  `db` / `db-wal` 扩展名）；
   transcript 追加是高频事件，由指纹 diff + 缓存短路消化。
 - 整个 pipeline 由跨实例共享的 `AsyncMutex` 串行，detached utility 任务承载纯
   文件系统扫描。

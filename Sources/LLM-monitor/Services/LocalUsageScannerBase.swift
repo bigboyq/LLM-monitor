@@ -63,6 +63,9 @@ class LocalUsageScannerBase<Usage: Equatable & Sendable>: ObservableObject, @unc
     var onDirty: (@MainActor () -> Void)?
     var onFresh: (@MainActor () -> Void)?
     var onFailed: (@MainActor () -> Void)?
+    /// Complete inventory is independent of a later source event that leaves
+    /// this successful snapshot dirty.
+    var onValidatedResult: (@MainActor () -> Void)?
 
     /// 日志前缀（如 `"[minimax-scan]"`）。生命周期日志统一用它，子类不再各自拼写。
     nonisolated let logTag: String
@@ -283,14 +286,13 @@ class LocalUsageScannerBase<Usage: Equatable & Sendable>: ObservableObject, @unc
                     self.markDirty()
                     self.lastError = "扫描结果不完整，等待下一轮重试"
                     self.onFailed?()
-                } else if self.dirtyRevision == startedDirtyRevision {
-                    self.markFresh()
                 } else {
-                    // The scan itself completed successfully, but a source
-                    // event arrived while it was running. Preserve the dirty
-                    // state for the next pass without manufacturing a failure
-                    // or incrementing dirtyRevision a second time.
-                    logDebug("\(self.logTag) 扫描期间 source 发生变化，保留 dirty 等待下一轮")
+                    self.onValidatedResult?()
+                    if self.dirtyRevision == startedDirtyRevision {
+                        self.markFresh()
+                    } else {
+                        logDebug("\(self.logTag) 扫描期间 source 发生变化，保留 dirty 等待下一轮")
+                    }
                 }
             },
             applyError: { message in

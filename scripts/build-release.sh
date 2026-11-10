@@ -18,7 +18,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(tr -d '\r\n ' < "$ROOT_DIR/VERSION")}"
-BUILD_NUMBER="${2:-$(tr -d '\r\n ' < "$ROOT_DIR/.build_number")}"
+BUILD_NUMBER="${2:-}"
+if [ -z "$BUILD_NUMBER" ]; then
+    if [ -f "$ROOT_DIR/.build_number" ]; then
+        BUILD_NUMBER="$(tr -d '\r\n ' < "$ROOT_DIR/.build_number")"
+    else
+        # Fresh checkouts have no ignored build counter; match build-app's seed.
+        BUILD_NUMBER=1
+    fi
+fi
 
 if [ $# -gt 2 ]; then
     echo "ERROR: usage: $0 [version] [build-number]" >&2

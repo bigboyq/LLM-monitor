@@ -28,6 +28,13 @@ swift package dump-package >/dev/null
 echo "==> Running tests"
 swift test
 
+echo "==> Running analysis and release-script regressions"
+if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+    "$ROOT_DIR/.venv/bin/python" -m unittest discover -s scripts/tests -v
+else
+    python3 -m unittest discover -s scripts/tests -v
+fi
+
 echo "==> Building release"
 swift build -c release
 

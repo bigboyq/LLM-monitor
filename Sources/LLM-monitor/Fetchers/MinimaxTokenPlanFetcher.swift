@@ -370,25 +370,21 @@ struct MinimaxModelRemain: Decodable {
         _ container: KeyedDecodingContainer<CodingKeys>,
         _ key: CodingKeys
     ) throws -> Int? {
-        let raw: Double
+        let raw: Int?
         do {
-            raw = try container.decodeIfPresent(Double.self, forKey: key) ?? .nan
+            raw = try container.decodeIfPresent(Int.self, forKey: key)
         } catch {
             throw QuotaError.decodingError(
                 "model_remains.\(key.stringValue) 不是合法非负整数"
             )
         }
-        // NaN 作为"字段缺失"的哨兵值；decode 成功的 Double 永远不会是 NaN。
-        guard !raw.isNaN else { return nil }
-        guard raw.isFinite,
-              raw >= 0,
-              raw <= Double(Int.max),
-              raw == raw.rounded() else {
+        guard let raw else { return nil }
+        guard raw >= 0 else {
             throw QuotaError.decodingError(
                 "model_remains.\(key.stringValue) 不是合法非负整数"
             )
         }
-        return Int(raw)
+        return raw
     }
 }
 

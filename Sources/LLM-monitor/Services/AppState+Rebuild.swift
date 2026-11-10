@@ -14,7 +14,7 @@ extension AppState {
             return PreservedStatusFields(
                 lastRefreshedAt: nil,
                 isScanningLocalUsage: false,
-                localUsageFreshness: .clean,
+                localUsageFreshness: .uninitialized,
                 previousState: nil,
                 antigravityLocalUsage: nil,
                 minimaxLocalUsage: nil,

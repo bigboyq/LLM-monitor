@@ -137,7 +137,9 @@ Historical note: older guesses assumed OpenAI-style token counts and second time
 `MinimaxModelRemain.init(from:)` as `strictNonnegativeCount`, so the payload is walked
 exactly once: each of the four `*_count` fields may be absent (treated as 0) but, when
 present, must be a finite non-negative integer exactly representable as `Int` (rejecting
-decimals, negatives, overflow, booleans and strings). Percentage fields must be finite
+decimals, negatives, overflow, booleans and strings). Counts decode directly as `Int`,
+without a Double intermediate: `Int.max` and integers above 2^53 stay exact; a count
+above `Int.max` throws a decoding error instead of trapping. Percentage fields must be finite
 values in `0...100` when present.
 
 One deliberate asymmetry: a record with a missing or blank `model_name` short-circuits to

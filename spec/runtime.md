@@ -103,10 +103,11 @@ State derivation is descriptor-driven:
 | Fetch fails | `.failed(message, lastSuccess: prev)` |
 
 `rebuildStatuses` 在 config 变更时被调用。如果 deriveState 返回 `.ready`（auth 还 ok），
-旧 status 的 `.ok/.loading/.failed` 状态会**整体复用**（auth 没变就不擦数据）；
+旧 status 的 `.ok/.failed` 状态会**整体复用**（auth 没变就不擦数据）；配置发布使在飞请求代际失效，
+因此 `.loading(lastSuccess: info)` 恢复为 `.ok(info)`，无成功缓存的 loading 回到 `.ready`，不保留孤立加载态；
 deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着清。
 
-`rebuildStatuses()` preserves the entire `State` (`.ok/.loading/.failed`) by provider id when auth is still valid (derived is `.ready`), so config reloads do not erase the last successful snapshot. When auth becomes invalid (derived is `.notConfigured`), state resets to `.notConfigured` and the QuotaInfo data is dropped.
+`rebuildStatuses()` preserves successful snapshots by provider id when auth is still valid (derived is `.ready`). Loading state from an invalidated request returns to its cached success or `.ready`; stale completion cannot leave a spinner until the next interval. When auth becomes invalid (derived is `.notConfigured`), state resets to `.notConfigured` and the QuotaInfo data is dropped.
 
 ## Refresh Behavior
 
@@ -119,6 +120,8 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 5. 任务被 cancel → 退出循环
 
 **配置重载 ≠ 冷启动**：配置写盘（设置页保存、dock 拖拽落点 App 自写 config、auth 探测翻转）触发的重排走 `ProviderRefreshScheduler.reconfigure(managed:)` 差异化路径——仍启用且 interval 未变的 provider 原样保留既有 deadline 与首刷标记（下一拍继续 `.background`），只有新增 / 重新启用 / interval 变化的 provider 才按初始排期立即纳入；冷启动语义只属于 `AppState.start()`。
+
+启动错峰等待集合随配置重排与当前受管 Provider 取交集：尚未首刷就停用的 Provider 不再阻塞首次 LocalUsage。若最后一个等待者被移除，当前事务结算后（或已空闲时）通过同一个全局 gate 补一次 startup full；即使受管集合为空也执行，且不会重复扫描或在 stop 后重新启动。
 
 **次要信息频率（周期 full）**：`periodicFullEveryN`（默认 20，用户范围 1...30，动态热重载）表示次要信息周期相对 Provider 有效刷新间隔的真实倍率。`ProviderRefreshScheduler` 首拍 `.full`，随后 N-1 次 `.background` 后下一拍 `.full`，N=1 时每拍 `.full`；实际预计周期为 `N × Provider 间隔`，默认 300s × 20 ≈ 100min，仍走常规 deadline。内部直接注入 0 保留“只靠启动/手动 full”的兼容语义。
 
@@ -191,6 +194,7 @@ Config reload path:
    `DispatchSource.makeFileSystemObjectSource` listener; the only callers are
    `AppState.start()`（启动）与 `AppState.rescheduleAll()`（配置重载路径上的幂等重申——
    watcher 本来就在跑，不构成第二个装载点）。
+   首次挂载和缺失后的重挂成功都会安排一次内容比对读取；文件在重试窗口内重建时，创建事件虽早于新 fd，仍无需第二次编辑便能加载。
 2. Each event first schedules a 250 ms debounce, then reads the file on a detached
    utility task and calls `configStore.hasChangedSinceLastRead(using:)`; an
    unchanged fingerprint short-circuits without parsing.
@@ -200,6 +204,8 @@ Config reload path:
 4. In-flight fetches captured the *previous* `configurationGeneration`; when they
    complete, the captured value is compared and stale results are dropped.
 5. If parsing fails during reload, `ConfigStore` keeps the previous config.
+
+`RuntimeLifecycleRegressionTests` 覆盖缺失后重建配置的首次读取、启动等待者移除（含全空集合）、无关配置发布后的 loading 回退，以及 Fleet 首轮核对／失败／真实零值／重新启用和成功但仍 dirty 的生命周期。
 
 ## Per-Provider Result Merge
 

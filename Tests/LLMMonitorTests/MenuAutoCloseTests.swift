@@ -224,6 +224,32 @@ final class MenuAutoCloseTests: XCTestCase {
         XCTAssertEqual(closeCallCount, 1)
     }
 
+    func testReopeningTheSameMenuRestartsTheCancelledDeadline() async {
+        let window = Self.makeMenuWindow()
+        let scheduler = FakeScheduler()
+        let coordinator = MenuWindowAutoCloseBridge.Coordinator(scheduler: scheduler)
+        var closeCount = 0
+        coordinator.onPanelClose = { closeCount += 1 }
+        coordinator.attach(window: window)
+        XCTAssertEqual(scheduler.handles.count, 1)
+
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(scheduler.handles[0].isCancelled)
+        XCTAssertEqual(closeCount, 1)
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(scheduler.scheduledDelays, [30, 30], "重用同一窗口也必须开始新的无交互倒计时")
+        scheduler.handles[0].fire()
+        XCTAssertEqual(closeCount, 1, "前一次打开的过期回调不得关闭重开的菜单")
+        scheduler.handles.last?.fire()
+        XCTAssertEqual(closeCount, 2)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        for _ in 0..<20 { await Task.yield() }
+    }
+
     /// 一个从未显示过的 borderless 窗口：bridge 只用它的对象身份投递通知，
     /// 不需要 window-server 真的把它显示出来。
     private static func makeMenuWindow() -> NSWindow {

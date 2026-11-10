@@ -15,12 +15,61 @@ enum ProcessRunner {
 
     enum RunnerError: Error, LocalizedError {
         case timedOut(executable: String, seconds: TimeInterval)
+        case outputTooLarge(limit: Int)
 
         var errorDescription: String? {
             switch self {
             case .timedOut(let executable, let seconds):
                 return "\(executable) 超时（\(seconds)s）"
+            case .outputTooLarge(let limit):
+                return "子进程输出超过 \(limit) bytes"
             }
+        }
+    }
+
+    /// stdout 经 pipe 分块写盘；超限只保留预算内字节，并让轮询终止子进程。
+    /// 回调不能抛错，写入失败在锁内保存，由调用线程统一上抛。
+    private final class BoundedFileOutput: @unchecked Sendable {
+        private let lock = NSLock()
+        private let handle: FileHandle
+        private let limit: Int
+        private var written = 0
+        private var failure: Error?
+
+        init(handle: FileHandle, limit: Int) {
+            self.handle = handle
+            self.limit = max(limit, 0)
+        }
+
+        func append(_ data: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard failure == nil, !data.isEmpty else { return }
+            let remaining = limit - written
+            do {
+                let count = min(data.count, remaining)
+                if count > 0 {
+                    try handle.write(contentsOf: data.prefix(count))
+                    written += count
+                }
+                if data.count > remaining {
+                    failure = RunnerError.outputTooLarge(limit: limit)
+                }
+            } catch {
+                failure = error
+            }
+        }
+
+        var error: Error? {
+            lock.lock()
+            defer { lock.unlock() }
+            return failure
+        }
+
+        func recordFailure(_ error: Error) {
+            lock.lock()
+            defer { lock.unlock() }
+            if failure == nil { failure = error }
         }
     }
 
@@ -46,7 +95,8 @@ enum ProcessRunner {
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
-        standardOutputFile: URL? = nil
+        standardOutputFile: URL? = nil,
+        maximumOutputBytes: Int? = nil
     ) throws -> Result {
         let process = Process()
         process.executableURL = executable
@@ -57,6 +107,7 @@ enum ProcessRunner {
         let stdoutData = LockedData()
         let stderrData = LockedData()
         let outputFileHandle: FileHandle?
+        let boundedOutput: BoundedFileOutput?
         if let standardOutputFile {
             let fm = FileManager.default
             try? fm.removeItem(at: standardOutputFile)
@@ -77,9 +128,16 @@ enum ProcessRunner {
                 )
             }
             outputFileHandle = try FileHandle(forWritingTo: standardOutputFile)
-            process.standardOutput = outputFileHandle
+            if let maximumOutputBytes, let outputFileHandle {
+                boundedOutput = BoundedFileOutput(handle: outputFileHandle, limit: maximumOutputBytes)
+                process.standardOutput = stdout
+            } else {
+                boundedOutput = nil
+                process.standardOutput = outputFileHandle
+            }
         } else {
             outputFileHandle = nil
+            boundedOutput = nil
             process.standardOutput = stdout
         }
         process.standardError = stderr
@@ -102,9 +160,32 @@ enum ProcessRunner {
             throw error
         }
 
+        let boundedReadGroup = DispatchGroup()
+        if let boundedOutput {
+            // 单一 reader 负责整个 stdout 到 EOF，退出时等待它完成后再关文件。
+            // 不混用 readabilityHandler 与 readDataToEndOfFile，避免末块回调/关盘竞态。
+            boundedReadGroup.enter()
+            let reader = stdout.fileHandleForReading
+            DispatchQueue.global(qos: .utility).async {
+                defer { boundedReadGroup.leave() }
+                do {
+                    while let data = try reader.read(upToCount: 64 * 1024), !data.isEmpty {
+                        boundedOutput.append(data)
+                    }
+                } catch {
+                    boundedOutput.recordFailure(error)
+                }
+            }
+        }
+
         let deadline = Date().addingTimeInterval(timeout)
         var terminalError: Error?
         while process.isRunning {
+            if let error = boundedOutput?.error {
+                terminalError = error
+                process.terminate()
+                break
+            }
             if Task<Never, Never>.isCancelled {
                 terminalError = CancellationError()
                 process.terminate()
@@ -142,6 +223,7 @@ enum ProcessRunner {
             }
         }
         process.waitUntilExit()
+        boundedReadGroup.wait()
 
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
@@ -151,7 +233,7 @@ enum ProcessRunner {
         stderrData.append(stderr.fileHandleForReading.readDataToEndOfFile())
         try? outputFileHandle?.close()
 
-        if let terminalError {
+        if let terminalError = terminalError ?? boundedOutput?.error {
             throw terminalError
         }
         return Result(

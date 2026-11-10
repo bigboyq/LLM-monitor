@@ -205,7 +205,9 @@ Processing steps:
    `nextResetTime` ascending — first = 5h, last = weekly — for compatibility with
    older responses. This avoids misclassifying windows when a weekly reset happens
    before the 5h reset.
-5. Per window: validate `total > 0`, `used >= 0`, `remaining >= 0`. `used > total` is
+5. Per window: validate `total > 0` and `used >= 0` **before** computing the missing-
+   `remaining` fallback `max(total - used, 0)`, then validate `remaining >= 0`. Negative
+   boundary values must throw a decoding error rather than overflow during subtraction. `used > total` is
    allowed because a single Coding Plan task can exceed the nominal window total; that
    window is treated as exhausted (`remainingPercent = 0`) instead of failing the whole
    provider refresh. Otherwise `remaining <= total` is required, and the parser computes

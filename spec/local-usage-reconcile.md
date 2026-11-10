@@ -38,6 +38,10 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 
 共享来源的激活由已启用 Provider 与内置自动归因 consumer 矩阵决定（`ProviderStatus.localUsageConsumers`），不再读取用户归因开关。OpenCode 向全部五个已支持 Provider 提供分片；ZCode 向 GLM / MiniMax / DeepSeek 提供分片；DSH 向 GLM / MiniMax / DeepSeek 提供分片。Provider 自身停用仍会移除其消费者；只要另有已启用的消费者，共享 scanner 仍保持活动。
 
+来源首次 reconcile 前另有待核对状态（`LocalUsageFreshnessSnapshot.isAwaitingInitialScan`），与普通 dirty 分开；Fleet 不能把尚未核对的空缓存当成真实零值。成功 clean 解除待核对，失败保持不可用；readiness 为 false 时每轮重新确认缺源与权限/I/O 不确定，明确缺源清除该来源本机快照并发布 clean，不确定按 failed。因此 failed 可在后续 ENOENT 后恢复为确认零值，不要求 readiness 先变 true；连续确认缺源只在状态转入时清除/发布一次。来源停止后重新激活会重做 readiness，健康共享来源已有消费者时不因另一张卡重新启用而失效。启动错峰等待集合同时移除已停用 Provider，最后一个等待者消失也在全局事务 gate 内完成一次空 startup reconcile。
+
+完整结果的 `onValidatedResult` 与 clean 独立：扫描期间再度 dirty 时仍解除初始化、保留 dirty；partial/失败不解除。Coordinator 在 MainActor 同步转发 result，再发布验证状态，避免 Fleet 先看到 initialized 却仍读取旧空缓存。Codex 结果必须经过当前配置代际及 `applyCodexUsageDetails` 接纳检查，未有可承载结果的 QuotaInfo 时只保留扫描缓存，不上报完整零值。
+
 协调器只有一个待处理模式槽位，优先级为 `dirty < full < hardFull`；运行期间到达的请求只提升这个槽位，不再创建并行 reconcile。日历/时区失效使用单调 revision 标记：如果失效发生在当前事务期间，当前事务不能消费这次失效，事务结束后必须再执行一次 `hardFull`。
 
 ## Provider 策略矩阵

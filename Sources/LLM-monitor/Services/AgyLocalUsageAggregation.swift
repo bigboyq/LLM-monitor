@@ -300,6 +300,8 @@ enum AgyLocalUsageAggregation {
         guard !fallback.isEmpty else { return }
         for index in usages.indices where usages[index].durationSeconds == nil {
             guard let step = usages[index].stepIndex, let duration = fallback[step] else { continue }
+            // 已取得原生 timing 的 nil 是明确排除（工具/非流式），不是缺测。
+            guard context.planATimings[step] == nil else { continue }
             usages[index].durationSeconds = duration
         }
     }

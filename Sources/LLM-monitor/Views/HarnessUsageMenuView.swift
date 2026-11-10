@@ -1020,7 +1020,7 @@ struct MenuQuotaOverviewView: View {
     }
 }
 
-private struct MenuQuotaProviderRow: View {
+struct MenuQuotaProviderRow: View {
     let status: ProviderStatus
     let localStatus: ProviderStatus
     let fleet: FleetCardContext?
@@ -1028,7 +1028,7 @@ private struct MenuQuotaProviderRow: View {
     var statusBarQuotaOptions: [StatusBarQuotaOption] = []
     var configStore: ConfigStore? = nil
     var onTogglePin: (() -> Void)? = nil
-    var onSelectStatusBarQuota: ((StatusBarQuotaSource) -> Void)? = nil
+    var onSelectStatusBarQuota: (@MainActor @Sendable (StatusBarQuotaSource) -> Void)? = nil
     let onRefresh: CardUsageRefreshAction
     let onUsageRefresh: CardUsageRefreshAction
     let onSettings: () -> Void
@@ -1150,12 +1150,15 @@ private struct MenuQuotaProviderRow: View {
             }
 
             if isPlanExpanded {
-                ProviderCardView(status: status, fleet: fleet, presentation: .plan, configStore: configStore)
+                planCard
                         .equatable()
                         .environment(\.hoverRevealMode, .alwaysVisible)
                         .environment(\.displayDate, displayDate)
                         .environment(\.quotaWindowSegmentEditable, true)
                         .environment(\.cardQuotaRefreshAction, { _ in onRefresh() })
+                        .environment(\.cardSelectStatusBarQuota, { @MainActor @Sendable _, source in
+                            selectPlanQuotaSource(source)
+                        })
             }
             if isHistoryExpanded {
                 ProviderCardView(status: status, fleet: fleet, presentation: .history, configStore: configStore)
@@ -1172,6 +1175,21 @@ private struct MenuQuotaProviderRow: View {
                 .fill(Color.primary.opacity(0.045))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
         )
+    }
+
+    /// 菜单中的共享 Plan 卡与外层 Provider 行使用同一来源状态和动作。
+    var planCard: ProviderCardView {
+        ProviderCardView(
+            status: status,
+            fleet: fleet,
+            selectedStatusBarSource: selectedStatusBarSource,
+            presentation: .plan,
+            configStore: configStore
+        )
+    }
+
+    func selectPlanQuotaSource(_ source: StatusBarQuotaSource) {
+        onSelectStatusBarQuota?(source)
     }
 
     private func summary(now: Date) -> String {

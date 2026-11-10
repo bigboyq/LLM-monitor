@@ -188,6 +188,8 @@ final class MinimaxDBReaderTests: XCTestCase {
         XCTAssertEqual(day.reasoningTokens, 300, "每行取 max(reasoning_tokens, raw.reasoning) 后再求和")
         XCTAssertEqual(day.cacheReadTokens, 11)
         XCTAssertEqual(day.cacheWriteTokens, 2)
+        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [0, 100, 200], "样本同样采用 native/raw 每行最大值")
+        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [0, 900, 800], "原生 reasoning 在样本中守恒拆分")
     }
 
     func testV2CharacterAggregationUsesToolArgsExcludesResultsAndPreservesOutput() throws {

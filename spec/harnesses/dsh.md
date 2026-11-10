@@ -203,7 +203,13 @@ to the next line, so a replayed event can never stall the scan.
   restore sample completeness once all omitted events leave the retention window.
 - Parsing streams from disk with a line buffer bounded by the 8 MiB line cap — plain
   JSONL and streamed archive decompression alike never load a whole file into memory;
-  a single session's decompressed archive output is capped at 1 GiB.
+  a single session's decompressed archive output is capped at 1 GiB. `ProcessRunner`
+  drains stdout through a single pipe reader into the private file, writes only the
+  remaining byte budget, and terminates the decoder on overflow. The file never grows
+  beyond that cap; the limit is enforced during output, not after the decoder exits.
+  Overflow and cancellation propagate immediately without trying the Node fallback;
+  ordinary decoder failures may still fall back. Tests inject small output budgets
+  and fake executables, including an endless writer, without producing GiB files.
 - A corrupt or unreadable log does not abort the whole scan: `aggregateFiles` isolates
   the bad file, logs a warning (path + error summary), and keeps aggregating the rest.
   But a round that saw **any** failed file never becomes the new last-good: the scanner
@@ -221,6 +227,13 @@ to the next line, so a replayed event can never stall the scan.
   whatever is currently stat-able.
 
 ## Implementation map
+
+离线分析辅助脚本（`scripts/dsh_token_analysis/`）不参与 App 运行时：`summary.py` 与
+`analyze.py` 的 RATE_LIMIT 窗口/日累计按去重后的全部 call 起始时间求和，包含触发时刻、
+排除未来 call，不因多个 retry 重算同一 call；触发次数来自实际去重事件数。`cost.py`
+与 `minimax_cost.py` 在无窗口、仅触发/仅未触发、零成本数据上输出空态或零值，不对空
+集合取极值/分位数、不以零值缩放。合成回归命令：
+`python -m unittest discover -s scripts/tests -v`（项目共享环境可用 `./.venv/bin/python`）。
 
 | Responsibility | Source |
 |---|---|

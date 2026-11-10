@@ -167,6 +167,8 @@ Runtime behavior:
   every `become key` and any mouse move / mouse down / scroll / key down inside the
   window resets it (`MenuInactivityTimer`, the state machine is unit-tested with an
   injected scheduler rather than a real 30s wait)
+- closing cancels the current deadline; reopening the same cached menu window starts
+  a fresh deadline even when no pointer or keyboard event enters the content area
 - hover details are shown in a separate floating `NSPanel`
 - Antigravity process availability is discovered asynchronously and cached, so opening the menu does not synchronously run process inspection.
 
@@ -202,7 +204,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」），眼睛紧随其后；每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
+右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」），眼睛紧随其后；每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。菜单展开的 Plan 卡通过 `MenuQuotaProviderRow.planCard` 传入 `selectedStatusBarSource`，并以显式 `@MainActor @Sendable` 闭包注入 `cardSelectStatusBarQuota`、调用 `selectPlanQuotaSource`，与外层 Provider 行使用同一选择动作。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。

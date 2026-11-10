@@ -20,6 +20,11 @@ Provider order; Notifications contains system authorization, Bark and all window
 event channels. Provider panes place notification links after authentication/refresh settings;
 each link opens Notifications and scrolls to that Provider's channel rules.
 
+菜单和独立详情窗口经 `AppState.pendingSettingsTab` 请求定位设置 pane。已挂载窗口的
+订阅在主循环投递后直接消费 publisher 给出的目标（`SettingsView.consumeSettingsTabRequest`），
+不在 `@Published` 的 `willSet` 回调中重读旧值或清空请求；首次出现仍消费订阅前留下的目标。
+消费后仅清理对应请求，不覆盖已排入的更新目标，空请求不重复导航。
+
 Settings layout rules:
 
 - pane headers vertically center a `34x34pt` icon container with the two-line title and subtitle
@@ -261,7 +266,8 @@ General pane 的「关于」之前有
   **橙色**提示：`节假日表未覆盖 <year>，<year> 年按纯周一–周五判定`
   （`coverageWarning` 纯函数）。
 - **「立即更新」按钮** + 进行中（转圈 + 正在更新…）/ 最近一次结果文案：强制取数
-  一次，不受新鲜度窗口限制；失败文案橙色，既有数据原样保留。
+  一次，使用当前草稿、不受新鲜度窗口限制；成功立即应用并写缓存，但不改变已保存
+  配置源的比较基线。显式空串立即应用内置快照；失败文案橙色，既有数据原样保留。
 
 取数与缓存编排（`Services/HolidayCalendarService.swift`，解析纯函数在
 `Models/HolidayCalendar.swift`）：
@@ -274,6 +280,9 @@ General pane 的「关于」之前有
   源变更才真取数）+ config 中 `holidaySource` 变更（`AppState` config 订阅 →
   `handleConfigChange`，源未变 no-op）+ 设置页「立即更新」。取数异步 best-effort，
   不阻塞启动、不崩、失败不清空既有数据。
+- 已提交源变化时递增 `sourceGeneration`，取消旧启动任务并允许新源立即刷新；旧源
+  请求完成后不得写缓存、替换表、修改结果文案或清除新请求的刷新状态。解析链应用
+  缓存/内置表时也触发宿主回调，确保高峰判定同步刷新。
 - 成功后：写缓存（best-effort）→ `HolidayCalendar.applyResolved` 替换 `shared`
   （`status(at:)` 等默认参数在调用时求值，各判定点自然读到新表）→ 经
   `statusDidChange.send()` + 健康边界重排触发一次 UI 刷新（卡片高峰 pill / 额度行

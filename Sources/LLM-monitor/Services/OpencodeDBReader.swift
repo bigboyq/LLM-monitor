@@ -34,7 +34,7 @@ final class OpencodeDBReader {
 
     /// 聚合全部 assistant 调用。`calendar` 用于把 'yyyy-MM-dd' day key 转成本地午夜 Date。
     func aggregate(calendar: Calendar, sampleCutoff: Date? = nil) throws -> OpencodeDBAggregate {
-        let perDay = try queryPerDay(calendar: calendar)
+        let perDay = try queryPerDay(calendar: calendar, cutoff: sampleCutoff)
         let totals = try queryTotals()
         let models = try queryModels()
         let samples = try querySamples(cutoff: sampleCutoff)
@@ -42,7 +42,24 @@ final class OpencodeDBReader {
         // 合并三个查询结果到同一 providerID 集合
         var perProviderDay: [String: [Date: OpencodeDailyUsage]] = [:]
         for (provider, byDay) in perDay {
-            perProviderDay[provider] = byDay
+            let sampleDays = Dictionary(grouping: samples[provider] ?? []) {
+                calendar.startOfDay(for: $0.completedAt)
+            }
+            perProviderDay[provider] = byDay.mapValues { day in
+                guard let calls = sampleDays[day.dayStart] else { return day }
+                let buckets = calls.reduce(TokenUsageBuckets.zero) { $0 + TokenUsageBuckets.fromSample($1) }
+                return OpencodeDailyUsage(
+                    dayStart: day.dayStart,
+                    inputTokens: day.inputTokens,
+                    outputTokens: buckets.output,
+                    cacheReadTokens: day.cacheReadTokens,
+                    cacheWriteTokens: day.cacheWriteTokens,
+                    reasoningTokens: buckets.reasoning,
+                    totalTokens: SaturatingArithmetic.sum(day.inputTokens, day.cacheReadTokens, buckets.output, buckets.reasoning),
+                    turns: day.turns,
+                    rounds: day.rounds
+                )
+            }
         }
         return OpencodeDBAggregate(
             perProviderDay: perProviderDay,
@@ -66,16 +83,15 @@ final class OpencodeDBReader {
     ///    （native 优先）。OpenCode 对 deepseek / openai / zhipuai 都报真实值
     ///    （实测 deepseek 13 万+、zhipuai 14 万+）。
     /// 2. **否则 + provider 前缀是 `minimax` + 当天 `part` 表里有思考文本**：按字符
-    ///    比例分摊 output，见 `queryMinimaxReasoningChars`。只对 minimax 生效是因为
+    ///    比例分摊 output（在 `querySamples` 按行进行）。只对 minimax 生效是因为
     ///    实测 `message.data.$.tokens.reasoning` 对 `minimax`（7904 条）与
     ///    `minimax-cn-coding-plan`（36 条）**恒 0**，但它们 `part` 表里躺着真思考
     ///    （reasoning part 3860 条、318 万字符）——思考被折进了 output 桶。
     /// 3. **都没有**：保持 `reasoning_tokens = 0`（`ollama-cloud` 等零星行）。
     ///
-    /// 分摊守恒（`reasoning + output == 原始 output`），所以 `totalTokens` 重算后
-    /// 仍等于原来的 `in + out + rsn + cacheRead`。
-    private func queryPerDay(calendar: Calendar) throws -> [String: [Date: OpencodeDailyUsage]] {
-        let charsByProviderDay = try queryMinimaxReasoningChars(calendar: calendar)
+    /// 字符分摊仅在 querySamples 按行发生；本查询与样本使用同一 cutoff，
+    /// aggregate 用行级结果按日累计覆盖 output/reasoning，避免逐桶 max 虚增。
+    private func queryPerDay(calendar: Calendar, cutoff: Date?) throws -> [String: [Date: OpencodeDailyUsage]] {
         let sql = """
         SELECT
           json_extract(data,'$.providerID') AS provider,
@@ -97,10 +113,15 @@ final class OpencodeDBReader {
             + COALESCE(json_extract(data,'$.tokens.reasoning'),0)
             + COALESCE(json_extract(data,'$.tokens.cache.read'),0)
           ) > 0
+          AND (? IS NULL OR time_created >= ?)
         GROUP BY provider, day
         """
         var out: [String: [Date: OpencodeDailyUsage]] = [:]
-        let rows: [(String, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(sql: sql) { stmt in
+        let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let rows: [(String, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(
+            sql: sql,
+            bind: SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1)
+        ) { stmt in
             let provider = try SQLiteConnection.requiredText(stmt, column: 0)
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 1)
             let rounds = try SQLiteConnection.requiredInt64(stmt, column: 2)
@@ -119,19 +140,10 @@ final class OpencodeDBReader {
             let crNN = SQLiteConnection.nnClamp(tcr)
             let cwNN = SQLiteConnection.nnClamp(tcw)
             let rsnNN = SQLiteConnection.nnClamp(trsn)
-            // 三段式 reasoning：native 优先，否则仅对 minimax 前缀用 part 表字符比例
-            // 分摊（day 级），都没有则保持 0。分摊守恒，故 total 重算后仍是原值。
-            let split = rsnNN > 0 || !Self.needsCharSplit(provider: provider)
-                ? nil
-                : charsByProviderDay[provider]?[dayStart].flatMap {
-                    ReasoningCharSplit.split(
-                        outputTokens: outNN,
-                        reasoningChars: $0.reasoningChars,
-                        visibleChars: $0.visibleChars
-                    )
-                }
-            let reasoningTokens = split?.reasoning ?? rsnNN
-            let outputTokens = split?.output ?? outNN
+            // SQL 保留原始 output/reasoning；aggregate 用同窗口的逐调用拆分累计
+            // 覆盖这两桶，禁止再做一套独立日级字符分摊。
+            let reasoningTokens = rsnNN
+            let outputTokens = outNN
             let usage = OpencodeDailyUsage(
                 dayStart: dayStart,
                 inputTokens: inNN,
@@ -156,83 +168,10 @@ final class OpencodeDBReader {
 
     /// 该 provider 是否需要走 `part` 字符分摊（Swift 侧门）。
     ///
-    /// SQL 层已用 `LIKE 'minimax%'` 收窄，这里再按小写前缀兜一道：SQLite 的 `LIKE`
-    /// 对 ASCII 默认不区分大小写，Swift 侧的 `hasPrefix` 把这条约定显式写死，
-    /// 两边门径一致。**只对 minimax 生效**：其余 provider（deepseek / openai /
+    /// **只对 minimax 生效**：其余 provider（deepseek / openai /
     /// zhipuai）实测能上报 native reasoning，分摊只会覆盖掉真值。
     private static func needsCharSplit(provider: String) -> Bool {
         provider.lowercased().hasPrefix("minimax")
-    }
-
-    /// minimax 前缀 provider 的 per-day 思考/可见字符数（`part` 表）。
-    ///
-    /// `message.data.$.tokens.reasoning` 对 minimax 系列恒 0，真正的思考文本在
-    /// `part` 表（`part.message_id = message.id`，实测 reasoning part 3860 条 /
-    /// 318 万字符）。这里按 provider × 本地自然日汇总两类字符数，供 `queryPerDay`
-    /// 做 day 级守恒拆分，字符口径与 ZCode 分片完全同款：
-    /// - 思考：`type = 'reasoning'` 的 `$.text`。
-    /// - 可见输出：`type = 'text'` 的 `$.text` + `type = 'tool'` 的 `$.state.input`
-    ///   （opencode.db 实测 tool part 的参数路径与 ZCode 一致，都是 `$.state.input`；
-    ///   工具参数同属模型生成输出，对应 MiniMax Code 的 tool_call_args 桶）。
-    ///
-    /// JOIN 会把一条 message 复制成 N 个 part 行；因为只累加字符数、不累加 token，
-    /// 复制不影响结果。无 part 的 message JOIN 不上，自然不出现在结果里
-    /// （无思考数据可分摊，保持 reasoning = 0）。`json_valid` 守卫防止脏 data
-    /// 让 `json_extract` 抛错，`COALESCE` 保证 LENGTH 不为 NULL。
-    /// 极老版本库缺 `part` 表时整表降级为空（见函数体首行守卫）。
-    private func queryMinimaxReasoningChars(
-        calendar: Calendar
-    ) throws -> [String: [Date: (reasoningChars: Int, visibleChars: Int)]] {
-        guard try partTableExists() else { return [:] }
-        let sql = """
-        SELECT
-          json_extract(m.data,'$.providerID') AS provider,
-          strftime('%Y-%m-%d', m.time_created/1000,'unixepoch','localtime') AS day,
-          SUM(CASE WHEN json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'reasoning'
-            THEN LENGTH(COALESCE(json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), ''))
-            ELSE 0 END) AS rchars,
-          SUM(CASE WHEN json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'text'
-            THEN LENGTH(COALESCE(json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), ''))
-            ELSE 0 END)
-          + SUM(CASE WHEN json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'tool'
-            THEN LENGTH(COALESCE(json_extract(
-                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.state.input'), ''))
-            ELSE 0 END) AS vchars
-        FROM message m
-        JOIN part p ON p.message_id = m.id
-        WHERE json_extract(m.data,'$.role') = 'assistant'
-          AND json_extract(m.data,'$.tokens') IS NOT NULL
-          AND json_extract(m.data,'$.providerID') LIKE 'minimax%'
-        GROUP BY provider, day
-        """
-        var out: [String: [Date: (reasoningChars: Int, visibleChars: Int)]] = [:]
-        let rows: [(String, String, Int64, Int64)] = try connection.query(sql: sql) { stmt in
-            let provider = try SQLiteConnection.requiredText(stmt, column: 0)
-            let dayKey = try SQLiteConnection.requiredText(stmt, column: 1)
-            let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 2)
-            let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 3)
-            return (provider, dayKey, reasoningChars, visibleChars)
-        }
-        for (provider, dayKey, reasoningChars, visibleChars) in rows {
-            guard let dayStart = LocalUsageDayKey.parse(dayKey, calendar: calendar) else { continue }
-            var byDay = out[provider] ?? [:]
-            let existing = byDay[dayStart] ?? (reasoningChars: 0, visibleChars: 0)
-            byDay[dayStart] = (
-                reasoningChars: SaturatingArithmetic.add(
-                    existing.reasoningChars, SQLiteConnection.nnClamp(reasoningChars)
-                ),
-                visibleChars: SaturatingArithmetic.add(
-                    existing.visibleChars, SQLiteConnection.nnClamp(visibleChars)
-                )
-            )
-            out[provider] = byDay
-        }
-        return out
     }
 
     /// 极老版本 opencode.db 可能没有 `part` 表（本 reader 此前从不依赖它）。
@@ -281,7 +220,7 @@ final class OpencodeDBReader {
     /// 需要的完整 input 因此是 `input + cache.read`；promptID 直接复用 assistant
     /// message 的 parentID（通常就是对应 user message）。
     ///
-    /// reasoning 与 `queryPerDay` 同一三段式口径，但粒度更细（**行级**分摊）：
+    /// reasoning 仅在这里按**行级**三段式分摊，日桶从结果累计：
     /// native `tokens.reasoning > 0` 原样透传；否则**仅 minimax 前缀**按本行
     /// message 的 `part` 字符比例分摊（两个相关子查询取本行 part 字符数，无 part 时
     /// 自然得 0 → 保持 reasoning = 0）。分摊后的 (output, reasoning) 作为
