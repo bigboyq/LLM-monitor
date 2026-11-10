@@ -82,14 +82,19 @@ the center sector and the single-window percentage gauge are exempt.
 
 When a single-window quota source is selected (for example a weekly-only ChatGPT plan, one API
 credit key, or one GLM Start Plan entitlement), `StatusBarQuotaMetrics.singleQuota` selects
-the one-source gauge. It draws one **350°** circular track and remaining arc, a centered
+the one-source gauge. It draws one circular track and remaining arc with a **12 o'clock notch**, a centered
 numeric percentage (`—` while the chosen source has no current data), and only the Energy
 sleep-health indicator at 12 o'clock. The centered numeric value uses a reduced-size `%`
 glyph so a 100% label still fits at the menu-bar icon size. The old split 5h / weekly arcs, center sector and
 three quota-health dots are omitted. Zero is shown as a critical-colored `0%` with an empty
 track; absent data is gray. The gauge arc follows the same time-aware `AlertThresholdConfig`
-color rule as the other quota elements. The small gap at the top keeps the sleep indicator
-separate from the quota arc.
+color rule as the other quota elements. The sleep indicator sits **on the ring's circumference**,
+inside the top notch, with a small gap to each round cap. Ring and lamp form one circular
+silhouette, matching the dual-window dashboard's radius (270 on the 704-unit canvas).
+The lamp diameter equals the 56-unit ring width. The arc runs from −74° to 254° (328°);
+the remaining angle accommodates the lamp, the rounded ends and the two clearances rather
+than forcing a literal 350° arc and moving the lamp above the circle. The value is centered
+at the ring's center (352, 352).
 The global aggregate also uses this gauge when only one window category is present,
 retaining its nonzero-minimum effective percentage.
 

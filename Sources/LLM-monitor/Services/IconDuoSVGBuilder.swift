@@ -151,10 +151,13 @@ enum IconDuoSVGBuilder {
         energyHealth: HealthLevel?,
         alertThresholds: AlertThresholdConfig
     ) -> String {
-        let ringRadius = 250.0
-        let ringWidth = 56.0
-        let startDegrees = -85.0
-        let trackEndDegrees = 265.0 // 350° track
+        let ringRadius = outerRadius
+        let ringWidth = strokeWidth
+        // The lamp replaces part of the ring on the same circumference. Account
+        // for both round caps and the lamp diameter, leaving a small gap per side.
+        let startDegrees = -74.0
+        let trackEndDegrees = 254.0
+        let trackSpan = trackEndDegrees - startDegrees
         let trackStart = point(degree: startDegrees, radius: ringRadius)
         let trackEnd = point(degree: trackEndDegrees, radius: ringRadius)
         let track = String(
@@ -180,10 +183,13 @@ enum IconDuoSVGBuilder {
             let isThreeDigitPercent = Int(percent.rounded()) >= 100
             let numberSize = isThreeDigitPercent ? 145 : 190
             let symbolSize = isThreeDigitPercent ? 70 : 90
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"374\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(Int(percent.rounded()))<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
+            // AppKit's SVG renderer does not honor dominant-baseline consistently.
+            // Place the text baseline using the font's visible capital height.
+            let textBaseline = center + Double(NSFont.systemFont(ofSize: CGFloat(numberSize), weight: .semibold).capHeight) / 2
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(Int(percent.rounded()))<tspan font-size=\"\(symbolSize)\">%</tspan></text>"
             if clamped > 0 {
-                let end = point(degree: startDegrees + 350.0 * clamped, radius: ringRadius)
-                let largeArc = clamped * 350 > 180 ? 1 : 0
+                let end = point(degree: startDegrees + trackSpan * clamped, radius: ringRadius)
+                let largeArc = clamped * trackSpan > 180 ? 1 : 0
                 available = String(
                     format: "<path id=\"single-quota-available\" data-value=\"%d\" d=\"M %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
                     Int(percent.rounded()), trackStart.x, trackStart.y, ringRadius, ringRadius,
@@ -195,15 +201,17 @@ enum IconDuoSVGBuilder {
         } else {
             quotaColor = defaultUnconfiguredColor
             valueLabel = "—"
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"—\" x=\"352\" y=\"374\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"190\" font-weight=\"600\" fill=\"\(quotaColor)\">—</text>"
+            let textBaseline = center + Double(NSFont.systemFont(ofSize: 190, weight: .semibold).capHeight) / 2
+            valueMarkup = "<text id=\"single-quota-value\" data-value=\"—\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"190\" font-weight=\"600\" fill=\"\(quotaColor)\">—</text>"
             available = ""
         }
 
         let energyColor = energyHealth.map { resolvedHex(for: $0, colors: healthColors) }
             ?? defaultUnconfiguredColor
+        let energyPoint = point(degree: 270, radius: ringRadius)
         let energyDot = String(
-            format: "<circle id=\"energy-dot\" cx=\"352\" cy=\"32\" r=\"30\" fill=\"%@\"/>",
-            energyColor
+            format: "<circle id=\"energy-dot\" cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"%@\"/>",
+            energyPoint.x, energyPoint.y, ringWidth / 2, energyColor
         )
         return """
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 704 704" role="img" aria-label="Selected quota">

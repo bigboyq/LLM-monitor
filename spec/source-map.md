@@ -129,7 +129,7 @@
 | `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 + provider 卡 accent 映射（`AccentColor.cardAccentColor`，卡片与今日占比条共用） |
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
 | `Sources/LLM-monitor/Services/StatusBarQuotaMetrics.swift` | 状态栏额度指标结构（`QuotaRingMetrics` / `StatusBarQuotaMetrics` / `StatusBarSingleQuota`），由 Icon Duo 仪表盘消费 |
-| `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成：双窗左右弧 / 中心扇形 / 底部健康点，或单额度 350° 环 / 百分比；共用顶部休眠灯 |
+| `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成：双窗左右弧 / 中心扇形 / 底部健康点，或单额度圆环 / 居中百分比；休眠灯位于同一圆周的顶部缺口内 |
 | `Tests/LLMMonitorTests/StatusBarQuotaSelectionTests.swift` | Provider + 来源选择、动态窗口形态、API / 活动权益隔离、未知与耗尽、有效期与全局聚合回归 |
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
