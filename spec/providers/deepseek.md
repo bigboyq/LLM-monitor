@@ -175,4 +175,4 @@ raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |
 
-> 核对基线：2026-11-07 · 代码 9b102b5
+> 核对基线：2026-11-10 · 代码 7b50bba
