@@ -49,6 +49,42 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertTrue(CodexFetcher.makeUsageWindows(from: nil).isEmpty)
     }
 
+    func testWeeklyPrimaryFlowsIntoWeeklyLocalUsageAndTableRow() throws {
+        let reset = Date(timeIntervalSince1970: 1_900_000_000)
+        let data = Data(#"{"rate_limit":{"primary_window":{"used_percent":27,"limit_window_seconds":604800,"reset_at":1900000000}}}"#.utf8)
+        let model = try CodexFetcher.parseUsage(CodexFetcher.parseUsageData(data))
+        let windows = CodexFetcher.makeUsageWindows(from: model)
+        XCTAssertEqual(Set(windows.keys), ["secondary"])
+        XCTAssertEqual(windows["secondary"]?.startDate, reset.addingTimeInterval(-604_800))
+
+        // 样本距重置两天，必须计入整周，不能按 5h 丢弃或归到 5h 行。
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: windows,
+            dailyWindows: [],
+            sessionFiles: [CodexSessionFileEvents(
+                fileURL: URL(fileURLWithPath: "/tmp/codex-weekly-primary.jsonl"),
+                events: [.tokenCount(
+                    timestamp: reset.addingTimeInterval(-2 * 86_400),
+                    usage: CodexTokenUsageEvent(inputTokens: 100, cachedInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 5)
+                )]
+            )]
+        )
+        XCTAssertNil(result.usageSummaries["primary"])
+        XCTAssertEqual(result.usageSummaries["secondary"]?.inputTokens, 100)
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: model,
+            providerKind: .codexChatGpt,
+            samples: result.recentSamples,
+            intervalLabel: "5h",
+            weeklyLabel: "周",
+            weeklyUsageOverride: result.usageSummaries["secondary"]
+        )
+        XCTAssertNil(snapshot.interval)
+        XCTAssertEqual(snapshot.weekly?.label, "周")
+        XCTAssertEqual(snapshot.weekly?.usage?.inputTokens, 100)
+        XCTAssertEqual(snapshot.weekly?.resetsAt, reset)
+    }
+
     /// 回归网：周窗口 present 但 `weeklyResetsAt=nil`（各 fetcher 对缺 reset
     /// 时间透传 nil）时，本地分桶不得为 secondary 窗口合成 reset 边界 ——
     /// 合成边界会把 startDate 钉在本次抓取时刻，把窗口用量压成接近 0 的假数，

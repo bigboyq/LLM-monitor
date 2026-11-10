@@ -101,12 +101,18 @@ Current parser behavior:
 
 | Response field | Model field |
 |---|---|
-| `primary_window.used_percent` | `intervalRemainingPercent = clamp(100 - used, 0...100)` |
-| `primary_window.reset_at` | `intervalResetsAt` |
-| `primary_window.limit_window_seconds` | local 5-hour usage window start = `reset_at - seconds` |
-| `secondary_window.used_percent` | `weeklyRemainingPercent = clamp(100 - used, 0...100)` |
-| `secondary_window.reset_at` | `weeklyResetsAt` |
-| `secondary_window.limit_window_seconds` | local weekly usage window start = `reset_at - seconds` |
+| window with `limit_window_seconds = 18000` | `interval*` (5h), regardless of primary / secondary position |
+| window with `limit_window_seconds = 604800` | `weekly*` (周), regardless of primary / secondary position |
+| missing / other window length | Legacy fallback: primary → `interval*`, secondary → `weekly*`; preserve the actual length |
+| normalized window `used_percent` | Corresponding remaining percent = `clamp(100 - used, 0...100)` |
+| normalized window `reset_at` / length | Corresponding reset / length; local usage start = `reset_at - seconds` |
+
+`CodexFetcher.parseUsage` owns this normalization before any model consumer runs. The
+2026-11-10 Pro response places its only 7-day window in `primary_window` and omits
+`secondary_window`: this produces `intervalStatus = .absent`, `weeklyStatus = .present`,
+with no synthetic 5h quota. `window_minutes` follows the same rule after conversion to
+seconds. No plan-name heuristic is used. Two windows resolving to the same kind are
+rejected rather than relabelled or silently overwritten.
 
 Per-window validation in `parseWindow` (a window failing any of these is treated as
 absent, not as a healthy window):
@@ -131,8 +137,9 @@ Values outside `0001-01-01 … 9999-12-31` (or non-finite) return `nil`; the fet
 passes `resetsAt = nil` through rather than fabricating a boundary.
 
 If `rate_limit` or its primary window is missing/invalid, parsing fails instead of fabricating a
-healthy quota. A missing or invalid secondary window maps to `weeklyStatus = .absent`; a valid
-secondary window remains `.present` even when its remaining percentage is `0%`.
+healthy quota. Missing or invalid windows do not participate in normalization; each normalized
+kind without a window is `.absent` (numeric placeholder `0`, no reset or length). A valid
+window remains `.present` even when its remaining percentage is `0%`.
 
 ## OpenAI API 赠金（API 赠金）
 
@@ -526,6 +533,12 @@ label and only aggregates local usage for that window. It does not synthesize a 
 window, and the bar degrades to the single-window path (`SingleQuotaMetadataLine` +
 `SingleQuotaBar`, 1 segment).
 
+For a weekly-only primary window, the normalized weekly fields drive the **周** usage row,
+the status bar's right weekly arc and the center's raw weekly percentage. The left 5h arc
+has no reading from this provider; it is not a depleted 5h window. With both windows present,
+effective quota remains `min(5h remaining, weekly remaining × 6)`: a present weekly `0%`
+forces effective quota to `0%`, while an absent weekly window does not constrain 5h.
+
 Reset credits, when present, render as a collapsed row inside the card's
 「额度窗口用量」section (`CompactResetCreditsRow`, module 4 — it used to sit directly
 under the quota bar):
@@ -558,6 +571,7 @@ The current fetcher uses shared `QuotaError` messages rather than provider-speci
 | usage top level not an object | `解析失败：usage 顶层不是对象` |
 | `rate_limit` missing | `解析失败：usage 响应缺少 rate_limit` |
 | primary window missing/invalid | `解析失败：usage.rate_limit 缺少合法 primary_window` |
+| two parsed windows normalize to the same kind | `解析失败：usage 包含重复周窗口` / `解析失败：usage 包含重复短窗口` |
 | malformed usage JSON | `解析失败：usage 不是合法 JSON` |
 | malformed / out-of-range reset-credit JSON | warning only, quota still succeeds |
 

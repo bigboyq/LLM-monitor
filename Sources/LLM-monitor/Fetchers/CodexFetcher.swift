@@ -763,26 +763,47 @@ struct CodexFetcher: QuotaFetcher {
         guard let primary = usage.primary else {
             throw QuotaError.decodingError("usage 缺少 primary_window")
         }
-        let intervalUsed = primary.usedPercent
-        let weeklyUsed = usage.secondary?.usedPercent ?? 0
+        // primary / secondary 是接口位置，不是周期语义：Pro 的唯一周窗口
+        // 也放在 primary。已知时长优先归类；旧响应缺时长时保留槽位兜底。
+        var interval: UsageResponse.Window?
+        var weekly: UsageResponse.Window?
+        for (window, isPrimary) in [(primary, true), (usage.secondary, false)] {
+            guard let window else { continue }
+            let isWeekly: Bool
+            switch window.limitWindowSeconds {
+            case 604_800: isWeekly = true
+            case 18_000: isWeekly = false
+            default: isWeekly = !isPrimary
+            }
+            if isWeekly {
+                guard weekly == nil else {
+                    throw QuotaError.decodingError("usage 包含重复周窗口")
+                }
+                weekly = window
+            } else {
+                guard interval == nil else {
+                    throw QuotaError.decodingError("usage 包含重复短窗口")
+                }
+                interval = window
+            }
+        }
         return ModelQuota(
             modelName: "chatgpt_plan",
             intervalTotalCount: 0,
             intervalUsageCount: 0,
-            intervalRemainingPercent: max(0, min(100, 100 - intervalUsed)),
-            intervalStatus: .present,
-            intervalResetsAt: primary.resetsAt,
-            intervalWindowSeconds: primary.limitWindowSeconds,
+            intervalRemainingPercent: interval.map { max(0, min(100, 100 - $0.usedPercent)) } ?? 0,
+            intervalStatus: interval == nil ? .absent : .present,
+            intervalResetsAt: interval?.resetsAt,
+            intervalWindowSeconds: interval?.limitWindowSeconds,
             weeklyTotalCount: 0,
             weeklyUsageCount: 0,
-            weeklyRemainingPercent: max(0, min(100, 100 - weeklyUsed)),
-            // secondary_window 为 null 或缺少 used_percent 时 parseWindow 会返回 nil；
-            // 用 status 保留“该窗口不存在”的信息，供 UI 决定是否渲染。
-            weeklyStatus: usage.secondary == nil ? .absent : .present,
+            weeklyRemainingPercent: weekly.map { max(0, min(100, 100 - $0.usedPercent)) } ?? 0,
+            // 缺失与耗尽是两种状态：只有 present 的 0% 才限制有效额度。
+            weeklyStatus: weekly == nil ? .absent : .present,
             // 缺 reset_at 时透传 nil：消费面（weeklyTimeRemainingFraction /
             // CodexLocalUsageScanner）对 nil 安全降级，不合成边界伪造窗口数据。
-            weeklyResetsAt: usage.secondary?.resetsAt,
-            weeklyWindowSeconds: usage.secondary?.limitWindowSeconds
+            weeklyResetsAt: weekly?.resetsAt,
+            weeklyWindowSeconds: weekly?.limitWindowSeconds
         )
     }
 

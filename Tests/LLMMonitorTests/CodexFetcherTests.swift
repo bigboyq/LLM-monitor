@@ -319,6 +319,71 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertNil(withoutWindow.weeklyTimeRemainingFraction)
     }
 
+    func testWeeklyPrimaryNormalizesWithoutInventingFiveHourWindow() throws {
+        for durationField in ["\"limit_window_seconds\": 604800", "\"window_minutes\": 10080"] {
+            for used in [27, 100] {
+                let data = Data("""
+                {"rate_limit":{"primary_window":{"used_percent":\(used),
+                \(durationField),"reset_at":1900000000},"secondary_window":null}}
+                """.utf8)
+                let model = try CodexFetcher.parseUsage(CodexFetcher.parseUsageData(data))
+                XCTAssertFalse(model.hasIntervalWindow)
+                XCTAssertNil(model.intervalResetsAt)
+                XCTAssertNil(model.intervalWindowSeconds)
+                XCTAssertTrue(model.hasWeeklyWindow)
+                XCTAssertEqual(model.weeklyRemainingPercent, Double(100 - used))
+                XCTAssertEqual(model.weeklyWindowSeconds, 604_800)
+                XCTAssertEqual(model.weeklyResetsAt, Date(timeIntervalSince1970: 1_900_000_000))
+                XCTAssertEqual(model.aggregateActualAvailable(providerKind: .codexChatGpt)?.percent, Double(100 - used))
+            }
+        }
+    }
+
+    func testKnownWindowDurationsTakePrecedenceOverResponseOrder() throws {
+        for reversed in [false, true] {
+            let short = #"{"used_percent":20,"limit_window_seconds":18000,"reset_at":1900000000}"#
+            let week = #"{"used_percent":100,"limit_window_seconds":604800,"reset_at":1900100000}"#
+            let data = Data("""
+            {"rate_limit":{"primary_window":\(reversed ? week : short),
+            "secondary_window":\(reversed ? short : week)}}
+            """.utf8)
+            let model = try CodexFetcher.parseUsage(CodexFetcher.parseUsageData(data))
+            XCTAssertTrue(model.hasIntervalWindow)
+            XCTAssertTrue(model.hasWeeklyWindow)
+            XCTAssertEqual(model.intervalRemainingPercent, 80)
+            XCTAssertEqual(model.weeklyRemainingPercent, 0)
+            XCTAssertEqual(model.intervalResetsAt, Date(timeIntervalSince1970: 1_900_000_000))
+            XCTAssertEqual(model.weeklyResetsAt, Date(timeIntervalSince1970: 1_900_100_000))
+            XCTAssertEqual(model.aggregateActualAvailable(providerKind: .codexChatGpt)?.percent, 0)
+        }
+    }
+
+    func testMissingDurationKeepsLegacySlotsAndAbsentWeekDoesNotLimitQuota() throws {
+        for seconds in [nil, 18_000, 1_800] as [Int?] {
+            let duration = seconds.map { ",\"limit_window_seconds\":\($0)" } ?? ""
+            let data = Data("""
+            {"rate_limit":{"primary_window":{"used_percent":20\(duration)}}}
+            """.utf8)
+            let model = try CodexFetcher.parseUsage(CodexFetcher.parseUsageData(data))
+            XCTAssertTrue(model.hasIntervalWindow)
+            XCTAssertFalse(model.hasWeeklyWindow)
+            XCTAssertEqual(model.aggregateActualAvailable(providerKind: .codexChatGpt)?.percent, 80)
+        }
+    }
+
+    func testDuplicateWindowKindsAreRejectedInsteadOfMislabelled() throws {
+        for seconds in [18_000, 604_800] {
+            let data = Data("""
+            {"rate_limit":{
+              "primary_window":{"used_percent":20,"limit_window_seconds":\(seconds)},
+              "secondary_window":{"used_percent":30,"limit_window_seconds":\(seconds)}
+            }}
+            """.utf8)
+            let usage = try CodexFetcher.parseUsageData(data)
+            XCTAssertThrowsError(try CodexFetcher.parseUsage(usage))
+        }
+    }
+
     /// M5 回归网：full 模式下 reset-credits 请求因整个刷新任务被取消而失败时，
     /// fetch 必须把取消传播出去（抛 CancellationError），而不是吞掉错误、
     /// 返回 resetCredits=nil 的"成功"。与 Deepseek / GLM / minimax 的取消语义对齐。

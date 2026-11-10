@@ -104,7 +104,7 @@ Provider batch settles and no longer wait for a successful quota fetch:
   per-file event cache), only `.hardFull` sets `forceFull` and re-parses every selected
   file. Code equivalence: `forceFull: mode.bypassesProviderCache`.
 - Scan results produced before the first quota success can still be collected; the normal
-  post-Provider reconcile enriches them when the 5h window is available.
+  post-Provider reconcile enriches them when a quota window is available.
 - Window summaries (`primary` / `secondary`) are derived from the reset times stored in the
   shared data layer (the most recent successful quota fetch). Before the first quota success
   they are `nil`, and the scan still produces `dailyTokenUsage` (7 days) and the recent samples.
@@ -187,6 +187,10 @@ The application uses the same local aggregation rules directly in
 
 Window lengths are the parser's `limitWindowSeconds` (falling back to 5 h / 7 d when the
 API omits them), not the literal 5 h / 7 d.
+
+The local `primary` / `secondary` summary keys refer to normalized interval / weekly
+fields, not raw API positions. A Pro response with only a 604800-second `primary_window`
+therefore creates only a local `secondary` window and a 周 usage row; 5h remains absent.
 
 Rules:
 

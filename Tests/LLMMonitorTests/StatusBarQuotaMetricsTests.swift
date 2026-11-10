@@ -213,7 +213,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusBarQuotaMetricsWithWeeklyTimeFactor() {
+    func testStatusBarQuotaMetricsWithWeeklyTimeFactor() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -415,13 +415,60 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
         }
 
-        setWindowPresence(intervalStatus: .absent, weeklyStatus: .present)
+        func parsedCodexQuota(primary: [String: Any], secondary: [String: Any]? = nil) throws -> ModelQuota {
+            var rateLimit: [String: Any] = ["primary_window": primary]
+            if let secondary { rateLimit["secondary_window"] = secondary }
+            let data = try JSONSerialization.data(withJSONObject: ["rate_limit": rateLimit])
+            return try CodexFetcher.parseUsage(CodexFetcher.parseUsageData(data))
+        }
+
+        func setCodexQuota(_ model: ModelQuota) {
+            let info = QuotaInfo(
+                models: [model], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            )
+            appState.mutateStatus(for: "test_a") { $0.state = .ok(info) }
+            appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
+        }
+
+        // Pro 可以只在 primary_window 返回 7d 配额。归一化后它必须进入 weekly，
+        // 状态栏左弧保持空，右弧与中心均显示原始周剩余 70%。
+        let proWeeklyOnly = try parsedCodexQuota(primary: [
+            "used_percent": 30,
+            "limit_window_seconds": 604_800,
+            "reset_at": now.addingTimeInterval(3 * 86_400).timeIntervalSince1970
+        ])
+        XCTAssertFalse(proWeeklyOnly.hasIntervalWindow)
+        XCTAssertTrue(proWeeklyOnly.hasWeeklyWindow)
+        setCodexQuota(proWeeklyOnly)
         let weeklyOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertFalse(weeklyOnlyMetrics.interval.isAvailable)
         XCTAssertTrue(weeklyOnlyMetrics.weekly.isAvailable)
+        XCTAssertEqual(weeklyOnlyMetrics.weekly.minAvailable, 0.70, accuracy: 0.001)
+        XCTAssertEqual(weeklyOnlyMetrics.centerAvailable ?? -1, 0.70, accuracy: 0.001)
         let weeklyOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: weeklyOnlyMetrics)
         XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"interval-available\""))
         XCTAssertTrue(weeklyOnlyStateSVG.contains("id=\"weekly-available\""))
+
+        // 双窗口中周窗口耗尽时，5h 原始弧仍保留自身 75%；但有效额度（中心）归零。
+        let exhaustedWeekly = try parsedCodexQuota(
+            primary: [
+                "used_percent": 25,
+                "limit_window_seconds": 18_000,
+                "reset_at": now.addingTimeInterval(3_600).timeIntervalSince1970
+            ],
+            secondary: [
+                "used_percent": 100,
+                "limit_window_seconds": 604_800,
+                "reset_at": now.addingTimeInterval(3 * 86_400).timeIntervalSince1970
+            ]
+        )
+        XCTAssertEqual(exhaustedWeekly.aggregateActualAvailable(providerKind: .codexChatGpt, at: now)?.percent, 0)
+        setCodexQuota(exhaustedWeekly)
+        let exhaustedWeeklyMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(exhaustedWeeklyMetrics.interval.minAvailable, 0.75, accuracy: 0.001)
+        XCTAssertEqual(exhaustedWeeklyMetrics.weekly.minAvailable, 0, accuracy: 0.001)
+        XCTAssertEqual(exhaustedWeeklyMetrics.centerAvailable ?? -1, 0, accuracy: 0.001)
 
         setWindowPresence(intervalStatus: .present, weeklyStatus: .absent)
         let intervalOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
