@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreText
 
 /// 「Icon Duo」额度仪表盘 SVG 构建器（原 quotaLogo 重写版，1.9.0 起的布局）。
 ///
@@ -12,8 +13,7 @@ import AppKit
 /// - 底部 3 个状态点沿圆弧轨迹排布（115°、90°、65°，半径 r=36），按统一
 ///   `colorLevel`（实际可用口径）汇总各套餐健康度（红 > 黄 > 绿优先）；GLM 高峰期
 ///   对应套餐保底黄色，floor 只作用于底部三点与卡片头部点，弧线与中心不参与。
-/// - 中心为扇形圆，满额度为 360° 正圆，随着额度消耗从 6 点钟（底端）向左右对称打开；
-///   剩余面积保留在 12 点钟（顶端）；50% 额度时呈现 180° 上半圆；额度耗尽时呈现红色空心圆环。
+/// - 中心为有效 5h 额度数字，0...99 原样显示，100 显示 00；字形轮廓整体居中。
 enum IconDuoSVGBuilder {
     private static let defaultUnconfiguredColor = "#8E8E93"
 
@@ -21,7 +21,6 @@ enum IconDuoSVGBuilder {
     private static let outerRadius = 270.0
     /// 翻倍后的线段宽度（56px），确保在 22pt 菜单栏 Retina 屏上清晰醒目。
     private static let strokeWidth = 56.0
-    private static let innerRadius = 135.0
 
     /// Net space between the lamp's edge and each round arc cap is 0.75 lamp diameters.
     /// Both centers lie on the same circle, so convert their required chord distance to an angle.
@@ -134,10 +133,11 @@ enum IconDuoSVGBuilder {
         }
         let dotsStr = dots.joined(separator: "\n  ")
 
-        // 5. 中心扇形圆：以 12 点钟为顶，从 6 点钟底端向左右对称打开
-        let centerSVG = buildCenterSectorSVG(
-            centerAvailable: metrics.centerAvailable,
-            centerTimeFraction: metrics.centerTimeFraction,
+        // 5. 中心数字沿用有效 5h 口径，周额度耗尽时仍约束为 0。
+        let centerSVG = buildValueSVG(
+            id: "center-quota-value",
+            fraction: metrics.centerAvailable,
+            timeFraction: metrics.centerTimeFraction,
             alertThresholds: metrics.alertThresholds,
             healthColors: healthColors
         )
@@ -178,8 +178,11 @@ enum IconDuoSVGBuilder {
 
         let quotaColor: String
         let available: String
-        let valueLabel: String
-        let valueMarkup: String
+        let valueMarkup = buildValueSVG(
+            id: "single-quota-value", fraction: quota.remainingFraction,
+            timeFraction: quota.timeRemainingFraction,
+            alertThresholds: alertThresholds, healthColors: healthColors
+        )
         if let fraction = quota.remainingFraction {
             let clamped = min(max(fraction, 0), 1)
             let percent = clamped * 100
@@ -191,15 +194,6 @@ enum IconDuoSVGBuilder {
                 colors: healthColors
             )
             let displayedPercent = Int(percent.rounded())
-            valueLabel = "\(displayedPercent)%"
-            // Only the menu-bar label uses this compact notation: full = "00",
-            // empty = "0". Keep the real percentage for color, arc and accessibility.
-            let compactValue = displayedPercent == 100 ? "00" : String(displayedPercent)
-            let numberSize = 280
-            // AppKit's SVG renderer does not honor dominant-baseline consistently.
-            // Place the text baseline using the font's visible capital height.
-            let textBaseline = center + Double(NSFont.systemFont(ofSize: CGFloat(numberSize), weight: .semibold).capHeight) / 2
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"\(valueLabel)\" aria-label=\"\(valueLabel)\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(numberSize)\" font-weight=\"600\" fill=\"\(quotaColor)\">\(compactValue)</text>"
             if clamped > 0 {
                 let end = point(degree: startDegrees + trackSpan * clamped, radius: ringRadius)
                 let largeArc = clamped * trackSpan > 180 ? 1 : 0
@@ -213,9 +207,6 @@ enum IconDuoSVGBuilder {
             }
         } else {
             quotaColor = defaultUnconfiguredColor
-            valueLabel = "—"
-            let textBaseline = center + Double(NSFont.systemFont(ofSize: 190, weight: .semibold).capHeight) / 2
-            valueMarkup = "<text id=\"single-quota-value\" data-value=\"—\" x=\"352\" y=\"\(textBaseline)\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"190\" font-weight=\"600\" fill=\"\(quotaColor)\">—</text>"
             available = ""
         }
 
@@ -236,57 +227,79 @@ enum IconDuoSVGBuilder {
         """
     }
 
-    private static func buildCenterSectorSVG(
-        centerAvailable: Double?,
-        centerTimeFraction: Double?,
+    private static func buildValueSVG(
+        id: String,
+        fraction: Double?,
+        timeFraction: Double?,
         alertThresholds: AlertThresholdConfig,
         healthColors: StatusBarHealthColors
     ) -> String {
-        let bgDisc = "<circle id=\"center-track\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"#2C2C2E\" fill-opacity=\"0.6\"/>"
-        guard let pRaw = centerAvailable else {
-            let emptyColor = defaultUnconfiguredColor
-            return """
-            \(bgDisc)
-              <circle id=\"center-sector\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"none\" stroke=\"\(emptyColor)\" stroke-width=\"8\"/>
-            """
-        }
-
-        let p = min(max(pRaw, 0.0), 1.0)
-        // 中心按所选套餐的读数尺度判色：有效5h配5h时间，仅周配周时间；
-        // 对应时间缺失时按固定阈值。底部三点另取各窗口健康档的较差值。
-        let healthLevel = alertThresholds.colorLevel(percent: p * 100, timeFraction: centerTimeFraction)
-        let sectorColor = resolvedHex(for: healthLevel, colors: healthColors)
-        let percentValue = Int((p * 100).rounded())
-
-        if p >= 0.999 {
-            return """
-            \(bgDisc)
-              <circle id=\"center-sector\" data-value=\"\(percentValue)\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"\(sectorColor)\"/>
-            """
-        } else if p <= 0.005 {
-            return """
-            \(bgDisc)
-              <circle id=\"center-sector\" data-value=\"0\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"none\" stroke=\"\(sectorColor)\" stroke-width=\"8\"/>
-            """
-        } else {
-            // 锚定 12 点钟（3π/2），随着额度消耗从 6 点钟（底端）向左右对称打开
-            let alpha = Double.pi * p
-            let a1 = 3.0 * Double.pi / 2.0 - alpha
-            let a2 = 3.0 * Double.pi / 2.0 + alpha
-            let x1 = center + innerRadius * cos(a1)
-            let y1 = center + innerRadius * sin(a1)
-            let x2 = center + innerRadius * cos(a2)
-            let y2 = center + innerRadius * sin(a2)
-            let largeArc = p > 0.5 ? 1 : 0
-            let path = String(
-                format: "<path id=\"center-sector\" data-value=\"%d\" d=\"M %.2f %.2f L %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f Z\" fill=\"%@\"/>",
-                percentValue, center, center, x1, y1, innerRadius, innerRadius, largeArc, x2, y2, sectorColor
+        let display: String
+        let value: String
+        let color: String
+        let fontSize: CGFloat
+        if let fraction {
+            let percent = min(max(fraction, 0), 1) * 100
+            let rounded = Int(percent.rounded())
+            display = rounded == 100 ? "00" : String(rounded)
+            value = "\(rounded)%"
+            color = resolvedHex(
+                for: alertThresholds.colorLevel(percent: percent, timeFraction: timeFraction),
+                colors: healthColors
             )
-            return """
-            \(bgDisc)
-              \(path)
-            """
+            fontSize = 280
+        } else {
+            display = "—"
+            value = "—"
+            color = defaultUnconfiguredColor
+            fontSize = 190
         }
+        let path = centeredValuePath(display, fontSize: fontSize)
+        var commands: [String] = []
+        path.applyWithBlock { element in
+            let points = element.pointee.points
+            func pointString(_ index: Int) -> String {
+                String(format: "%.3f %.3f", points[index].x, points[index].y)
+            }
+            switch element.pointee.type {
+            case .moveToPoint: commands.append("M \(pointString(0))")
+            case .addLineToPoint: commands.append("L \(pointString(0))")
+            case .addQuadCurveToPoint: commands.append("Q \(pointString(0)) \(pointString(1))")
+            case .addCurveToPoint: commands.append("C \(pointString(0)) \(pointString(1)) \(pointString(2))")
+            case .closeSubpath: commands.append("Z")
+            @unknown default: break
+            }
+        }
+        return """
+        <g id="\(id)" data-value="\(value)" data-display="\(display)" aria-label="\(value)" font-size="\(Int(fontSize))"><path d="\(commands.joined(separator: " "))" fill="\(color)"/></g>
+        """
+    }
+
+    /// Center the actual ink, not the font's advance box. SVG text-anchor can leave
+    /// asymmetric side bearings (notably 51) looking off-center in AppKit's renderer.
+    static func centeredValuePath(_ text: String, fontSize: CGFloat = 280) -> CGPath {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold) as CTFont
+        let characters = Array(text.utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+        CTFontGetGlyphsForCharacters(font, characters, &glyphs, characters.count)
+        var advances = [CGSize](repeating: .zero, count: glyphs.count)
+        CTFontGetAdvancesForGlyphs(font, .horizontal, glyphs, &advances, glyphs.count)
+        let path = CGMutablePath()
+        var x: CGFloat = 0
+        for (index, glyph) in glyphs.enumerated() {
+            if let outline = CTFontCreatePathForGlyph(font, glyph, nil) {
+                path.addPath(outline, transform: CGAffineTransform(translationX: x, y: 0))
+            }
+            x += advances[index].width
+        }
+        let bounds = path.boundingBoxOfPath
+        let transform = CGAffineTransform(
+            a: 1, b: 0, c: 0, d: -1,
+            tx: center - bounds.midX, ty: center + bounds.midY
+        )
+        let centered = CGMutablePath()
+        centered.addPath(path, transform: transform)
+        return centered
     }
 
     private static func resolvedHex(

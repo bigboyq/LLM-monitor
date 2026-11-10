@@ -56,9 +56,12 @@ actual available ratio across active models — per model, `min(5h remaining, we
 with the provider-specific weekly equivalent multiplier N (`ModelQuota.weeklyEquivalentMultiplier`,
 the same caliber as the card's segmented progress bar); a model with only one window contributes
 just that window's raw remainder (without weekly × N for weekly-only models), and the center stays
-nil when no model has any window. It is a symmetrical circular sector anchored at the top (12 o'clock)
-that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%,
-180° dome semicircle at 50%, empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow
+nil when no model has any window. The center displays this effective 5h percentage as centered digits:
+0–99 use their ordinary digits and 100 displays as `00`; unknown data displays `—`. SVG metadata keeps
+the real integer percentage in `data-value` and `aria-label`, while `data-display` contains the compact
+glyph string. Known values use a 280-unit font and unknown uses 190; the CoreText outline's actual path
+bounds are centered at (352, 352), independent of digit widths. The value color follows its effective
+5h reading and associated time fraction. Three bottom dots (enlarged to r=36) follow
 the circle's arc to show active-model health prioritized strictly as red > yellow > green (if 3 reds,
 yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy module's sleep-health state (green / yellow / red, gray while unknown).
 Both quota arcs leave a net clearance of 0.75 lamp diameters to this dot on each side,
@@ -67,10 +70,10 @@ from the chord distance (lamp radius + half stroke width + clearance).
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
 All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
-center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 30% * t` red;
+center percentage — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 30% * t` red;
 `< 60% * t` yellow; otherwise green, with dynamic denominator `100% * t`, configurable via `AlertThresholdConfig`),
 the same rule the provider cards use, replacing the retired fixed `HealthLevel.standard`
-thresholds. Composite elements (the bottom dots and the center sector) read the
+thresholds. Composite elements (the bottom dots and the center percentage) read the
 effective 5h reading — per dual-window model `min(5h, weekly × N)` paired with 5h time via
 `ModelQuota.aggregateActualAvailable`; weekly-only models use raw weekly percent and weekly time.
 The bottom dots and aggregate health evaluate effective 5h and raw weekly readings separately
@@ -81,7 +84,7 @@ by balance thresholds (`< 3` red, `< 10` yellow; default `deepseekBalanceCritica
 `deepseekBalanceWarning = 10.0`). During GLM peak hours a peak
 floor raises a provider's composite status to at least `.warning` (red wins); the floor
 only applies to the dual-window bottom dots and the card header dots — quota arcs,
-the center sector and the single-window percentage gauge are exempt.
+the center percentage and the single-window percentage gauge are exempt.
 
 When a single-window quota source is selected (for example a weekly-only ChatGPT plan, one API
 credit key, or one GLM Start Plan entitlement), `StatusBarQuotaMetrics.singleQuota` selects
@@ -89,10 +92,12 @@ the one-source gauge. It draws one circular track and remaining arc with a **12 
 numeric remaining value (`—` while the chosen source has no current data), and only the Energy
 sleep-health indicator at 12 o'clock. Only this menu-bar label omits the `%` symbol:
 rounded 0–99 appear as their ordinary digits, and 100% appears as `00` (distinct from
-empty `0`). All known values use a fixed 280-unit font on the 704-unit canvas.
-Its font cap-height centers the visible number vertically; the label stays horizontally
-centered. Arc length, color, accessibility and card percentages retain the real value.
-The old split 5h / weekly arcs, center sector and
+empty `0`). The SVG group exposes the real integer percentage through `data-value` and
+`aria-label`, and the compact glyph through `data-display`; known values use a 280-unit font,
+unknown uses 190. The CoreText outline's actual bounding box centers the glyph both horizontally
+and vertically at (352, 352), independent of whether the value has one or two digits. Arc length,
+color, accessibility and card percentages retain the real value. The single gauge uses the
+selected source's value with the same centered glyph renderer; split 5h / weekly arcs and
 three quota-health dots are omitted. Zero is shown as a critical-colored `0` with an empty
 track; absent data is gray. The gauge arc follows the same time-aware `AlertThresholdConfig`
 color rule as the other quota elements. The sleep indicator sits **on the ring's circumference**,
@@ -107,7 +112,7 @@ The global aggregate also uses this gauge when only one window category is prese
 retaining its nonzero-minimum effective percentage.
 
 **聚合 model 集合排除独立小池（2026-10 用户裁定）。** iconDuo 的四个读数（左右弧、
-中心扇形、底部三点）与 SF Symbol 状态点 / 边缘窗圆环 / provider 综合健康度读的都是
+中心百分比、底部三点）与 SF Symbol 状态点 / 边缘窗圆环 / provider 综合健康度读的都是
 `QuotaInfo.aggregateQuotaModels(providerKind:)` —— `activeModels` 再滤掉
 `ModelQuota.isExcludedFromQuotaAggregation(providerKind:)` 命中的家族：minimax 的
 `video`（视频生成）与 antigravity 的 `claude_and_gpt_models`（Claude and GPT models）、
@@ -117,13 +122,13 @@ retaining its nonzero-minimum effective percentage.
 把有数据的 provider 聚合成「无读数」或保守误红）。卡片逐 model 行与通知管线
 （`QuotaEventDetector` 逐 model 窗口事件）不受影响。
 
-**Center sector relay semantics.** The center sector takes the *lowest* "actually
+**Center percentage relay semantics.** The center percentage takes the *lowest* "actually
 available" ratio across plans, but a plan whose value is exactly 0 is excluded from that
 comparison. This models plan hand-off: once a plan is spent, it would otherwise pin the
-ring to 0 and hide the plan now serving you, so the ring follows the one still in
+value to 0 and hide the plan now serving you, so the center follows the one still in
 service (its `timeFraction` follows with it: 5h time for effective 5h, weekly time for a
 weekly-only plan). Boundaries are distinguished deliberately: readings exist but every
-plan is exhausted → `0` (red empty ring, `timeFraction` nil since `colorLevel` treats 0%
+plan is exhausted → `0%` (critical-colored `0`, `timeFraction` nil since `colorLevel` treats 0%
 as critical regardless); no plan has any window at all → `nil` (gray, "not configured"
 is not "exhausted"). Ties keep the first plan encountered. The bottom dots and the card
 header dots are unaffected — they still cover every plan, so a spent plan stays red
@@ -865,7 +870,7 @@ look for a hover route to this data — the card carries it inline.
 
 - 大部分模型（`general` / `image` / `speech` / `music` / `tts` 等）把 5h 和周额度合成一条，周进度条按 10 个等价额度分段（`ModelQuota.weeklyEquivalentMultiplier` = 10）。
 - **`video` 模型走日窗口**：周进度条按 7 个等价额度分段（1 天 ≈ 1/7 周）。原因：minimax video 实际是日配额而不是 5h 配额，按 5h × 10 分段会误导。label 由 `QuotaSummary.primaryWindowLabel` 按 model 名判断。
-- **`video` 不参与聚合读数**：状态栏 iconDuo（左右弧 / 中心扇形 / 底部三点）、边缘窗圆环与 provider 综合健康度走 `QuotaInfo.aggregateQuotaModels(providerKind:)`，`video` 被 `ModelQuota.isExcludedFromQuotaAggregation` 排除（与 antigravity 的 Claude and GPT / Gemini 4 Argon 组同规则）——独立小配额池的余量不代表主力模型水位；卡片 video 行照常展示，通知检测仍逐 model 覆盖。
+- **`video` 不参与聚合读数**：状态栏 iconDuo（左右弧 / 中心百分比 / 底部三点）、边缘窗圆环与 provider 综合健康度走 `QuotaInfo.aggregateQuotaModels(providerKind:)`，`video` 被 `ModelQuota.isExcludedFromQuotaAggregation` 排除（与 antigravity 的 Claude and GPT / Gemini 4 Argon 组同规则）——独立小配额池的余量不代表主力模型水位；卡片 video 行照常展示，通知检测仍逐 model 覆盖。
 
 ### ChatGPT Plan
 

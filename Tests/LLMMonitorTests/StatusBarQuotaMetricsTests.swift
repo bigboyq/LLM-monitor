@@ -482,7 +482,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"weekly-available\""))
     }
 
-    /// 中心扇形的「实际可用」口径：每个套餐按自身存在的窗口取
+    /// 中心百分比的「实际可用」口径：每个套餐按自身存在的窗口取
     /// min(5h 剩余, 周剩余 × 周等效倍率 N)，与卡片分段条一致。
     @MainActor
     func testStatusBarQuotaMetricsCenterUsesActualAvailable() {
@@ -627,7 +627,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertNil(metrics.centerTimeFraction)
     }
 
-    /// 中心扇形的多套餐接力：已耗尽（实际可用为 0）的套餐不参与中心 min，
+    /// 中心百分比的多套餐接力：已耗尽（实际可用为 0）的套餐不参与中心 min，
     /// 中心跟随仍在服役的接力套餐（含 timeFraction）；底部三点不排除耗尽
     /// 套餐（用完的套餐点保持红）；全部套餐耗尽时中心回退 0（红）。
     @MainActor
@@ -731,8 +731,9 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         )
         let centerLine = IconDuoSVGBuilder.buildSVG(metrics: metrics)
             .components(separatedBy: "\n")
-            .first { $0.contains("id=\"center-sector\"") } ?? ""
-        XCTAssertTrue(centerLine.contains("data-value=\"4\""))
+            .first { $0.contains("id=\"center-quota-value\"") } ?? ""
+        XCTAssertTrue(centerLine.contains("data-value=\"4%\""))
+        XCTAssertTrue(centerLine.contains("data-display=\"4\""))
         XCTAssertTrue(centerLine.contains("fill=\"#FF453A\""), "仅周剩余 4% 应按原始额度及周时间判红")
         XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .critical, .healthy])
 
@@ -747,9 +748,10 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .critical, .healthy])
         let exhaustedLine = IconDuoSVGBuilder.buildSVG(metrics: metrics)
             .components(separatedBy: "\n")
-            .first { $0.contains("id=\"center-sector\"") } ?? ""
-        XCTAssertTrue(exhaustedLine.contains("data-value=\"0\""))
-        XCTAssertTrue(exhaustedLine.contains("stroke=\"#FF453A\""))
+            .first { $0.contains("id=\"center-quota-value\"") } ?? ""
+        XCTAssertTrue(exhaustedLine.contains("data-value=\"0%\""))
+        XCTAssertTrue(exhaustedLine.contains("data-display=\"0\""))
+        XCTAssertTrue(exhaustedLine.contains("fill=\"#FF453A\""))
     }
 
     /// 仅周窗口的中心保留原始周百分比，并透传周剩余时间；不乘周等效倍率。
@@ -809,7 +811,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
     }
 
     /// minimax 的 `video`（视频生成）是独立小配额池，不参与 iconDuo 聚合
-    /// （用户裁定 2026-10）：左右弧 min/avg、中心扇形与底部三点只反映 general，
+    /// （用户裁定 2026-10）：左右弧 min/avg、中心百分比与底部三点只反映 general，
     /// 不被耗尽的 video 拖到 0 / 红。
     @MainActor
     func testMinimaxVideoDoesNotEnterQuotaLogoAggregate() {

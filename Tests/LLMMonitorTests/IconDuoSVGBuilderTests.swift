@@ -1,12 +1,13 @@
 import XCTest
 import Foundation
+import CoreGraphics
 @testable import LLM_monitor
 
 final class IconDuoSVGBuilderTests: XCTestCase {
 
     func testIconDuoSVGBuilderDashboardGeometry() {
         // colorLevel 统一判定：周 avg 15% → 15 不小于 15、小于固定黄线 30 → warning；
-        // 5h avg 35% → ≥ 30 → healthy；中心 50% → healthy。
+        // 5h avg 35% → ≥ 30 → healthy；中心有效额度 50% → healthy。
         let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15,) // < 30 → warning
         let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35,) // >= 30 → healthy
         let metrics = StatusBarQuotaMetrics(
@@ -31,7 +32,9 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertTrue(svg.contains("id=\"energy-dot\""))
         XCTAssertTrue(svg.contains("r=\"48\""), "顶部节能点半径放大至 r=48")
         XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部节能点（warning）或右弧预警色使用黄色")
-        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"50\""), "中心扇形展示 50% 额度")
+        XCTAssertTrue(svg.contains("id=\"center-quota-value\""), "双额度中心显示有效5h百分比")
+        XCTAssertTrue(svg.contains("data-value=\"50%\""))
+        XCTAssertTrue(svg.contains("data-display=\"50\""))
         XCTAssertTrue(svg.contains("id=\"quota-dot-0\""))
         XCTAssertTrue(svg.contains("id=\"quota-dot-1\""))
         XCTAssertTrue(svg.contains("id=\"quota-dot-2\""))
@@ -39,18 +42,16 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertTrue(svg.contains("r=\"36\""), "点半径放大至 r=36")
         XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点（critical 套餐点）")
 
-        // 69.5% 必须走 SVG large-arc，绘制约 250°，不能错误显示成不足四分之一。
+        // 69.5% 按真实整数舍入显示为 70%，保留有效额度语义。
         let currentQuotaMetrics = StatusBarQuotaMetrics(
             weekly: outer,
             interval: middle,
             centerAvailable: 0.695
         )
         let currentQuotaSVG = IconDuoSVGBuilder.buildSVG(metrics: currentQuotaMetrics)
-        XCTAssertTrue(currentQuotaSVG.contains("id=\"center-sector\" data-value=\"70\""))
-        XCTAssertTrue(
-            currentQuotaSVG.contains("A 135.00 135.00 0 1 1"),
-            "超过 50% 的中心扇形必须使用 large-arc，69.5% 应约为 250°"
-        )
+        XCTAssertTrue(currentQuotaSVG.contains("id=\"center-quota-value\""))
+        XCTAssertTrue(currentQuotaSVG.contains("data-value=\"70%\""))
+        XCTAssertTrue(currentQuotaSVG.contains("data-display=\"70\""))
 
         // 缺失窗口只绘制灰色底轨，不得伪装成 100% 可用。
         let weeklyOnly = StatusBarQuotaMetrics(
@@ -75,8 +76,9 @@ final class IconDuoSVGBuilderTests: XCTestCase {
             weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
             interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false)
         ))
-        XCTAssertTrue(unknownSVG.contains("id=\"center-sector\""))
-        XCTAssertTrue(unknownSVG.contains("stroke=\"#8E8E93\""), "无数据时中心保持灰色环")
+        XCTAssertTrue(unknownSVG.contains("id=\"center-quota-value\""))
+        XCTAssertTrue(unknownSVG.contains("data-value=\"—\""))
+        XCTAssertTrue(unknownSVG.contains("data-display=\"—\""))
 
         // 验证三点优先级：红 > 黄 > 绿；如果有 3 个红，则不显示黄绿
         let threeRedsMetrics = StatusBarQuotaMetrics(
@@ -95,9 +97,11 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         )
         XCTAssertEqual(mixedMetrics.quotaHealthLevels, [.critical, .warning, .healthy])
 
-        // 验证全满状态（360度整圆）
+        // 验证全满状态：真实值100%，固定两位显示00。
         let fullSvg = IconDuoSVGBuilder.buildSVG(metrics: .full, energyHealth: .healthy)
-        XCTAssertTrue(fullSvg.contains("<circle id=\"center-sector\" data-value=\"100\""))
+        XCTAssertTrue(fullSvg.contains("id=\"center-quota-value\""))
+        XCTAssertTrue(fullSvg.contains("data-value=\"100%\""))
+        XCTAssertTrue(fullSvg.contains("data-display=\"00\""))
 
         // 验证 3 个红点全耗尽状态
         let allExhaustedMetrics = StatusBarQuotaMetrics(
@@ -107,9 +111,11 @@ final class IconDuoSVGBuilderTests: XCTestCase {
             quotaHealthLevels: [.critical, .critical, .critical]
         )
         let exhaustedSvg = IconDuoSVGBuilder.buildSVG(metrics: allExhaustedMetrics)
-        XCTAssertTrue(exhaustedSvg.contains("<circle id=\"center-sector\" data-value=\"0\""))
-        XCTAssertTrue(exhaustedSvg.contains("stroke=\"#FF453A\""), "中心呈现红色空心警示环")
-        XCTAssertEqual(exhaustedSvg.components(separatedBy: "fill=\"#FF453A\"").count - 1, 3, "底部固定 3 个红点")
+        XCTAssertTrue(exhaustedSvg.contains("id=\"center-quota-value\""))
+        XCTAssertTrue(exhaustedSvg.contains("data-value=\"0%\""))
+        XCTAssertTrue(exhaustedSvg.contains("data-display=\"0\""))
+        XCTAssertTrue(exhaustedSvg.contains("id=\"center-quota-value\" data-value=\"0%\""))
+        XCTAssertEqual(exhaustedSvg.components(separatedBy: "fill=\"#FF453A\"").count - 1, 4, "三颗额度灯与中心 0% 字形共四处红色")
 
         let image = IconDuoSVGBuilder.buildImage(
             metrics: metrics,
@@ -118,6 +124,14 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertNotNil(image)
         XCTAssertEqual(image?.size.width, 22)
         XCTAssertEqual(image?.size.height, 22)
+    }
+
+    func testQuotaPercentageGlyphBoundsAreCenteredByTheirActualOutlines() {
+        for text in ["51", "11", "99", "00", "0"] {
+            let bounds = IconDuoSVGBuilder.centeredValuePath(text).boundingBoxOfPath
+            XCTAssertEqual(bounds.midX, 352, accuracy: 0.001, "x center for \(text)")
+            XCTAssertEqual(bounds.midY, 352, accuracy: 0.001, "y center for \(text)")
+        }
     }
 
     func testSelectedSingleQuotaUsesOneGaugeAndSleepIndicatorOnly() {
@@ -152,10 +166,11 @@ final class IconDuoSVGBuilderTests: XCTestCase {
             var metrics = StatusBarQuotaMetrics.full
             metrics.singleQuota = StatusBarSingleQuota(remainingFraction: Double(percent) / 100, timeRemainingFraction: 1)
             let document = try XMLDocument(xmlString: IconDuoSVGBuilder.buildSVG(metrics: metrics))
-            let text = try XCTUnwrap(document.nodes(forXPath: "//*[@id='single-quota-value']").first as? XMLElement)
-            XCTAssertEqual(text.stringValue, label)
-            XCTAssertEqual(text.attribute(forName: "font-size")?.stringValue, "280")
-            XCTAssertEqual(text.attribute(forName: "aria-label")?.stringValue, "\(percent)%")
+            let value = try XCTUnwrap(document.nodes(forXPath: "//*[@id='single-quota-value']").first as? XMLElement)
+            XCTAssertEqual(value.attribute(forName: "data-display")?.stringValue, label)
+            XCTAssertEqual(value.attribute(forName: "data-value")?.stringValue, "\(percent)%")
+            XCTAssertEqual(value.attribute(forName: "font-size")?.stringValue, "280")
+            XCTAssertEqual(value.attribute(forName: "aria-label")?.stringValue, "\(percent)%")
         }
     }
 
@@ -221,7 +236,7 @@ final class IconDuoSVGBuilderTests: XCTestCase {
     }
 
     /// 左弧的动态黄线透传（修复回归）：ChatGPT Plan 单 7d 主窗口下，左弧与
-    /// 中心扇形必须同向——20% 额度 + 20% 窗口时间时两者都按动态黄线
+    /// 中心百分比与左弧必须同色——20% 额度 + 20% 窗口时间时两者都按动态黄线
     /// min(time%, 50) 判绿，而不是左弧固定 30% 黄线判黄、与中心反向。
     /// 5h 短窗口（<24h）行为不变：固定 30% 黄线，20% 仍为黄。
     @MainActor
@@ -288,7 +303,7 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
         XCTAssertTrue(svg.contains("id=\"single-quota-available\""))
         XCTAssertFalse(svg.contains("#FFD60A"), "长窗口 20%+20% 时左弧与中心都按动态黄线判绿，不得出现黄色")
-        XCTAssertTrue(svg.contains("#34C759"), "左弧应与中心扇形一致为绿色")
+        XCTAssertTrue(svg.contains("#34C759"), "左弧应与中心百分比字形一致为绿色")
 
         // 2. 短 interval 窗口（5h）：统一时间感知标色——20% 额度 + 20% 窗口时间同样判绿。
         setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: 5 * 3600)
