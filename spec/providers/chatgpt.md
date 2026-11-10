@@ -587,4 +587,4 @@ line rather than a "try again in N minutes" hint.
 The Codex harness scans local session JSONL and contributes `codexUsageDetails` after the provider batch settles. Source paths, aggregation, raw token semantics, and scanner caching are documented in the [Codex harness spec](../harnesses/codex.md#local-usage-aggregation).
 
 > 拆分来源：由原 `spec/providers/codex.md` 按 ChatGPT quota provider 职责拆分；本文件主要沿用其对应章节。
-> 核对基线：2026-11-10 · 代码 b89b867
+> 核对基线：2026-11-10 · 代码 e228d21
