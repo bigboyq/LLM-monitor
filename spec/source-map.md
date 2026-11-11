@@ -181,7 +181,7 @@
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`；卡片 header 显式刷新按钮（`arrow.clockwise`，加载中显示 `ProgressView`）与时间戳胶囊刷新；支持多 Key ChatGPT API 额度独立行渲染；`ProviderCardPresentation` 分 complete / plan / edgePlan / history，共用账号+套餐模块与七天历史；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点 scope 控制用 `FleetScopeSwitcher` |
-| `Sources/LLM-monitor/Views/StatusBarQuotaSelector.swift` | Provider 卡片与菜单栏 quota 行共用的状态栏 Provider / 额度来源眼睛菜单；`StatusBarQuotaSourcePinButton` 放在多模型主套餐标题 / 各模型进度条 / API Key / 活动权益标题后，单击固定具体额度，实心眼睛表示当前来源 |
+| `Sources/LLM-monitor/Views/StatusBarQuotaSelector.swift` | Provider 卡片与菜单栏 quota 行共用的状态栏 Provider / 额度来源眼睛菜单；`StatusBarQuotaSourcePinButton` 放在各模型进度条 / API Key / 活动权益标题后，单击切换固定或取消具体额度（回到全局聚合），实心眼睛表示当前来源 |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理；浮层显隐驱动共享展示时钟（经 `DisplayClockScope` 注入） |
@@ -275,4 +275,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-11 · 代码 761b0c6

@@ -204,7 +204,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」）：多模型套餐（`displayedModels.count > 1`，如 Antigravity / MiniMax）在主套餐标题后保留 `.plan` 聚合小眼睛，同时在每条模型额度进度条旁放置 `.planModel(modelName:)` 独立小眼睛（按方案 2B 直接监控该模型自身额度，不应用 `aggregateQuotaModels` 排除规则）；单模型套餐（`displayedModels.count <= 1`，如 ChatGPT / GLM）省略大标题旁重复的主套餐小眼睛，将唯一进度条旁的小眼睛直接绑定 `.plan`。每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。菜单展开的 Plan 卡通过 `MenuQuotaProviderRow.planCard` 传入 `selectedStatusBarSource`，并以显式 `@MainActor @Sendable` 闭包注入 `cardSelectStatusBarQuota`、调用 `selectPlanQuotaSource`，与外层 Provider 行使用同一选择动作。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
+右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名文本（无套餐名时显示「主套餐」，不在此标题旁放置重复主套餐小眼睛；Provider 级 `.plan` 聚合同样统一由右上角 `StatusBarQuotaSelector` 控制）：每条模型额度进度条旁均配 `StatusBarQuotaSourcePinButton`——多模型套餐（`displayedModels.count > 1`，如 Antigravity / MiniMax）绑定 `.planModel(modelName:)`（跳过 `aggregateQuotaModels` 排除规则直接监控该模型自身额度），单模型套餐（`displayedModels.count <= 1`，如 ChatGPT / GLM）直接绑定 `.plan`。每条可独立选择的 API Key / 活动套餐标题旁也有单击切换的小眼睛；再次点击已选中的实心来源小眼睛均取消锁定并恢复全 Provider 接力聚合（`statusBarQuotaSelection = nil`）。菜单展开的 Plan 卡通过 `MenuQuotaProviderRow.planCard` 传入 `selectedStatusBarSource`，并以显式 `@MainActor @Sendable` 闭包注入 `cardSelectStatusBarQuota`、调用 `selectPlanQuotaSource`（宿主注入 `AppState.toggleStatusBarQuotaSelection`），与外层 Provider 行写入同一个 `config.statusBarQuotaSelection`。已选来源显示实心眼睛。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -682,9 +682,9 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
   `\.cardPinStatusBarAction`（`((String) -> Void)?`，参数 `status.id`）→
   `AppState.toggleStatusBarPinnedProvider(_:)`：单击选择该 Provider 的主套餐，再点同一卡片取消选择（置 `nil` 回到全 Provider 聚合）。
   `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`。
-  多模型套餐主套餐标题旁（仅 `displayedModels.count > 1` 时显示，单模型套餐由唯一进度条直接承载 `.plan`，省略标题旁重复按钮）的 `StatusBarQuotaSourcePinButton` 一击选择 Provider 主套餐聚合（`aggregateQuotaModels`）；所有模型进度条行旁亦配 `StatusBarQuotaSourcePinButton`（多模型套餐绑定 `.planModel(modelName:)`、跳过聚合过滤直接监控该模型自身额度；单模型套餐绑定 `.plan`）。重复点击保持所选，取消锚定仍由 Provider 行眼睛完成。ChatGPT 每个 API Key、
-  GLM 每个生效中或待生效活动套餐的标题旁同一按钮一击选择对应独立额度池，已选项以实心眼睛标记。
-  用 `setStatusBarQuotaSelection` 选择独立来源。详情卡经 `\.cardStatusBarQuotaOptions` /
+  所有模型进度条行旁均配 `StatusBarQuotaSourcePinButton`（多模型套餐 `displayedModels.count > 1` 绑定 `.planModel(modelName:)`、跳过聚合过滤直接监控该模型自身额度；单模型套餐 `displayedModels.count <= 1` 直接绑定 `.plan`）。主套餐大标题（`mainPlanTitle`）仅保留名称文本，不再放置重复的 `.plan` 小眼睛，Provider 级 `.plan` 聚合统一由卡片 / 菜单行右上角 `StatusBarQuotaSelector` 控制。ChatGPT 每个 API Key、
+  GLM 每个生效中或待生效活动套餐的标题旁同一按钮亦一击锁定对应独立额度池，已选项以实心眼睛标记（`状态栏当前显示：<title>（点击恢复全局聚合）`）。
+  再次点击已选中的实心 `StatusBarQuotaSourcePinButton`（以及各宿主注入的 `AppState.toggleStatusBarQuotaSelection(_:source:)`）直接取消锁定并置 `statusBarQuotaSelection = nil` 恢复全 Provider 接力聚合；`setStatusBarQuotaSelection` 仍保留用于设置页 Picker 显式赋选。详情卡经 `\.cardStatusBarQuotaOptions` /
   `\.cardSelectStatusBarQuota` 注入选项和动作。`selectedStatusBarSource` 参与卡片 Equatable，
   同 Provider 切换 Key / 权益时也会更新，菜单勾选与 help 指向具体来源。
 
@@ -1178,4 +1178,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-11 · 代码 761b0c6

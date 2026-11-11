@@ -418,7 +418,7 @@ GPT models）/ `gemini_argon`（Gemini 4 Argon）。这些都是独立配额池�
 - 显式选择无读数、被删除或 Provider 被禁用：保留选择，单环灰色 `—` / tooltip「暂无数据」，**不回退全局**。SF Symbol 健康点同样只反映被选来源，无数据为 nil。
 
 `AppState.statusBarQuotaPools` 是来源目录，选项与读数来自同一组 `StatusBarQuotaPool`。多模型套餐时 `.plan` 选项标题带「主套餐 · …」前缀，并在其后按去重 `modelName` 列出全部活跃模型的 `.planModel(modelName:)` 独立池。
-`statusBarQuotaOptions` 提供设置 / 小眼睛菜单选项，`statusBarQuotaTitle` 提供来源与读数提示；
+`statusBarQuotaOptions` 提供设置 / 小眼睛菜单选项，`statusBarQuotaTitle` 提供来源与读数提示；`AppState.toggleStatusBarQuotaSelection(providerID:source:)` 为卡片/菜单各 `StatusBarQuotaSourcePinButton` 及小眼睛右键菜单的统一开关动作（再次点击当前已选来源即清空回 `nil` 恢复全局接力）。
 `StatusBarQuotaProjection.metrics` 单源计算主套餐聚合。绘图只消费
 `StatusBarQuotaMetrics`：`singleQuota != nil` 表示单环（其中 `remainingFraction == nil`
 表示未知），否则走双窗绘图。全局只剩一个窗口类别时也使用单环，保留非零最小有效余量。
@@ -574,5 +574,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-11 · 代码 761b0c6
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。
