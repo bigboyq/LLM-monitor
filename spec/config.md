@@ -63,7 +63,7 @@ The app reads and writes this shape:
 | `holidaySource` | global | 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。缺省（不写键）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；**显式空串** = 只用随 App 打包的内置快照、不联网；其余值按 http(s) URL 或本地文件路径解析。类型写错按缺失处理（回退缺省语义）。缓存文件、取数触发与设置页展示见 `spec/ui/settings.md` 的「节假日数据源」。 |
 | `appearance` | global | 应用外观（`AppAppearance`：`light` / `dark` / 缺省=自动跟随系统）。`AppState.applyAppearance` 写 `NSApp.appearance`，start 与每次配置变更时应用；设置页界面 pane「外观」节随普通表单草稿保存，选「自动」时字段不落盘。 |
 | `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
-| `statusBarQuotaSelection` | global | 状态栏指标来源（`StatusBarQuotaSelection`）。缺省 / `null` = 全 Provider 接力聚合；`providerID` 使用抓取配置 ID（如 `codex_chatgpt`、`glm_coding_plan`）。`source` 缺省为主套餐，显式形状为 `{"kind":"plan"}`、`{"kind":"apiCredit","keyID":"…"}` 或 `{"kind":"activityPlan","planID":"…","entitlementID":"…"}`。来源暂缺时保留所选值并显示暂无数据，不静默切换。旧 `statusBarPinnedProvider` 仅在新字段缺省时迁移为主套餐；写回只使用新字段。 |
+| `statusBarQuotaSelection` | global | 状态栏指标来源（`StatusBarQuotaSelection`）。缺省 / `null` = 全 Provider 接力聚合；`providerID` 使用抓取配置 ID（如 `codex_chatgpt`、`glm_coding_plan`）。`source` 缺省为主套餐，显式形状为 `{"kind":"plan"}`、`{"kind":"planModel","modelName":"…"}`、`{"kind":"apiCredit","keyID":"…"}` 或 `{"kind":"activityPlan","planID":"…","entitlementID":"…"}`。来源暂缺时保留所选值并显示暂无数据，不静默切换。旧 `statusBarPinnedProvider` 仅在新字段缺省时迁移为主套餐；写回只使用新字段。 |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
@@ -324,4 +324,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-11-10 · 代码 abcf932
+> 核对基线：2026-11-11 · 代码 0891871

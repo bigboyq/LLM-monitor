@@ -1689,7 +1689,8 @@ truth: `min(5h 剩余, 周剩余 × N)` (`ModelQuota.weeklyEquivalentMultiplier`
 `Gemini 4 Argon`（`gemini_argon`）组不参与跨 model 聚合读数 —— 状态栏 iconDuo、边缘窗圆环与
 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取聚合 model 集合，
 `ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），
-只以主力 `Gemini Models`（`gemini_models`）代表 Antigravity 的聚合水位；卡片三组行、
+只以主力 `Gemini Models`（`gemini_models`）代表聚合水位；卡片三组行、各行独立小眼睛直选
+（`StatusBarQuotaSource.planModel(modelName:)`，用户显式固定单个模型时绕过聚合排除、直接展示该组额度）与
 通知检测不受影响。滤后为空的退化场景回退 `activeModels`。
 
 卡片第 2 段「额度窗口用量」表格的 **5h / 周** 同样严格走 `aggregateQuotaModels`，仅统计
@@ -1909,4 +1910,4 @@ For raw quota export outside the menu app:
    的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 0891871

@@ -204,7 +204,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」），眼睛紧随其后；每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。菜单展开的 Plan 卡通过 `MenuQuotaProviderRow.planCard` 传入 `selectedStatusBarSource`，并以显式 `@MainActor @Sendable` 闭包注入 `cardSelectStatusBarQuota`、调用 `selectPlanQuotaSource`，与外层 Provider 行使用同一选择动作。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
+右侧放置 Provider 级状态栏来源小眼睛（`eye.fill` / `eye.slash`，单击选该 Provider 主套餐、再次点击取消；右键仍可选具体来源）与额度更新时间，贴近刷新按钮。主套餐额度组在额度行上方显示套餐名（无套餐名时显示「主套餐」）：多模型套餐（`displayedModels.count > 1`，如 Antigravity / MiniMax）在主套餐标题后保留 `.plan` 聚合小眼睛，同时在每条模型额度进度条旁放置 `.planModel(modelName:)` 独立小眼睛（按方案 2B 直接监控该模型自身额度，不应用 `aggregateQuotaModels` 排除规则）；单模型套餐（`displayedModels.count <= 1`，如 ChatGPT / GLM）省略大标题旁重复的主套餐小眼睛，将唯一进度条旁的小眼睛直接绑定 `.plan`。每条可独立选择的 API Key / 活动套餐标题旁也有单击即选的小眼睛。菜单展开的 Plan 卡通过 `MenuQuotaProviderRow.planCard` 传入 `selectedStatusBarSource`，并以显式 `@MainActor @Sendable` 闭包注入 `cardSelectStatusBarQuota`、调用 `selectPlanQuotaSource`，与外层 Provider 行使用同一选择动作。已选来源显示实心眼睛，并写入同一个 `config.statusBarQuotaSelection`。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -429,13 +429,14 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   并集、不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集，
   故取**并集**（量测锚 `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下
   则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/TTFT/Speed = 段级
-  聚合（Turns 用段 `promptSpeedStatistics.totalPromptCount`、Think 用段 buckets），
-  模型行用行级值；速度均为完整 Prompt P50，TTFT 为**调用级 P50**
+  聚合（Turns 用段 `turnCount`、Think 用段 buckets），
+  模型行用行级值（Turns 用行 `turnCount`）；速度均为**单次有效调用解码速度 P50**
+  （`LocalUsageSummaryBuilder.callSpeedStatistics`），TTFT 为**调用级 P50**
   （`LocalUsageSummaryBuilder.callTTFTStatistics`，样本批与速度同源）。**Speed 格的
   tooltip（2026-11-08 起）从静态口径说明改为该行实际分布**：
   `Min: x · P50: x · P95: x · Max: x tok/s`（`Formatters.formatSpeed`，P95 就近秩法
-  第 ⌈0.95n⌉ 个观测值，`PromptSpeedStatistics.p95`），无有效样本时回退原口径文案，
-  有效数 < 总数时尾注 `（v/m Prompt 有有效时长）`；段头用段级分布、模型行用行级分布。
+  第 ⌈0.95n⌉ 个观测值，`CallSpeedStatistics.p95`），无有效样本时回退原口径文案，
+  有效数 < 总数时尾注 `（v/m 次调用有有效时长）`；段头用段级分布、模型行用行级分布。
   数值自带量纲（数量级后缀 / 货币符号 /
   % / tok/s / 秒），不带字段标签，口径解释挂每格 `.help` 与表头。Update 占固定尾槽
   （`timeSlot = 38`，以放下标题「Update」为准），模型行留空同宽保证簇列对齐；
@@ -455,23 +456,22 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `HarnessMetricColumns` 并集簇 + 空时间槽——与 harness 行字段级对齐。
   **Prompt 速度范围图与「共享刻度」图例已于 2026-11-07 移除**（用户裁定：图占位大；
   面板宽度本为固定 484pt 常量，移除不改变宽度、只省每行高度与图例行）。速度分布统计
-  （`min / max / P50 / latest`）仍按 `spec/accounting.md` §Prompt 速度分布计算，
-  UI 只消费 P50 文本。`Pmt` counts all recorded promptIDs, including prompts excluded
-  from speed statistics；无有效时长的 Prompt 计入 Pmt、速度格按 `—` 处理。
+  （`min / max / P50 / P95 / latest`）改按 `spec/accounting.md` §调用级速度分布计算，
+  UI 只消费 P50 文本。`Turns`（`turnCount`）统计全部去重 `promptID`，包含缺少有效时长的调用；
+  无有效时长调用的样本计入 Turns、仅跳过该次调用的速度统计，无任何有效调用时速度格显示 `—`。
   Fleet client sections use the same compact card summary and disclosure interaction;
   without local call durations they display speed `—`, including expanded Fleet model
-  rows. Fleet model rows use the same single-baseline format and omit the unknown Pmt
+  rows. Fleet model rows use the same single-baseline format and omit the unknown Turns
   count; help explains that duration data is not synchronized. The row value is the **single-provider,
   single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
   `$9.80` / `未定价`) — cross currency folding happens only at section and global
-  level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ decode duration`
-  over all calls in one prompt（解码时长 = 调用时长 − 首字延迟，无 TTFT 的调用按
-  时长全额计入，2026-11-08 起见 `spec/accounting.md` §Token/s 速率口径）. A prompt
-  joins the distribution only when all call
-  durations are valid（且解码时长为正）; `latest` is the newest prompt and is `—` when that newest
-  prompt is incomplete (never an older fallback). Help explains excluded samples.
+  level, never per row. Call speed is `(Output+Reason) ÷ decode duration` per single
+  effective call（解码时长 = 调用时长 − 首字延迟，无 TTFT 的调用按
+  时长全额计入，2026-11-08 起见 `spec/accounting.md` §Token/s 速率口径）. Each individual
+  call joins the distribution when `hasValidDecodeDuration` passes（无有效时长的同 turn 其它调用不会连坐被踢出）;
+  `latest` is the newest single call and is `nil` when that call lacks a valid decode duration (never an older fallback). Help explains excluded calls.
   The client summary `速度` is calculated from
-  all of that client's daily prompts, not by averaging model-row percentiles. The
+  all of that client's daily samples, not by averaging model-row percentiles. The
   global summary row carries no speed — the rate is a per-client/per-model metric.
 
 Visible speed readings share `Formatters.formatSpeed`: at most three numeric characters
@@ -479,7 +479,7 @@ including the decimal point (`8.6` / `50` / `246`); larger magnitudes use a suff
 `1.0K`. This changes display precision only; P50, range markers, and shared scales retain
 their original numerical values. TTFT readings share `Formatters.formatTTFT`（裸数字秒，
 `0.86` / `12.5` / `124`，恒 ≤ 4 字符；nil → `—`）——Speed 列与 TTFT 列同批样本、
-不同聚合（速度 = Prompt 级 P50，TTFT = 调用级 P50，见 `spec/accounting.md` §TTFT 口径）。
+同以单次有效调用为单位聚合（速度 = 调用级解码速率 P50，TTFT = 调用级 P50，见 `spec/accounting.md` §调用级速度分布 & §TTFT 口径）。
 Fleet 段 / 模型行无本地样本，TTFT 恒 `—`（wire 协议不携带）。
 
 The 484pt menu gives the compact client summary room for four core metrics and adds
@@ -682,7 +682,7 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
   `\.cardPinStatusBarAction`（`((String) -> Void)?`，参数 `status.id`）→
   `AppState.toggleStatusBarPinnedProvider(_:)`：单击选择该 Provider 的主套餐，再点同一卡片取消选择（置 `nil` 回到全 Provider 聚合）。
   `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`。
-  主套餐额度组标题旁的 `StatusBarQuotaSourcePinButton` 一击选择 Provider 主套餐；重复点击保持所选，取消锚定仍由 Provider 行眼睛完成。ChatGPT 每个 API Key、
+  多模型套餐主套餐标题旁（仅 `displayedModels.count > 1` 时显示，单模型套餐由唯一进度条直接承载 `.plan`，省略标题旁重复按钮）的 `StatusBarQuotaSourcePinButton` 一击选择 Provider 主套餐聚合（`aggregateQuotaModels`）；所有模型进度条行旁亦配 `StatusBarQuotaSourcePinButton`（多模型套餐绑定 `.planModel(modelName:)`、跳过聚合过滤直接监控该模型自身额度；单模型套餐绑定 `.plan`）。重复点击保持所选，取消锚定仍由 Provider 行眼睛完成。ChatGPT 每个 API Key、
   GLM 每个生效中或待生效活动套餐的标题旁同一按钮一击选择对应独立额度池，已选项以实心眼睛标记。
   用 `setStatusBarQuotaSelection` 选择独立来源。详情卡经 `\.cardStatusBarQuotaOptions` /
   `\.cardSelectStatusBarQuota` 注入选项和动作。`selectedStatusBarSource` 参与卡片 Equatable，
@@ -875,7 +875,7 @@ look for a hover route to this data — the card carries it inline.
 
 - 大部分模型（`general` / `image` / `speech` / `music` / `tts` 等）把 5h 和周额度合成一条，周进度条按 10 个等价额度分段（`ModelQuota.weeklyEquivalentMultiplier` = 10）。
 - **`video` 模型走日窗口**：周进度条按 7 个等价额度分段（1 天 ≈ 1/7 周）。原因：minimax video 实际是日配额而不是 5h 配额，按 5h × 10 分段会误导。label 由 `QuotaSummary.primaryWindowLabel` 按 model 名判断。
-- **`video` 不参与聚合读数**：状态栏 iconDuo（左右弧 / 中心百分比 / 底部三点）、边缘窗圆环与 provider 综合健康度走 `QuotaInfo.aggregateQuotaModels(providerKind:)`，`video` 被 `ModelQuota.isExcludedFromQuotaAggregation` 排除（与 antigravity 的 Claude and GPT / Gemini 4 Argon 组同规则）——独立小配额池的余量不代表主力模型水位；卡片 video 行照常展示，通知检测仍逐 model 覆盖。
+- **`video` 不参与聚合读数**：状态栏 iconDuo（左右弧 / 中心百分比 / 底部三点）、边缘窗圆环与 provider 综合健康度走 `QuotaInfo.aggregateQuotaModels(providerKind:)`，`video` 被 `ModelQuota.isExcludedFromQuotaAggregation` 排除（与 antigravity 的 Claude and GPT / Gemini 4 Argon 组同规则）——独立小配额池的余量不代表主力模型水位；卡片 video 行照常展示并可经自身小眼睛 `.planModel(modelName:)` 单独盯住状态栏，通知检测仍逐 model 覆盖。
 
 ### ChatGPT Plan
 
@@ -895,7 +895,7 @@ look for a hover route to this data — the card carries it inline.
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；那些折叠区挂在随行 hover 显隐的弹层里，弹层不在场时无从展开，所以直接画成常驻行——provider 卡退出菜单后也没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models`、`Gemini 4 Argon` and `Claude and GPT models` are shown as separate model groups inside one provider card (display names align with the API-returned `displayName`).
 - 双窗口组把 5h / 周收为一条：Gemini 周等效倍率为 4.0（2026-11-06 用户再次实测确认周额度 $120、5h $30，周容量精确为 5h 的 4 倍；按 4 个等容量整段展示，每段 25 点），Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 2，周窗口即 2 × 5h 额度，每段 50 点；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
-- **`Claude and GPT models`（`claude_and_gpt_models`）与 `Gemini 4 Argon`（`gemini_argon`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），只以主力 `Gemini Models` 代表聚合水位；卡片三组行照常展示，通知检测不受影响。
+- **`Claude and GPT models`（`claude_and_gpt_models`）与 `Gemini 4 Argon`（`gemini_argon`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），只以主力 `Gemini Models` 代表聚合水位；卡片三组行照常展示且每条进度条旁均有独立小眼睛（`.planModel(modelName:)`）供用户主动选入状态栏，通知检测不受影响。
 - The countdown suffix uses `Formatters.formatResetSuffix`'s compact ladder (e.g. `3h41m`), the same reset-suffix formatter every provider row shares.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 
@@ -1178,4 +1178,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 0891871

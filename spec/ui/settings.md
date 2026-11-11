@@ -244,7 +244,7 @@ Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图
 - **图标主题 Picker**（`StatusBarIconStyle`）：App 图标、Icon Duo 双环仪表盘、系统符号等样式及实时烘焙预览；
 - **Provider + 额度来源 Picker**（`statusBarQuotaSelection`）：
   - Provider「全部聚合（非零最小值）」对应 nil，沿用所有有效 Provider 的全局接力读数；
-  - 选中 Provider 后显示其可用额度来源：主套餐（双窗口或单窗口）、每个独立 Admin API Key、每份 ZCode Start Plan entitlement；切换 Provider 将来源重置为主套餐；
+  - 选中 Provider 后显示其可用额度来源：主套餐（多模型套餐额外展开全部活跃单模型 `.planModel(modelName:)`，如 `Gemini Models` / `Gemini 4 Argon` / `Claude and GPT models` 或 `MiniMax video`）、每个独立 Admin API Key、每份 ZCode Start Plan entitlement；切换 Provider 将来源重置为主套餐；
   - 暂无数据或暂时不可用的已保存来源保留为占位选项，不会自动改选；Provider 卡片眼睛单击选择/取消主套餐，右键菜单可直选同一 Provider 的其它额度来源；设置与卡片双向同步；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
@@ -457,6 +457,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。expanded 表格由 `ExpandedUsageHistoryTableLayout` 显式分配七列：日期固定 42pt，其余六列在各自下限上均分额外空间（下限常量住在 `SevenDayUsageChartMetrics.expanded*`），行高随单元格测量结果变化。466pt 下限可完整布局，放大时随窗口拉伸；compact 保留原有 Grid 与固定列宽。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 0891871
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

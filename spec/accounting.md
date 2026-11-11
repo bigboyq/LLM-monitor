@@ -163,9 +163,9 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 `ttft ≥ duration` 的异常样本整条剔除。窗口聚合 = Σ分子 ÷ Σ解码时长，**唯一实现在
 `LocalUsageSummaryBuilder.windowTokenRate`**（`Models/LocalTokenUsageSample.swift`）；
 有效性域 duration ∈ [0.2, 3600] s 且解码时长 > 0，缺失或越界的样本分子分母都不计
-——宁出 `—` 不出假平均。Prompt 级分布（`promptSpeedStatistics`，Harness 列表 Speed
-列与 7 天历史用）同口径：任一调用解码时长非正 → 整个 prompt 不进分布（沿用
-「宁缺毋假」门控），Prompt 速率 = Σtokens ÷ Σ解码时长。混合覆盖窗口（部分调用无
+——宁出 `—` 不出假平均。菜单用量 Speed 列与 7 天历史用调用级分布（`callSpeedStatistics`，
+见下节 §调用级速度分布）：单次调用有效域同 `duration ∈ [0.2, 3600]` s 且解码时长 > 0，
+某条调用缺失或解码时长非正时仅剔除该条调用本身，不再连坐同 turn 其余有效调用；混合覆盖窗口（部分调用无
 TTFT）的读数介于解码速度与含 TTFT 速度之间，tooltip 已注明「无 TTFT 数据的调用
 按时长全额计入」。
 
@@ -235,7 +235,7 @@ UI 消费：「额度窗口」模块**用量态**的速度列从「价值」位�
 数值部分含小数点最多三个字符（`8.6` / `50` / `246`），舍入跨档后不保留多余小数；
 将进位到四位时使用 K / M / G 数量级后缀（后缀不计入数值宽度），更大数量级使用指数后缀。
 nil、负值或非有限读数显示 `—`。菜单摘要与七天速度趋势复用同一格式（原模型行
-Prompt 速度范围线 UI 已于 2026-11-07 移除，统计层保留；见 §Prompt 速度分布）；表头 tooltip
+Prompt 速度范围线 UI 已于 2026-11-07 移除，统计层改用调用级分布；见 §调用级速度分布）；表头 tooltip
 注明口径「窗口内 (Output+Reason) ÷ 解码时长，tok/s；解码时长 = 调用时长 − 首字延迟，
 无 TTFT 数据的调用按时长全额计入」（2026-11-08 起分母扣除 TTFT，见 §Token/s 速率口径）。
 TTFT 的三处 UI 消费（2026-11-08）：Harness 列表 Speed 与 Value 之间（调用级 P50，
@@ -245,28 +245,30 @@ TTFT 的三处 UI 消费（2026-11-08）：Harness 列表 Speed 与 Value 之间
 今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
 `glmCategoryTodaySamples`）。
 
-## Prompt 速度分布（菜单用量）
+## 调用级速度分布（菜单用量）
 
-菜单用量的速度分布以 `promptID` 为最小统计单位，由
-`LocalUsageSummaryBuilder.promptSpeedStatistics` 计算。多个 sample 共享一个命名空间化
-`promptID` 时表示一次用户请求中的多轮模型调用：先合并这些调用的
-`Output + Reason` 与有效时长，再算该 prompt 的速度 `Σ(Output+Reason) ÷ Σ时长`；
-这样一次多轮 prompt 只在分布中占一个样本，不会因轮数较多而加权。
+菜单用量的速度分布以单次有效模型调用（`LocalTokenUsageSample`）为最小统计单位，由
+`LocalUsageSummaryBuilder.callSpeedStatistics`（`CallSpeedStatistics`）计算（2026-11-11 起由原
+`PromptSpeedStatistics` 的 Turn 级全票门控调整为调用级，避免 agent 多轮对话中附带的
+tool call 或 `<0.5s` 短调用把同 turn 内正常的流式输出调用一并剔除）。每次调用先扣除
+`ttftSeconds` 得到解码时长 `decode = durationSeconds - (ttftSeconds ?? 0)`（无 TTFT 按时长全额计入），
+再计算单次速率 `(Output + Reason) ÷ decode`。
 
-有效时长仍采用调用级的 `[0.2, 3600]` 秒边界，并要求有限数值。一个 prompt 中只要有
-任一调用的时长缺失、越界或非有限，该 prompt 就整体不进入 min / max / P50 分布，避免
-将部分 token 与部分时长冒充完整 prompt 速度。`validPromptCount` / `totalPromptCount`
-供 UI 披露覆盖率；没有有效 prompt 时 min、max、P50 都为 nil。
+有效性校验仍通过 `hasValidDecodeDuration` 执行：要求 `durationSeconds` 有限且在 `[0.2, 3600]` 秒内，
+并且 `decode` 有限且严格大于 0。缺失时长、`<0.5s` 被 reader 置 `nil` 的批量调用或 `ttft >= duration`
+的异常样本只跳过该单次调用，不 disqualify 同一 `promptID` 下其余有效调用。`validCallCount` / `totalCallCount`
+供 UI 披露有效调用覆盖率；Turns 列计数与速度统计解耦，由 `HarnessModelRow.turnCount` / `HarnessSection.turnCount`
+按去重后的命名空间化 `promptID` 数（`Set(samples.map(\.promptID)).count`）独立统计。没有有效调用时
+`minimum`、`maximum`、`p50`、`p95` 都为 nil。
 
-`latest` 取 `completedAt` 最新的 prompt，即使该 prompt 时长无效也返回 nil，不回退到更旧
-的有效 prompt。若多个 prompt 的最新时间相同，按 `promptID` 字典序升序稳定打破并列。
-P50 为有效 prompt 速度的中位数；偶数个样本时取中间两个速度的算术平均。输出为零但
-时长完整的 prompt 是有效样本，速度为 `0 tok/s`。
+`latest` 取排序在最末（`completedAt` 最新、并列时 `promptID` 字典序升序、再并列取输入数组后序）的**单次调用**，
+即使该调用时长无效也返回 nil，不回退到更旧的有效调用。P50 为有效调用速度的中位数（偶数个样本取中间两个算术平均），
+P95 为就近秩法（第 `⌈0.95n⌉` 个观测值）。输出为零但解码时长有效的调用仍是有效样本，速度为 `0 tok/s`。
 
 菜单客户端段的统计覆盖该 client 当日全部本地样本；模型行则只覆盖同一
 `quotaProviderID + modelName` 行的当日样本。两者都只使用本地 sample；fleet 未上报调用时长，
-不构造 prompt 速度。原 `tokensPerSecond` / `windowTokenRate` 调用级加权窗口速度继续保留，
-新分布独立提供 min / max / P50 / latest，不改变额度窗口速度和价格、token 桶或日归桶口径。
+不构造调用速度。原 `tokensPerSecond` / `windowTokenRate` 调用级加权窗口速度继续保留，
+新分布独立提供 min / max / P50 / P95 / latest，不改变额度窗口速度和价格、token 桶或日归桶口径。
 
 ## 七天历史趋势
 
@@ -281,9 +283,9 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 价值图使用 `ModelCostEstimate.value` 与 `currency` 数值字段，不从格式化文案逆向解析。若七日内
 出现多种币种，整条价值序列统一换算为 CNY（USD 使用 `MixedCurrencyEstimate.usdToCNYRate`）；
 单币种序列保留原币种。部分计价、样本截断或来源日估价标记必须随价值数据披露。每日速度图
-只展示 `LocalUsageSummaryBuilder.promptSpeedStatistics` 的 P50；Fleet 无本地调用时长样本时
+只展示 `LocalUsageSummaryBuilder.callSpeedStatistics` 的 P50；Fleet 无本地调用时长样本时
 速度不可用。每日权威 token 桶不因样本截断而变成部分值，但样本推导的价值 / 速度需标为部分。
-有效 Prompt 少于已记录 Prompt 时，P50 同样标注部分样本（缺少有效时长的 Prompt 不参与分布）。
+有效调用少于总调用数时（`validCallCount < totalCallCount`），P50 同样标注部分样本（缺少有效时长的调用不参与分布）。
 设置客户端页的 `ClientProviderUsageSummary.samplesTruncated` 沿投影传递样本覆盖状态，
 与日桶源级 `isTruncated` 分开保留；两者都会影响样本推导指标的完整性提示。
 
@@ -353,4 +355,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 0891871
