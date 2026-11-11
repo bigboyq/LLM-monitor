@@ -140,7 +140,10 @@ struct ChatGPTApiCreditsRow: View {
         var text = "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))"
         if credits.carryDeduction != 0 {
             let suffix = credits.carryApproximate ? "（估算）" : ""
-            text += "，边界扣除: $\(String(format: "%.2f", credits.carryDeduction))\(suffix)"
+            let formattedCarry = credits.carryDeduction < 0
+                ? "-$\(String(format: "%.2f", -credits.carryDeduction))"
+                : "$\(String(format: "%.2f", credits.carryDeduction))"
+            text += "，边界扣除: \(formattedCarry)\(suffix)"
         }
         return text
     }

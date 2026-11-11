@@ -2,6 +2,14 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.8] - 2026-11-11
+
+### Fixed
+
+- 修复 ChatGPT API 赠金边界日扣除边界问题：UTC `00:00` 锚点（含东八区默认 `08:00`）不再将首日 UTC 桶误判为上一周期溢入；1 小时快照窗口内 `$0` 边界桶写入缓存；跨周期同值扣除正常记录 `usedAmountAdjustFixedAt`；静默写回配置不再打断并发兄弟 Provider 刷新或本地扫描；支持旧版标量 `adminApiKey` 写回；设置页修改 `billingDay` / `billingTime` 时重置 `usedAmountAdjustFixedAt`；修正草稿 `-0.0` 与提示文案 `-$X.XX` 负号格式。
+- 修复 GLM ZCode `loadCredentials(authPath:)` 无谓解密未使用的 `oauth:bigmodel:access_token`（消除多余钥匙串读取），且 `enc:v2:os:` 分支不再读取磁盘 `credential-secret`。
+- 在 `LocalTokenUsageSample.hasValidDecodeDuration` 中校验 `ttftSeconds` 必须非负且有限，并在多模型 Provider 临时缩水至单一活跃模型时保留已固定的 `.planModel` 状态栏选择。
+
 ## [2.7.7] - 2026-11-11
 
 ### Fixed

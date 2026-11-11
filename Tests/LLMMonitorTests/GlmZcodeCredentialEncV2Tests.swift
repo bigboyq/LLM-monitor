@@ -340,4 +340,274 @@ final class GlmZcodeCredentialEncV2Tests: XCTestCase {
         XCTAssertNil(loaded.jwtToken, "v2 os 解密失败应置 nil，而不是把密文当 token")
         XCTAssertEqual(loaded.bigmodelAccessToken, "plain-bigmodel-token")
     }
+
+    // MARK: - loadCredentials 跳过未使用的 oauth:bigmodel:access_token 与边缘用例
+
+    func testLoadCredentialsSkipsBigmodelOAuthDecryptionAndAvoidsExtraKeychainRead() throws {
+        let keyData = randomKeyData()
+        let keyB64URL = base64URLEncode(keyData)
+        let key = SymmetricKey(data: keyData)
+        let credsURL = tempDirectory.appendingPathComponent("credentials.json")
+        let telemURL = tempDirectory.appendingPathComponent("telemetry-state.json")
+        try #"{"deviceMid":"mid-test-1"}"#.write(to: telemURL, atomically: true, encoding: .utf8)
+
+        let encryptedOsBigmodel = try sealEncV2(
+            "unused-oauth-bigmodel-token",
+            key: key,
+            variant: "os",
+            keyId: "0123456789abcdef01234567"
+        )
+
+        // (1) zcodejwttoken 为明文 + oauth:bigmodel:access_token 为 enc:v2:os: → 不触发 Keychain 读取
+        try """
+        {
+          "zcodejwttoken": "plaintext-jwt-token",
+          "oauth:bigmodel:access_token": "\(encryptedOsBigmodel)"
+        }
+        """.write(to: credsURL, atomically: true, encoding: .utf8)
+
+        var keychainReads = 0
+        let plainCreds = GlmZcodeCredentialReader.loadCredentials(
+            authPath: tempDirectory.path,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 0, "loadCredentials(authPath:) 不应解密未使用的 enc:v2:os oauth token")
+        XCTAssertEqual(plainCreds.deviceMid, "mid-test-1")
+        XCTAssertEqual(plainCreds.jwtToken, "plaintext-jwt-token")
+        XCTAssertNil(plainCreds.bigmodelAccessToken)
+
+        // (2) zcodejwttoken 为 enc:v1: + oauth:bigmodel:access_token 为 enc:v2:os: → 不触发 Keychain 读取
+        let home = "/Users/testuser"
+        let user = "testuser"
+        let v1Jwt = try XCTUnwrap(
+            GlmZcodeCredentialReader.encryptCredential("v1-jwt-token", homeDirectory: home, userName: user)
+        )
+        try """
+        {
+          "zcodejwttoken": "\(v1Jwt)",
+          "oauth:bigmodel:access_token": "\(encryptedOsBigmodel)"
+        }
+        """.write(to: credsURL, atomically: true, encoding: .utf8)
+
+        keychainReads = 0
+        let v1Creds = GlmZcodeCredentialReader.loadCredentials(
+            authPath: tempDirectory.path,
+            homeDirectory: home,
+            userName: user,
+            environmentSecret: nil,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 0, "enc:v1 jwt + enc:v2:os oauth 不应触发 Keychain 读取")
+        XCTAssertEqual(v1Creds.jwtToken, "v1-jwt-token")
+        XCTAssertNil(v1Creds.bigmodelAccessToken)
+
+        // (3) 两者均为 enc:v2:os: 时只读取 1 次 Keychain（为 jwt），oauth 仍跳过
+        let encryptedOsJwt = try sealEncV2("os-jwt-token", key: key, variant: "os")
+        try """
+        {
+          "zcodejwttoken": "\(encryptedOsJwt)",
+          "oauth:bigmodel:access_token": "\(encryptedOsBigmodel)"
+        }
+        """.write(to: credsURL, atomically: true, encoding: .utf8)
+
+        keychainReads = 0
+        let osCreds = GlmZcodeCredentialReader.loadCredentials(
+            authPath: tempDirectory.path,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 1, "只应为 zcodejwttoken 读取一次 Keychain")
+        XCTAssertEqual(osCreds.jwtToken, "os-jwt-token")
+        XCTAssertNil(osCreds.bigmodelAccessToken)
+
+        // (4) loadTokens 显式/默认行为保持兼容：默认仍解密两路，includeBigmodelAccessToken: false 时跳过
+        keychainReads = 0
+        let bothTokens = GlmZcodeCredentialReader.loadTokens(
+            from: credsURL,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 2)
+        XCTAssertEqual(bothTokens.jwtToken, "os-jwt-token")
+        XCTAssertEqual(bothTokens.bigmodelAccessToken, "unused-oauth-bigmodel-token")
+
+        keychainReads = 0
+        let jwtOnlyTokens = GlmZcodeCredentialReader.loadTokens(
+            from: credsURL,
+            includeBigmodelAccessToken: false,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 1)
+        XCTAssertEqual(jwtOnlyTokens.jwtToken, "os-jwt-token")
+        XCTAssertNil(jwtOnlyTokens.bigmodelAccessToken)
+
+        keychainReads = 0
+        let urlCredsSkipped = GlmZcodeCredentialReader.loadCredentials(
+            telemetryStateURL: telemURL,
+            credentialsURL: credsURL,
+            includeBigmodelAccessToken: false,
+            keychainReader: { _ in
+                keychainReads += 1
+                return keyB64URL
+            }
+        )
+        XCTAssertEqual(keychainReads, 1)
+        XCTAssertEqual(urlCredsSkipped.jwtToken, "os-jwt-token")
+        XCTAssertNil(urlCredsSkipped.bigmodelAccessToken)
+    }
+
+    func testMalformedAndTruncatedEncV2SegmentsFailClosed() throws {
+        let secret = "malformed-test-managed-secret-0123456789"
+        let key = SymmetricKey(data: SHA256.hash(data: Data(secret.utf8)))
+        let osKeyData = randomKeyData()
+        let osKeyB64URL = base64URLEncode(osKeyData)
+        let validEnv = try sealEncV2("payload", key: key, variant: "env", keyId: "0123456789abcdef01234567")
+        let validOs = try sealEncV2("payload", key: SymmetricKey(data: osKeyData), variant: "os")
+
+        let malformedEnvCases = [
+            "enc:v2:env:",
+            "enc:v2:env:onlyone",
+            "enc:v2:env:part1.part2",
+            "enc:v2:env:keyid:part1.part2",
+            "enc:v2:env:keyid:",
+            "enc:v2:env:part1.part2.part3.part4",
+            validEnv + ".",
+            validEnv + ":",
+            "enc:v2:env:!!!.BBBB.CCCC",
+            "enc:v2:env:AAAA.!!!.CCCC",
+            "enc:v2:env:AAAA.BBBB.!!!",
+            // 截断的 nonce（< 12 字节）或截断的 tag（< 16 字节）
+            "enc:v2:env:" + base64URLEncode(Data([1, 2, 3])) + "."
+                + base64URLEncode(Data(repeating: 4, count: 16)) + "."
+                + base64URLEncode(Data([5, 6])),
+            "enc:v2:env:" + base64URLEncode(Data(repeating: 1, count: 12)) + "."
+                + base64URLEncode(Data([2, 3, 4])) + "."
+                + base64URLEncode(Data([5, 6])),
+        ]
+        for candidate in malformedEnvCases {
+            XCTAssertNil(
+                GlmZcodeCredentialReader.decryptEncV2(
+                    candidate,
+                    credentialsPath: "/x/credentials.json",
+                    managedSecret: secret,
+                    keychainReader: nil
+                ),
+                "畸形 env 密文应返回 nil: \(candidate)"
+            )
+        }
+
+        // os 变体同样拦截畸形分段与坏 tag，且畸形分段不触碰 Keychain
+        var osKeychainCalls = 0
+        for candidate in [
+            "enc:v2:os:part1.part2",
+            "enc:v2:os:0123456789abcdef01234567:!!!.BBBB.CCCC",
+            validOs + ".",
+        ] {
+            XCTAssertNil(
+                GlmZcodeCredentialReader.decryptEncV2(
+                    candidate,
+                    credentialsPath: "/x/credentials.json",
+                    managedSecret: nil,
+                    keychainReader: { _ in
+                        osKeychainCalls += 1
+                        return osKeyB64URL
+                    }
+                ),
+                "畸形 os 密文应返回 nil: \(candidate)"
+            )
+        }
+        XCTAssertEqual(osKeychainCalls, 0, "结构畸形的 enc:v2:os 不应触发 Keychain 读取")
+
+        // os 变体篡改 tag 必须失败
+        let osSealed = try AES.GCM.seal(Data("os-secret".utf8), using: SymmetricKey(data: osKeyData))
+        var tamperedTag = [UInt8](osSealed.tag)
+        tamperedTag[0] ^= 0xFF
+        let tamperedOs = "enc:v2:os:"
+            + base64URLEncode(Data(osSealed.nonce)) + "."
+            + base64URLEncode(Data(tamperedTag)) + "."
+            + base64URLEncode(osSealed.ciphertext)
+        XCTAssertNil(
+            GlmZcodeCredentialReader.decryptEncV2(
+                tamperedOs,
+                credentialsPath: "/x/credentials.json",
+                managedSecret: nil,
+                keychainReader: { _ in osKeyB64URL }
+            )
+        )
+    }
+
+    func testOversizedSecretFileOver4096BytesIsRejectedAndBoundary4096Works() throws {
+        let credsURL = tempDirectory.appendingPathComponent("credentials.json")
+        let secretURL = tempDirectory.appendingPathComponent("credential-secret")
+
+        let oversizedSecret = String(repeating: "x", count: 4097)
+        let oversizedKey = SymmetricKey(data: SHA256.hash(data: Data(oversizedSecret.utf8)))
+        let encryptedWithOversized = try sealEncV2("jwt-oversized", key: oversizedKey, variant: "env")
+        try #"{"zcodejwttoken":"\#(encryptedWithOversized)"}"#.write(to: credsURL, atomically: true, encoding: .utf8)
+        try Data(oversizedSecret.utf8).write(to: secretURL)
+
+        let loadedOversized = GlmZcodeCredentialReader.loadTokens(
+            from: credsURL,
+            homeDirectory: "/Users/testuser",
+            userName: "testuser",
+            environmentSecret: nil
+        )
+        XCTAssertNil(loadedOversized.jwtToken, "超过 4096 字节的 credential-secret 文件应被拒绝")
+
+        let maxSecret = String(repeating: "y", count: 4096)
+        let maxKey = SymmetricKey(data: SHA256.hash(data: Data(maxSecret.utf8)))
+        let encryptedWithMax = try sealEncV2("jwt-4096", key: maxKey, variant: "env")
+        try #"{"zcodejwttoken":"\#(encryptedWithMax)"}"#.write(to: credsURL, atomically: true, encoding: .utf8)
+        try Data(maxSecret.utf8).write(to: secretURL)
+
+        let loadedMax = GlmZcodeCredentialReader.loadTokens(
+            from: credsURL,
+            homeDirectory: "/Users/testuser",
+            userName: "testuser",
+            environmentSecret: nil
+        )
+        XCTAssertEqual(loadedMax.jwtToken, "jwt-4096")
+    }
+
+    func testCredentialSecretFilePreservesWhitespaceAndNewlinesVerbatim() throws {
+        let verbatimSecret = "  secret-with-leading-and-trailing-space-0123456789  \n"
+        let trimmedSecret = verbatimSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verbatimKey = SymmetricKey(data: SHA256.hash(data: Data(verbatimSecret.utf8)))
+        let trimmedKey = SymmetricKey(data: SHA256.hash(data: Data(trimmedSecret.utf8)))
+
+        let credsURL = tempDirectory.appendingPathComponent("credentials.json")
+        let secretURL = tempDirectory.appendingPathComponent("credential-secret")
+        try Data(verbatimSecret.utf8).write(to: secretURL)
+
+        let encryptedVerbatim = try sealEncV2("jwt-verbatim", key: verbatimKey, variant: "env")
+        let encryptedTrimmed = try sealEncV2("jwt-trimmed", key: trimmedKey, variant: "env")
+        try """
+        {
+          "zcodejwttoken": "\(encryptedVerbatim)",
+          "oauth:bigmodel:access_token": "\(encryptedTrimmed)"
+        }
+        """.write(to: credsURL, atomically: true, encoding: .utf8)
+
+        let loaded = GlmZcodeCredentialReader.loadTokens(
+            from: credsURL,
+            homeDirectory: "/Users/testuser",
+            userName: "testuser",
+            environmentSecret: nil
+        )
+        XCTAssertEqual(loaded.jwtToken, "jwt-verbatim", "credential-secret 文件内容不得 trim 空白与换行")
+        XCTAssertNil(loaded.bigmodelAccessToken, "用 trim 后文本加密的密文不应被未 trim 的文件内容解开")
+    }
 }

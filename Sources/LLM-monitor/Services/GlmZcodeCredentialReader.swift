@@ -110,11 +110,15 @@ enum GlmZcodeCredentialReader {
     }
 
     /// 根据可选自定义 authPath 一次性加载 ZCode 本地凭证。
+    /// 默认跳过解密 `oauth:bigmodel:access_token`（生产调用方由 API Key 替代，避免
+    /// `enc:v2:os:` 触发多余的 Keychain 读取）。
     nonisolated static func loadCredentials(
         authPath: String?,
         homeDirectory: String = NSHomeDirectory(),
         userName: String = NSUserName(),
-        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]
+        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"],
+        includeBigmodelAccessToken: Bool = false,
+        keychainReader: ((String) -> String?)? = nil
     ) -> GlmZcodeCredentials {
         let urls = resolveURLs(from: authPath)
         return loadCredentials(
@@ -122,7 +126,9 @@ enum GlmZcodeCredentialReader {
             credentialsURL: urls.credentialsURL,
             homeDirectory: homeDirectory,
             userName: userName,
-            environmentSecret: environmentSecret
+            environmentSecret: environmentSecret,
+            includeBigmodelAccessToken: includeBigmodelAccessToken,
+            keychainReader: keychainReader
         )
     }
 
@@ -132,14 +138,18 @@ enum GlmZcodeCredentialReader {
         credentialsURL: URL = defaultCredentialsURL,
         homeDirectory: String = NSHomeDirectory(),
         userName: String = NSUserName(),
-        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]
+        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"],
+        includeBigmodelAccessToken: Bool = true,
+        keychainReader: ((String) -> String?)? = nil
     ) -> GlmZcodeCredentials {
         let deviceMid = loadDeviceMid(from: telemetryStateURL)
         let (jwtToken, bigmodelAccessToken) = loadTokens(
             from: credentialsURL,
             homeDirectory: homeDirectory,
             userName: userName,
-            environmentSecret: environmentSecret
+            environmentSecret: environmentSecret,
+            includeBigmodelAccessToken: includeBigmodelAccessToken,
+            keychainReader: keychainReader
         )
         return GlmZcodeCredentials(
             deviceMid: deviceMid,
@@ -148,12 +158,14 @@ enum GlmZcodeCredentialReader {
         )
     }
 
-    /// 从 `credentials.json` 一次性读取并解密 `zcodejwttoken` 与 `oauth:bigmodel:access_token`。
+    /// 从 `credentials.json` 读取并解密 `zcodejwttoken`（及可选的 `oauth:bigmodel:access_token`）。
     nonisolated static func loadTokens(
         from fileURL: URL = defaultCredentialsURL,
         homeDirectory: String = NSHomeDirectory(),
         userName: String = NSUserName(),
-        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]
+        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"],
+        includeBigmodelAccessToken: Bool = true,
+        keychainReader: ((String) -> String?)? = nil
     ) -> (jwtToken: String?, bigmodelAccessToken: String?) {
         guard let data = try? Data(contentsOf: fileURL),
               let payload = try? JSONDecoder().decode(CredentialsPayload.self, from: data) else {
@@ -168,21 +180,25 @@ enum GlmZcodeCredentialReader {
                 credentialsURL: fileURL,
                 homeDirectory: homeDirectory,
                 userName: userName,
-                environmentSecret: environmentSecret
+                environmentSecret: environmentSecret,
+                keychainReader: keychainReader
             )
         }
 
-        let bigmodel = payload.bigmodelAccessToken.flatMap { raw -> String? in
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            return decryptCredential(
-                trimmed,
-                credentialsURL: fileURL,
-                homeDirectory: homeDirectory,
-                userName: userName,
-                environmentSecret: environmentSecret
-            )
-        }
+        let bigmodel: String? = includeBigmodelAccessToken
+            ? payload.bigmodelAccessToken.flatMap { raw -> String? in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                return decryptCredential(
+                    trimmed,
+                    credentialsURL: fileURL,
+                    homeDirectory: homeDirectory,
+                    userName: userName,
+                    environmentSecret: environmentSecret,
+                    keychainReader: keychainReader
+                )
+            }
+            : nil
 
         return (jwt, bigmodel)
     }
@@ -235,13 +251,16 @@ enum GlmZcodeCredentialReader {
         keychainReader: ((String) -> String?)? = nil
     ) -> String? {
         if raw.hasPrefix("enc:v2:") {
+            let managedSecret = raw.hasPrefix("enc:v2:env:")
+                ? resolveManagedSecret(
+                    environmentSecret: environmentSecret,
+                    credentialsURL: credentialsURL
+                )
+                : nil
             return decryptEncV2(
                 raw,
                 credentialsPath: credentialsURL.path,
-                managedSecret: resolveManagedSecret(
-                    environmentSecret: environmentSecret,
-                    credentialsURL: credentialsURL
-                ),
+                managedSecret: managedSecret,
                 keychainReader: keychainReader ?? readZcodeCredentialKeychainPassword
             )
         }
@@ -250,7 +269,7 @@ enum GlmZcodeCredentialReader {
             return raw
         }
 
-        let parts = raw.dropFirst("enc:v1:".count).split(separator: ".")
+        let parts = raw.dropFirst("enc:v1:".count).split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
               let ivData = base64URLDecode(String(parts[0])),
               let tagData = base64URLDecode(String(parts[1])),
@@ -323,9 +342,36 @@ enum GlmZcodeCredentialReader {
         keychainReader: ((String) -> String?)?
     ) -> String? {
         let body: String
-        let key: SymmetricKey?
+        let isOsVariant: Bool
         if value.hasPrefix("enc:v2:os:") {
             body = String(value.dropFirst("enc:v2:os:".count))
+            isOsVariant = true
+        } else if value.hasPrefix("enc:v2:env:") {
+            body = String(value.dropFirst("enc:v2:env:".count))
+            isOsVariant = false
+        } else {
+            logWarn("[glm-zcode] 未知的 enc:v2 变体前缀，无法解密")
+            return nil
+        }
+
+        // `<keyId>:<iv>.<tag>.<ciphertext>`：keyId 不参与解密。base64url 字符集
+        // 不含 `:`，出现冒号即视为带 keyId 段（兼容空 keyId 与任意内容）。
+        let payload = body.contains(":")
+            ? String(body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).last ?? "")
+            : body
+        let parts = payload.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let ivData = base64URLDecode(String(parts[0])),
+              let tagData = base64URLDecode(String(parts[1])),
+              let ciphertextData = base64URLDecode(String(parts[2])),
+              let nonce = try? AES.GCM.Nonce(data: ivData),
+              let sealedBox = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertextData, tag: tagData) else {
+            logWarn("[glm-zcode] enc:v2 密文结构畸形，返回 nil")
+            return nil
+        }
+
+        let key: SymmetricKey
+        if isOsVariant {
             guard let reader = keychainReader else {
                 logWarn("[glm-zcode] enc:v2:os 密文缺少 Keychain 读取通道，跳过解密")
                 return nil
@@ -340,33 +386,16 @@ enum GlmZcodeCredentialReader {
                 return nil
             }
             key = SymmetricKey(data: keyData)
-        } else if value.hasPrefix("enc:v2:env:") {
-            body = String(value.dropFirst("enc:v2:env:".count))
+        } else {
             guard let managedSecret, !managedSecret.isEmpty else {
                 logWarn("[glm-zcode] 无 managed secret（ZCODE_CREDENTIAL_SECRET / credential-secret 文件），无法解密 enc:v2:env")
                 return nil
             }
             key = SymmetricKey(data: SHA256.hash(data: Data(managedSecret.utf8)))
-        } else {
-            logWarn("[glm-zcode] 未知的 enc:v2 变体前缀，无法解密")
-            return nil
         }
 
-        // `<keyId>:<iv>.<tag>.<ciphertext>`：keyId 不参与解密。base64url 字符集
-        // 不含 `:`，出现冒号即视为带 keyId 段（兼容空 keyId 与任意内容）。
-        let payload = body.contains(":")
-            ? String(body.split(separator: ":", maxSplits: 1).last ?? "")
-            : body
-        let parts = payload.split(separator: ".")
-        guard parts.count == 3,
-              let ivData = base64URLDecode(String(parts[0])),
-              let tagData = base64URLDecode(String(parts[1])),
-              let ciphertextData = base64URLDecode(String(parts[2])),
-              let key,
-              let nonce = try? AES.GCM.Nonce(data: ivData),
-              let sealedBox = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertextData, tag: tagData),
-              let decryptedData = try? AES.GCM.open(sealedBox, using: key) else {
-            logWarn("[glm-zcode] enc:v2 密文结构畸形或 AES-GCM 校验失败（密钥不匹配），返回 nil")
+        guard let decryptedData = try? AES.GCM.open(sealedBox, using: key) else {
+            logWarn("[glm-zcode] enc:v2 AES-GCM 校验失败（密钥不匹配或密文被篡改），返回 nil")
             return nil
         }
         return String(data: decryptedData, encoding: .utf8)

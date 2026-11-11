@@ -200,9 +200,7 @@ struct SettingsFormDraft: Equatable {
                         id: "default",
                         label: "",
                         apiKey: pc.adminApiKey ?? "",
-                        monthlyQuotaLimit: pc.adminMonthlyQuotaLimit.map {
-                            $0.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", $0) : String($0)
-                        } ?? "40",
+                        monthlyQuotaLimit: pc.adminMonthlyQuotaLimit.map(CodexAdminKeyConfigDraft.formatDraftDouble) ?? "40",
                         billingDay: pc.adminBillingDay ?? 11,
                         billingTime: SettingsView.parseBillingTime(from: pc.adminBillingTime)
                     )
@@ -242,7 +240,7 @@ struct CodexAdminKeyConfigDraft: Identifiable, Equatable {
     var monthlyQuotaLimit: String
     var billingDay: Int
     var billingTime: Date
-    /// 当前账期边界日扣除值（美元，可为负；正数=增加已用）。默认 "0" 不扣除。
+    /// 当前账期边界日扣除值（美元，可为负；正数=减少已用，负数=增加已用，对应 `usedAmount = max(0, rawSum - carry)`）。默认 "0" 不扣除。
     var usedAmountAdjust: String
     /// 打开设置时的 adjust 快照：saveAndApply 据此区分「用户没动」（保留 config
     /// 现值与定值时间戳，含自动写回）与「用户改了」（定值为本拍）。
@@ -272,9 +270,17 @@ struct CodexAdminKeyConfigDraft: Identifiable, Equatable {
         self.usedAmountAdjustFixedAt = usedAmountAdjustFixedAt
     }
 
-    /// Double → 草稿字符串：整数显示 %.0f，否则 String(value)，避免 "40.0" 尾零噪声。
-    private static func formatDraftDouble(_ v: Double) -> String {
-        v.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", v) : String(v)
+    /// Double → 草稿字符串：归一化 -0.0 与二进制浮点尾数噪声，整数省略 .0 后缀。
+    static func formatDraftDouble(_ v: Double) -> String {
+        guard v.isFinite else { return "0" }
+        if v == 0 { return "0" }
+        let formatted = v.formatted(
+            .number
+                .locale(Locale(identifier: "en_US_POSIX"))
+                .grouping(.never)
+                .precision(.fractionLength(0...8))
+        )
+        return formatted == "-0" ? "0" : formatted
     }
 
     init(from config: CodexAdminKeyConfig) {
@@ -294,6 +300,7 @@ struct CodexAdminKeyConfigDraft: Identifiable, Equatable {
         guard !cleanKey.isEmpty else { return nil }
         let limit = Double(monthlyQuotaLimit.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 40.0
         let adjust = Double(usedAmountAdjust.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.0
+        let normalizedAdjust = adjust.isFinite ? (adjust == 0 ? 0.0 : adjust) : 0.0
         return CodexAdminKeyConfig(
             id: id,
             label: label.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -301,8 +308,8 @@ struct CodexAdminKeyConfigDraft: Identifiable, Equatable {
             monthlyQuotaLimit: limit > 0 && limit.isFinite ? limit : 40.0,
             billingDay: billingDay,
             billingTime: Formatters.formatTimeOfDay(billingTime),
-            // 已用修正允许负数与 0，仅拒绝非数字 / 非有限（如 "1e999" 溢出）时兜底 0。
-            usedAmountAdjust: adjust.isFinite ? adjust : 0.0
+            // 边界扣除允许负数与 0，仅拒绝非数字 / 非有限（如 "1e999" 溢出）时兜底 0。
+            usedAmountAdjust: normalizedAdjust
         )
     }
 }

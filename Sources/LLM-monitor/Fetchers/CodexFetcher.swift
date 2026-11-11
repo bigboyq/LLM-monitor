@@ -364,6 +364,8 @@ struct CodexFetcher: QuotaFetcher {
             now: Date()
         )
         let startTimeEpoch = Int(cycleStart.timeIntervalSince1970)
+        let cycleStartEpoch64 = Int64(startTimeEpoch)
+        let hasBoundaryOverlap = cycleStartEpoch64 % 86_400 != 0
 
         guard var components = URLComponents(string: "https://api.openai.com/v1/organization/costs") else {
             throw URLError(.badURL)
@@ -399,10 +401,11 @@ struct CodexFetcher: QuotaFetcher {
                 }
             }
             rawSum += bucketSum
-            // 边界桶：包含账期锚点的 UTC 日桶，混入上一周期在边界日当天的用量，
-            // 由求解器按清零窗口语义决定扣除额
-            if boundaryTotal == nil,
-               bucket.startTime <= startTimeEpoch, startTimeEpoch < bucket.endTime {
+            // 边界桶：仅当账期锚点拆分了某个 UTC 日桶（非 UTC 00:00）时，
+            // 首日桶才混入上一周期用量，由求解器按清零窗口语义决定扣除额
+            if hasBoundaryOverlap,
+               boundaryTotal == nil,
+               bucket.startTime < startTimeEpoch, startTimeEpoch < bucket.endTime {
                 boundaryTotal = bucketSum
             }
         }
@@ -410,7 +413,6 @@ struct CodexFetcher: QuotaFetcher {
         // 单层修正模型：config 的 usedAmountAdjust（+FixedAt）是唯一修正层；
         // 自动机制收敛后经 carryPendingWriteValue 由编排层写回 config（fetcher
         // 不碰 ConfigStore）。窗口内读数存进程内存缓存（跨 fetcher 实例）。
-        let cycleStartEpoch64 = Int64(startTimeEpoch)
         let carrySolution = OpenAIApiCreditDetails.solveAdminBoundaryCarry(
             boundaryTotal: boundaryTotal,
             cycleStart: cycleStart,
@@ -418,10 +420,13 @@ struct CodexFetcher: QuotaFetcher {
             now: Date(),
             adjust: keyConfig.usedAmountAdjust,
             fixedAt: keyConfig.usedAmountAdjustFixedAt,
-            cachedWindowReading: AdminBoundaryWindowCache.reading(
-                keyId: keyConfig.id,
-                cycleStartEpoch: cycleStartEpoch64
-            )
+            cachedWindowReading: hasBoundaryOverlap
+                ? AdminBoundaryWindowCache.reading(
+                    keyId: keyConfig.id,
+                    cycleStartEpoch: cycleStartEpoch64
+                )
+                : nil,
+            hasBoundaryOverlap: hasBoundaryOverlap
         )
         if let newReading = carrySolution.newWindowReading {
             AdminBoundaryWindowCache.update(

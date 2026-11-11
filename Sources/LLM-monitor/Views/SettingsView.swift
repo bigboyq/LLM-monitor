@@ -76,19 +76,23 @@ struct SettingsView: View {
         return value
     }
 
-    /// 已用金额手动修正只要求有限数字：允许负数与 0，仅拒绝非数字 / 非有限。
+    /// 边界扣除（已用金额手动修正）只要求有限数字：允许负数与 0，仅拒绝非数字 / 非有限。
     static func validUsedAmountAdjust(_ rawValue: String) -> Double? {
         guard let value = Double(rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
               value.isFinite else { return nil }
-        return value
+        return value == 0 ? 0.0 : value
     }
 
     /// 单层修正模型的边界扣除定值合并（纯函数，便于单测）：
-    /// - 草稿文本与打开设置时的快照相同（用户没动）→ 保留 config 现值
-    ///   （adjust + fixedAt 原样，含自动写回的定值）；
-    /// - 用户改了 → adjust 用草稿值、fixedAt 定值为本拍，本周期内不再自动更新；
-    /// - config 侧无同 keyId 条目（新增 key）：没动 → 维持草稿产出（未定值，
-    ///   交给自动机制），改了 → 同样定值。
+    /// - 用户改了 `usedAmountAdjust`（`adjustText != initialAdjustText`）→ 以草稿值为准，
+    ///   `fixedAt` 定值为本拍（手动覆盖优先，即使同时调整了账单日或重置时间）；
+    /// - 用户没动 `usedAmountAdjust`（`adjustText == initialAdjustText`）：
+    ///   - `existing` 存在且账单周期锚点（`billingDay` / `billingTime`）改变 →
+    ///     新周期视为未定值，重置 `usedAmountAdjust = 0.0` 与 `usedAmountAdjustFixedAt = nil`，
+    ///     交由下一拍按新周期自动重新采集；
+    ///   - `existing` 存在且锚点未变 → 保留 config 现值（`adjust` + `fixedAt` 原样，含自动写回）；
+    ///   - `existing == nil`（新增 key）→ 维持未定值（`usedAmountAdjustFixedAt = nil`），
+    ///     保留草稿值（新 key 默认 0）。
     static func mergedCarryAdjust(
         drafted: CodexAdminKeyConfig,
         adjustText: String,
@@ -97,15 +101,32 @@ struct SettingsView: View {
         now: Date = Date()
     ) -> CodexAdminKeyConfig {
         var result = drafted
-        if adjustText == initialAdjustText {
-            if let existing {
-                result.usedAmountAdjust = existing.usedAmountAdjust
-                result.usedAmountAdjustFixedAt = existing.usedAmountAdjustFixedAt
-            }
-        } else {
+        if adjustText != initialAdjustText {
             result.usedAmountAdjustFixedAt = now
+            return result
+        }
+        guard let existing else {
+            result.usedAmountAdjustFixedAt = nil
+            return result
+        }
+        let anchorChanged = billingAnchor(day: drafted.billingDay, time: drafted.billingTime)
+            != billingAnchor(day: existing.billingDay, time: existing.billingTime)
+        if anchorChanged {
+            result.usedAmountAdjust = 0.0
+            result.usedAmountAdjustFixedAt = nil
+        } else {
+            result.usedAmountAdjust = existing.usedAmountAdjust
+            result.usedAmountAdjustFixedAt = existing.usedAmountAdjustFixedAt
         }
         return result
+    }
+
+    private static func billingAnchor(day: Int, time: String) -> (day: Int, hour: Int, minute: Int) {
+        let dayClamped = max(1, min(day, 31))
+        let parts = time.split(separator: ":")
+        let hour = max(0, min(parts.count > 0 ? (Int(parts[0]) ?? 0) : 0, 23))
+        let minute = max(0, min(parts.count > 1 ? (Int(parts[1]) ?? 0) : 0, 59))
+        return (dayClamped, hour, minute)
     }
 
     func refreshNotificationAuthorization() {
@@ -529,7 +550,7 @@ struct SettingsView: View {
                     throw NSError(
                         domain: "SettingsValidation",
                         code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "已用修正必须是有限数字（支持负数）。"]
+                        userInfo: [NSLocalizedDescriptionKey: "边界扣除必须是有限数字（支持负数）。"]
                     )
                 }
             }

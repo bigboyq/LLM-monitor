@@ -1179,14 +1179,45 @@ final class CodexFetcherTests: XCTestCase {
     private func makeCarryKeyConfig(offsetFromNow: TimeInterval = 0) -> (config: CodexAdminKeyConfig, cycleStart: Date) {
         let cal = Calendar.current
         let now = Date()
-        let ref = now.addingTimeInterval(offsetFromNow)
-        let day = cal.component(.day, from: ref)
-        let hour = cal.component(.hour, from: ref)
-        let minute = cal.component(.minute, from: ref)
+        let keyId = "carry-\(UUID().uuidString.prefix(8))"
+        func build(ref: Date) -> (CodexAdminKeyConfig, Date) {
+            let day = cal.component(.day, from: ref)
+            let hour = cal.component(.hour, from: ref)
+            let minute = cal.component(.minute, from: ref)
+            let config = CodexAdminKeyConfig(
+                id: keyId,
+                label: "",
+                apiKey: "sk-admin-carry-test",
+                monthlyQuotaLimit: 100.0,
+                billingDay: day,
+                billingTime: String(format: "%02d:%02d", hour, minute)
+            )
+            let (cycleStart, _) = OpenAIApiCreditDetails.currentBillingCycle(
+                day: day, hour: hour, minute: minute, now: now
+            )
+            return (config, cycleStart)
+        }
+        let first = build(ref: now.addingTimeInterval(offsetFromNow))
+        // 避免任意时刻测试恰好踩中 UTC 00:00 导致无边界重叠
+        if Int64(first.1.timeIntervalSince1970) % 86_400 == 0 {
+            return build(ref: now.addingTimeInterval(offsetFromNow - 60))
+        }
+        return first
+    }
+
+    /// 构造锚点恰好落在最近一个 UTC 00:00（`startTimeEpoch % 86400 == 0`）的 keyConfig
+    private func makeUTCMidnightKeyConfig() -> (config: CodexAdminKeyConfig, cycleStart: Date) {
+        let cal = Calendar.current
+        let now = Date()
+        let utcMidnightEpoch = floor(now.timeIntervalSince1970 / 86_400.0) * 86_400.0
+        let utcMidnight = Date(timeIntervalSince1970: utcMidnightEpoch)
+        let day = cal.component(.day, from: utcMidnight)
+        let hour = cal.component(.hour, from: utcMidnight)
+        let minute = cal.component(.minute, from: utcMidnight)
         let config = CodexAdminKeyConfig(
-            id: "carry-\(UUID().uuidString.prefix(8))",
+            id: "utc0-\(UUID().uuidString.prefix(8))",
             label: "",
-            apiKey: "sk-admin-carry-test",
+            apiKey: "sk-admin-utc0-test",
             monthlyQuotaLimit: 100.0,
             billingDay: day,
             billingTime: String(format: "%02d:%02d", hour, minute)
@@ -1303,6 +1334,109 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertTrue(credits.carryFixedInCycle)
     }
 
+    /// [H2] 锚点为 UTC 00:00（如 UTC+8 默认 08:00）时 Day-1 桶起点 == cycleStart，无边界溢入：
+    /// 不扣除、不标记估算、不写内存缓存、不产出 config 自动写回
+    func testFetchAdminCostsUTCMidnightHasNoBoundaryOverlap() async throws {
+        let (keyConfig, cycleStart) = makeUTCMidnightKeyConfig()
+        let startEpoch = Int64(cycleStart.timeIntervalSince1970)
+        XCTAssertEqual(startEpoch % 86_400, 0, "测试锚点必须落在 UTC 00:00")
+
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [keyConfig],
+            session: makeSession()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.utcMidnightCostsJSON(cycleStart: cycleStart, day1Value: 5.0, laterValues: [2.0])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: keyConfig)
+        XCTAssertEqual(credits.carryDeduction, 0.0, accuracy: 0.0001, "UTC 00:00 锚点无边界扣除")
+        XCTAssertFalse(credits.carryApproximate)
+        XCTAssertFalse(credits.carryFixedInCycle)
+        XCTAssertNil(credits.carryPendingWriteValue, "UTC 00:00 锚点不得产出自动写回")
+        XCTAssertEqual(credits.usedAmount, 7.0, accuracy: 0.0001, "used = 5.0 + 2.0 完整计入")
+        XCTAssertNil(
+            AdminBoundaryWindowCache.reading(keyId: keyConfig.id, cycleStartEpoch: startEpoch),
+            "UTC 00:00 锚点不得写入窗口缓存"
+        )
+    }
+
+    /// [H2] 锚点为 UTC 00:00 时，用户在当前账期手动定值的 usedAmountAdjust 仍正常生效
+    func testFetchAdminCostsUTCMidnightStillAppliesManualFixedAdjust() async throws {
+        let (keyConfig, cycleStart) = makeUTCMidnightKeyConfig()
+        var fixed = keyConfig
+        fixed.usedAmountAdjust = 1.5
+        fixed.usedAmountAdjustFixedAt = cycleStart.addingTimeInterval(60)
+
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [fixed],
+            session: makeSession()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.utcMidnightCostsJSON(cycleStart: cycleStart, day1Value: 5.0, laterValues: [2.0])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: fixed)
+        XCTAssertEqual(credits.carryDeduction, 1.5, accuracy: 0.0001)
+        XCTAssertTrue(credits.carryFixedInCycle)
+        XCTAssertFalse(credits.carryApproximate)
+        XCTAssertNil(credits.carryPendingWriteValue)
+        XCTAssertEqual(credits.usedAmount, 5.5, accuracy: 0.0001)
+    }
+
+    /// [M4] 1h 窗口内 OpenAI 因 $0 用量省略边界桶时应把 0.0 写入内存缓存，
+    /// 避免 +1h 后 Day-1 新产生的用量被当作错过窗口的估算扣除
+    func testFetchAdminCostsZeroBoundarySpendInWindowCachesZeroAndPreventsDay1Overwrite() async throws {
+        // 1) 窗口内（anchor ≈ now）且边界桶被省略（空 data）
+        let (windowKey, windowCycleStart) = makeCarryKeyConfig()
+        let windowFetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [windowKey],
+            session: makeSession()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.emptyCostsJSON()
+        )
+        let inWindow = try await windowFetcher.fetchAdminCosts(keyConfig: windowKey)
+        XCTAssertEqual(inWindow.carryDeduction, 0.0, accuracy: 0.0001)
+        XCTAssertFalse(inWindow.carryApproximate)
+        XCTAssertNil(inWindow.carryPendingWriteValue)
+        let windowEpoch = Int64(windowCycleStart.timeIntervalSince1970)
+        XCTAssertEqual(
+            AdminBoundaryWindowCache.reading(keyId: windowKey.id, cycleStartEpoch: windowEpoch) ?? -1,
+            0.0,
+            accuracy: 0.0001,
+            "窗口内 $0 省略桶必须写入 0.0 到 AdminBoundaryWindowCache"
+        )
+
+        // 2) 模拟同一 key 在 +1h 窗口后（已缓存 0.0）Day-1 新产生 $3.5 用量：应精确写回 0.0
+        let (afterKeyBase, afterCycleStart) = makeCarryKeyConfig(offsetFromNow: -7200)
+        let afterEpoch = Int64(afterCycleStart.timeIntervalSince1970)
+        AdminBoundaryWindowCache.update(keyId: afterKeyBase.id, cycleStartEpoch: afterEpoch, value: 0.0)
+
+        let afterFetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [afterKeyBase],
+            session: makeSession()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: afterCycleStart, boundaryValue: 3.5, laterValues: [])
+        )
+        let afterCredits = try await afterFetcher.fetchAdminCosts(keyConfig: afterKeyBase)
+        XCTAssertEqual(afterCredits.carryDeduction, 0.0, accuracy: 0.0001)
+        XCTAssertFalse(afterCredits.carryApproximate, "命中窗口内 0.0 缓存不得标记为估算")
+        XCTAssertEqual(afterCredits.carryPendingWriteValue ?? -1, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(afterCredits.usedAmount, 3.5, accuracy: 0.0001)
+    }
+
     // MARK: - 辅助 JSON 构造
 
     private static let costsPath = "/v1/organization/costs"
@@ -1377,6 +1511,60 @@ final class CodexFetcherTests: XCTestCase {
         let json: [String: Any] = [
             "object": "page",
             "data": buckets,
+            "has_more": false
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    private static func utcMidnightCostsJSON(
+        cycleStart: Date,
+        day1Value: Double,
+        laterValues: [Double],
+        orgName: String? = "Personal"
+    ) -> Data {
+        func carryResult(_ value: Double) -> [String: Any] {
+            [
+                "object": "organization.costs.result",
+                "amount": [
+                    "currency": "usd",
+                    "value": value
+                ],
+                "line_item": NSNull(),
+                "project_id": NSNull(),
+                "organization_name": orgName as Any
+            ]
+        }
+        let startEpoch = Int(cycleStart.timeIntervalSince1970)
+        var buckets: [[String: Any]] = [
+            [
+                "object": "bucket",
+                "start_time": startEpoch,
+                "end_time": startEpoch + 86_400,
+                "results": [carryResult(day1Value)]
+            ]
+        ]
+        var cursor = startEpoch + 86_400
+        for value in laterValues {
+            buckets.append([
+                "object": "bucket",
+                "start_time": cursor,
+                "end_time": cursor + 86_400,
+                "results": [carryResult(value)]
+            ])
+            cursor += 86_400
+        }
+        let json: [String: Any] = [
+            "object": "page",
+            "data": buckets,
+            "has_more": false
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    private static func emptyCostsJSON() -> Data {
+        let json: [String: Any] = [
+            "object": "page",
+            "data": [],
             "has_more": false
         ]
         return try! JSONSerialization.data(withJSONObject: json)

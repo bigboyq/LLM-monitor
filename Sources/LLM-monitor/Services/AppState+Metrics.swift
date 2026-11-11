@@ -92,15 +92,25 @@ extension AppState {
             reading: .plan(models),
             notice: notice
         )]
+        let planModelsToExpose: [ModelQuota]
         if activeModels.count > 1 {
-            var seenModelNames = Set<String>()
-            for model in activeModels where seenModelNames.insert(model.modelName).inserted {
-                pools.append(StatusBarQuotaPool(
-                    option: .init(source: .planModel(modelName: model.modelName), title: model.displayName),
-                    reading: .plan([StatusBarPlanModel(kind: status.kind, model: model, isPeak: status.isGlmPeak(at: now))]),
-                    notice: notice
-                ))
-            }
+            planModelsToExpose = activeModels
+        } else if activeModels.count == 1,
+                  let selection = configStore.config.statusBarQuotaSelection,
+                  selection.providerID == status.id,
+                  case .planModel(let selectedName) = selection.source,
+                  selectedName == activeModels[0].modelName {
+            planModelsToExpose = activeModels
+        } else {
+            planModelsToExpose = []
+        }
+        var seenModelNames = Set<String>()
+        for model in planModelsToExpose where seenModelNames.insert(model.modelName).inserted {
+            pools.append(StatusBarQuotaPool(
+                option: .init(source: .planModel(modelName: model.modelName), title: model.displayName),
+                reading: .plan([StatusBarPlanModel(kind: status.kind, model: model, isPeak: status.isGlmPeak(at: now))]),
+                notice: notice
+            ))
         }
         let config = configStore.config.providers[providerID]
         if status.kind == .codexChatGpt, config?.adminApiCreditsEnabled == true {

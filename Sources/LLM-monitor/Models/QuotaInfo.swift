@@ -862,15 +862,17 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
     /// config 每 Key 的 `usedAmountAdjust` + `usedAmountAdjustFixedAt` 共用
     /// 「定值」语义：fixedAt 落在当前账期 `[cycleStart, cycleEnd)` 内 →
     /// carry = adjust（无论自动写回还是手动修改），自动机制完全失效、不写回。
-    /// 未定值时按锚点 +1h 精准窗口决定 carry（credits 在锚点处清零、+1 小时
+    /// 否则若 `hasBoundaryOverlap == false`（如账期锚点落在 UTC `00:00`），
+    /// Day-1 日桶没有上一周期溢入，直接返回 `(0, false, false, nil, nil)`。
+    /// 其余情况按锚点 +1h 精准窗口决定 carry（credits 在锚点处清零、+1 小时
     /// 才到账且期间无新用量，窗口内边界桶读数即上一周期尾巴）：
-    /// - 窗口内：carry = 最新边界桶读数（每次成功刷新覆盖刷新，读数向真值单调
-    ///   收敛），approximate = false；只更新进程内存缓存、**不写 config**——
-    ///   写早了会立刻定值、堵死窗口内的覆盖刷新。
+    /// - 窗口内：carry = 最新边界桶读数（OpenAI 对 `$0` 日省略桶时记 `0.0`，
+    ///   每次成功刷新覆盖刷新，读数向真值单调收敛），approximate = false；
+    ///   只更新进程内存缓存、**不写 config**——写早了会立刻定值、堵死窗口内的覆盖刷新。
     /// - 窗口已过：缓存有值（窗口内跑到了最后）→ 精确 carry、approximate =
     ///   false；无缓存 → 边界桶当前全额（错过窗口的估算）、approximate =
-    ///   true。两种都产出 `pendingWrite` 建议编排层写回 config，写回即定值。
-    /// - 边界桶缺失（boundaryTotal == nil）：carry = 0，不写回。
+    ///   true；边界桶缺失（boundaryTotal == nil）→ carry = 0，不写回。
+    ///   有值分支都产出 `pendingWrite` 建议编排层写回 config，写回即定值。
     ///
     /// 返回 `newWindowReading` 非 nil 表示窗口内拿到了新读数，调用方应据此
     /// 更新 `AdminBoundaryWindowCache`；其余情况为 nil（不更新缓存）。
@@ -882,18 +884,21 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
         adjust: Double,
         fixedAt: Date?,
         snapshotWindow: TimeInterval = 3600,
-        cachedWindowReading: Double?
+        cachedWindowReading: Double?,
+        hasBoundaryOverlap: Bool = true
     ) -> (carry: Double, approximate: Bool, fixedInCycle: Bool, pendingWrite: Double?, newWindowReading: Double?) {
         // 已定值：carry = adjust，自动机制失效，不产出写回
         if let fixedAt, fixedAt >= cycleStart, fixedAt < cycleEnd {
             return (adjust, false, true, nil, nil)
         }
-        if now.timeIntervalSince(cycleStart) <= snapshotWindow {
-            // 精准窗口内：carry = 最新边界桶读数，只进内存缓存
-            if let boundaryTotal {
-                return (boundaryTotal, false, false, nil, boundaryTotal)
-            }
+        // 锚点落在 UTC 00:00 时 Day-1 UTC 日桶不含上一周期溢入，不触发自动扣除
+        guard hasBoundaryOverlap else {
             return (0, false, false, nil, nil)
+        }
+        if now.timeIntervalSince(cycleStart) <= snapshotWindow {
+            // 精准窗口内：carry = 最新边界桶读数（OpenAI 省略 $0 日桶时记 0.0），只进内存缓存
+            let reading = boundaryTotal ?? 0.0
+            return (reading, false, false, nil, reading)
         }
         // 窗口已过：缓存优先（窗口内的最后读数，精确）；无缓存用当前全额（估算）。
         // 都产出 pendingWrite，由编排层写回 config（写回即定值）。

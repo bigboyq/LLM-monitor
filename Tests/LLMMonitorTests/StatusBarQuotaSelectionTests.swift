@@ -754,4 +754,94 @@ final class StatusBarQuotaSelectionTests: XCTestCase {
         hosting.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(hosting.fittingSize.height, 0)
     }
+
+    @MainActor
+    func testPinnedPlanModelRetainsMetricsWhenMultiModelProviderShrinksToOneActiveModel() throws {
+        let (state, store, directory) = try makeMultiModelFixture()
+        defer { state.stop(); try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+
+        let geminiModels = makeModel(
+            name: AntigravityModelKind.geminiModels.rawValue,
+            interval: 90, weekly: nil, intervalSeconds: 18_000, now: now
+        )
+        let geminiArgon = makeModel(
+            name: AntigravityModelKind.geminiArgon.rawValue,
+            interval: nil, weekly: 15, weeklySeconds: 604_800, now: now
+        )
+        setQuota(
+            QuotaInfo(
+                models: [geminiModels, geminiArgon],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "antigravity", in: state
+        )
+
+        var config = store.config
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "antigravity",
+            source: .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue)
+        )
+        try store.applyAndSave(config)
+        XCTAssertEqual(state.statusBarQuotaMetrics(at: now).centerAvailable ?? -1, 0.15, accuracy: 0.001)
+
+        // Shrink activeModels to only the pinned model (1 active model): must NOT degrade to "暂无数据".
+        setQuota(
+            QuotaInfo(
+                models: [geminiArgon],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "antigravity", in: state
+        )
+        let shrunkMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNotNil(shrunkMetrics.singleQuota)
+        XCTAssertEqual(shrunkMetrics.singleQuota?.remainingFraction ?? -1, 0.15, accuracy: 0.001)
+        XCTAssertEqual(shrunkMetrics.centerAvailable ?? -1, 0.15, accuracy: 0.001)
+        XCTAssertNotNil(state.systemHealthLevel(at: now))
+        let shrunkTitle = state.statusBarQuotaTitle(at: now)
+        XCTAssertTrue(shrunkTitle.contains("Gemini 4 Argon"))
+        XCTAssertTrue(shrunkTitle.contains("15%"))
+        XCTAssertFalse(shrunkTitle.contains("暂无数据"))
+        XCTAssertEqual(
+            state.statusBarQuotaOptions(providerID: "antigravity").map(\.source),
+            [.plan, .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue)]
+        )
+
+        // Shrinking to a DIFFERENT single model still reports "暂无数据" for the missing pinned model.
+        setQuota(
+            QuotaInfo(
+                models: [geminiModels],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "antigravity", in: state
+        )
+        let mismatchedMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(mismatchedMetrics.centerAvailable)
+        XCTAssertTrue(state.statusBarQuotaTitle(at: now).contains("暂无数据"))
+        XCTAssertEqual(
+            state.statusBarQuotaOptions(providerID: "antigravity").map(\.source),
+            [.plan],
+            "unselected single active model must not expose duplicate .planModel option"
+        )
+
+        // Single active model with `.plan` or `nil` selection keeps options clean (only `.plan`).
+        setQuota(
+            QuotaInfo(
+                models: [geminiArgon],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "antigravity", in: state
+        )
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "antigravity", source: .plan)
+        try store.applyAndSave(config)
+        XCTAssertEqual(state.statusBarQuotaOptions(providerID: "antigravity").map(\.source), [.plan])
+
+        config.statusBarQuotaSelection = nil
+        try store.applyAndSave(config)
+        XCTAssertEqual(state.statusBarQuotaOptions(providerID: "antigravity").map(\.source), [.plan])
+    }
 }

@@ -96,5 +96,17 @@ final class ChatGPTApiCreditsRowTests: XCTestCase {
         let preciseRow = makeRow(carryDeduction: 3.5)
         XCTAssertTrue(preciseRow.normalTooltip.contains("，边界扣除: $3.50"))
         XCTAssertFalse(preciseRow.normalTooltip.contains("（估算）"))
+
+        // 负值 carry → -$X.XX 而非 $-X.XX
+        let negativeRow = makeRow(carryDeduction: -5.0)
+        XCTAssertTrue(negativeRow.normalTooltip.contains("，边界扣除: -$5.00"))
+        XCTAssertFalse(negativeRow.normalTooltip.contains("$-5.00"))
+
+        let negativeEstimateRow = makeRow(carryDeduction: -3.5, carryApproximate: true)
+        XCTAssertTrue(negativeEstimateRow.normalTooltip.contains("，边界扣除: -$3.50（估算）"))
+        XCTAssertFalse(negativeEstimateRow.normalTooltip.contains("$-3.50"))
+
+        // -0.0 不追加边界扣除明细
+        XCTAssertEqual(makeRow(carryDeduction: -0.0).normalTooltip, "总额度: $40，已用: $5.00，剩余: $35")
     }
 }

@@ -227,4 +227,52 @@ final class PromptSpeedStatisticsTests: XCTestCase {
         XCTAssertEqual(stats.validCallCount, 2)
         XCTAssertEqual(stats.totalCallCount, 2)
     }
+
+    func testNegativeAndNonFiniteTTFTAreRejectedInCallSpeedAndWindowTokenRate() {
+        let valid = sample("valid", seconds: 10, output: 200, completedAtOffset: 0, ttft: 2)
+        let negativeTTFT = sample("neg-ttft", seconds: 10, output: 200, completedAtOffset: 1, ttft: -5)
+        let nanTTFT = sample("nan-ttft", seconds: 10, output: 200, completedAtOffset: 2, ttft: .nan)
+        let posInfTTFT = sample("pinf-ttft", seconds: 10, output: 200, completedAtOffset: 3, ttft: .infinity)
+        let negInfTTFT = sample("ninf-ttft", seconds: 10, output: 200, completedAtOffset: 4, ttft: -.infinity)
+
+        // All invalid TTFT samples alone produce nil speed/rate and zero valid calls.
+        let invalidOnlyStats = LocalUsageSummaryBuilder.callSpeedStatistics(samples: [
+            negativeTTFT, nanTTFT, posInfTTFT, negInfTTFT
+        ])
+        XCTAssertNil(invalidOnlyStats.minimum)
+        XCTAssertNil(invalidOnlyStats.maximum)
+        XCTAssertNil(invalidOnlyStats.p50)
+        XCTAssertNil(invalidOnlyStats.p95)
+        XCTAssertNil(invalidOnlyStats.latest)
+        XCTAssertEqual(invalidOnlyStats.validCallCount, 0)
+        XCTAssertEqual(invalidOnlyStats.totalCallCount, 4)
+        XCTAssertNil(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            negativeTTFT, nanTTFT, posInfTTFT, negInfTTFT
+        ]))
+
+        // Mixed with a valid call: negative/non-finite TTFT calls are excluded without
+        // inflating decode duration or poisoning the valid call.
+        let mixedStats = LocalUsageSummaryBuilder.callSpeedStatistics(samples: [
+            valid, negativeTTFT, nanTTFT, posInfTTFT, negInfTTFT
+        ])
+        XCTAssertEqual(mixedStats.minimum ?? 0, 25, accuracy: 1e-9)
+        XCTAssertEqual(mixedStats.maximum ?? 0, 25, accuracy: 1e-9)
+        XCTAssertEqual(mixedStats.p50 ?? 0, 25, accuracy: 1e-9)
+        XCTAssertEqual(mixedStats.p95 ?? 0, 25, accuracy: 1e-9)
+        XCTAssertNil(mixedStats.latest, "newest call with non-finite TTFT must yield nil latest")
+        XCTAssertEqual(mixedStats.validCallCount, 1)
+        XCTAssertEqual(mixedStats.totalCallCount, 5)
+
+        let mixedWindowRate = LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            valid, negativeTTFT, nanTTFT, posInfTTFT, negInfTTFT
+        ])
+        XCTAssertEqual(mixedWindowRate ?? 0, 25, accuracy: 1e-9)
+
+        // Negative TTFT as the newest call also leaves latest nil.
+        let latestNegative = LocalUsageSummaryBuilder.callSpeedStatistics(samples: [
+            valid, negativeTTFT
+        ])
+        XCTAssertNil(latestNegative.latest)
+        XCTAssertEqual(latestNegative.validCallCount, 1)
+    }
 }

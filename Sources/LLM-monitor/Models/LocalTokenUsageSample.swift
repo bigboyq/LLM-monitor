@@ -565,13 +565,17 @@ enum LocalUsageSummaryBuilder {
 
     /// 解码时长有效性门（窗口 token 速率与单次调用速度分布同一份）：在
     /// `hasValidTokenRateDuration` 之上再要求解码时长 = 调用时长 − 首字延迟
-    /// **有限且为正**。无 TTFT（nil）→ 时长全额计入；`ttft ≥ duration` 视为
-    /// 账本异常，整条不参与（分子分母都不计）——宁缺毋假。
+    /// **有限且为正**（`ttftSeconds` 存在时须有限且非负）。无 TTFT（nil）→
+    /// 时长全额计入；`ttft ≥ duration` 或负/非有限 `ttft` 视为账本异常，
+    /// 整条不参与（分子分母都不计）——宁缺毋假。
     private nonisolated static func hasValidDecodeDuration(
         _ sample: LocalTokenUsageSample
     ) -> Bool {
         guard hasValidTokenRateDuration(sample),
               let duration = sample.durationSeconds else { return false }
+        if let ttft = sample.ttftSeconds {
+            guard ttft.isFinite && ttft >= 0 else { return false }
+        }
         let decode = duration - (sample.ttftSeconds ?? 0)
         return decode.isFinite && decode > 0
     }

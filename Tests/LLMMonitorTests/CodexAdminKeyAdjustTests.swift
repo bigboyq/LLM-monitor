@@ -135,4 +135,134 @@ final class CodexAdminKeyAdjustTests: XCTestCase {
         XCTAssertEqual(fresh.initialUsedAmountAdjust, "0")
         XCTAssertNil(fresh.usedAmountAdjustFixedAt)
     }
+
+    // MARK: - -0.0 与浮点尾数格式化
+
+    func testDraftFormatsNegativeZeroAndFloatTailsCleanly() throws {
+        let negZeroConfig = CodexAdminKeyConfig(
+            id: "k1",
+            apiKey: "sk-admin-1",
+            monthlyQuotaLimit: 1000.0,
+            usedAmountAdjust: -0.0
+        )
+        let negZeroDraft = CodexAdminKeyConfigDraft(from: negZeroConfig)
+        XCTAssertEqual(negZeroDraft.usedAmountAdjust, "0")
+        XCTAssertEqual(negZeroDraft.initialUsedAmountAdjust, "0")
+        XCTAssertEqual(negZeroDraft.monthlyQuotaLimit, "1000")
+
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(0.1 + 0.2), "0.3")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(-(0.1 + 0.2)), "-0.3")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(5.12 + 0.01), "5.13")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(0.1 + 0.2 - 0.3), "0")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(-(0.1 + 0.2 - 0.3)), "0")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(.nan), "0")
+        XCTAssertEqual(CodexAdminKeyConfigDraft.formatDraftDouble(.infinity), "0")
+
+        let parsedNegZero = try XCTUnwrap(
+            CodexAdminKeyConfigDraft(id: "k1", apiKey: "sk-admin-1", usedAmountAdjust: "-0").toConfig()
+        )
+        XCTAssertEqual(parsedNegZero.usedAmountAdjust, 0)
+        XCTAssertEqual(parsedNegZero.usedAmountAdjust.sign, .plus)
+
+        let validatedNegZero = try XCTUnwrap(SettingsView.validUsedAmountAdjust("-0.0"))
+        XCTAssertEqual(validatedNegZero, 0)
+        XCTAssertEqual(validatedNegZero.sign, .plus)
+    }
+
+    // MARK: - 账期锚点变更对定值的影响
+
+    @MainActor
+    func testMergedCarryAdjustOnBillingAnchorChanges() {
+        let stamp = Date(timeIntervalSince1970: 1_762_800_000)
+        let now = stamp.addingTimeInterval(7200)
+        let existing = CodexAdminKeyConfig(
+            id: "k1",
+            label: "Old",
+            apiKey: "sk-admin-1",
+            monthlyQuotaLimit: 40,
+            billingDay: 11,
+            billingTime: "08:00",
+            usedAmountAdjust: 5.5,
+            usedAmountAdjustFixedAt: stamp
+        )
+
+        // (a) 仅修改 billingDay 且未动边界扣除 → 重置为 0 与未定值
+        let changedDay = SettingsView.mergedCarryAdjust(
+            drafted: CodexAdminKeyConfig(
+                id: "k1", label: "Old", apiKey: "sk-admin-1",
+                monthlyQuotaLimit: 40, billingDay: 15, billingTime: "08:00",
+                usedAmountAdjust: 5.5
+            ),
+            adjustText: "5.5",
+            initialAdjustText: "5.5",
+            existing: existing,
+            now: now
+        )
+        XCTAssertEqual(changedDay.usedAmountAdjust, 0, accuracy: 0.0001)
+        XCTAssertNil(changedDay.usedAmountAdjustFixedAt)
+        XCTAssertEqual(changedDay.billingDay, 15)
+
+        // (b) 仅修改 billingTime 且未动边界扣除 → 重置为 0 与未定值
+        let changedTime = SettingsView.mergedCarryAdjust(
+            drafted: CodexAdminKeyConfig(
+                id: "k1", label: "Old", apiKey: "sk-admin-1",
+                monthlyQuotaLimit: 40, billingDay: 11, billingTime: "09:30",
+                usedAmountAdjust: 5.5
+            ),
+            adjustText: "5.5",
+            initialAdjustText: "5.5",
+            existing: existing,
+            now: now
+        )
+        XCTAssertEqual(changedTime.usedAmountAdjust, 0, accuracy: 0.0001)
+        XCTAssertNil(changedTime.usedAmountAdjustFixedAt)
+        XCTAssertEqual(changedTime.billingTime, "09:30")
+
+        // (c) 同时修改 billingDay / billingTime 且手动改了边界扣除 → 手动覆盖生效并定值为 now
+        let changedAnchorAndAdjust = SettingsView.mergedCarryAdjust(
+            drafted: CodexAdminKeyConfig(
+                id: "k1", label: "Old", apiKey: "sk-admin-1",
+                monthlyQuotaLimit: 40, billingDay: 20, billingTime: "10:00",
+                usedAmountAdjust: 7.25
+            ),
+            adjustText: "7.25",
+            initialAdjustText: "5.5",
+            existing: existing,
+            now: now
+        )
+        XCTAssertEqual(changedAnchorAndAdjust.usedAmountAdjust, 7.25, accuracy: 0.0001)
+        XCTAssertEqual(changedAnchorAndAdjust.usedAmountAdjustFixedAt, now)
+
+        // (d) 仅修改 label / monthlyQuotaLimit 且未动边界扣除（含等价时间格式 "8:00"）→ 保留现值与定值时间
+        let nonAnchorEdit = SettingsView.mergedCarryAdjust(
+            drafted: CodexAdminKeyConfig(
+                id: "k1", label: "Renamed", apiKey: "sk-admin-1",
+                monthlyQuotaLimit: 80, billingDay: 11, billingTime: "8:00",
+                usedAmountAdjust: 5.5
+            ),
+            adjustText: "5.5",
+            initialAdjustText: "5.5",
+            existing: existing,
+            now: now
+        )
+        XCTAssertEqual(nonAnchorEdit.usedAmountAdjust, 5.5, accuracy: 0.0001)
+        XCTAssertEqual(nonAnchorEdit.usedAmountAdjustFixedAt, stamp)
+        XCTAssertEqual(nonAnchorEdit.label, "Renamed")
+        XCTAssertEqual(nonAnchorEdit.monthlyQuotaLimit, 80)
+
+        // (e) existing == nil 且未动边界扣除 → 保持未定值
+        let freshAnchor = SettingsView.mergedCarryAdjust(
+            drafted: CodexAdminKeyConfig(
+                id: "k2", label: "New", apiKey: "sk-admin-2",
+                monthlyQuotaLimit: 40, billingDay: 15, billingTime: "09:00",
+                usedAmountAdjust: 0
+            ),
+            adjustText: "0",
+            initialAdjustText: "0",
+            existing: nil,
+            now: now
+        )
+        XCTAssertEqual(freshAnchor.usedAmountAdjust, 0, accuracy: 0.0001)
+        XCTAssertNil(freshAnchor.usedAmountAdjustFixedAt)
+    }
 }
