@@ -114,6 +114,11 @@ API Key 可以替代双凭证接口中的 **BigModel OAuth access token**，不�
 不能据此推断 API Key 单独即可查询重置卡。活动套餐余额也已实测 JWT + API Key 成功，
 并未验证省略 API Key 是否仍可用；表中记录当前发送方式。
 
+2026-11-11 补充实测：**营销接口不校验 `Authorization`**（携带无效/密文 bearer 仍返回
+200），不能以营销接口 200 推断 JWT 有效；双凭证接口严格校验。JWT 的加密存储格式
+（`enc:v1:` / `enc:v2:os:` / `enc:v2:env:`）与解密细节见
+[`harnesses/zcode.md` §Local credentials](../harnesses/zcode.md#local-credentials)。
+
 应用统一要求先配置 API Key；三类 ZCode 扩展查询还须开启 `zcodeJWTEnabled` 并读取到 JWT。
 营销接口本身不发送 API Key，仍受此应用级开关与营销通知配置控制。设备、语言、版本等附加请求头见下文直连 API 小节。
 
@@ -488,4 +493,4 @@ by shared `PeakWindowTests.swift` and `HolidayCalendarTests.swift`.
 ZCode SQLite reader, scanner, accounting, and category tests are listed in the
 [ZCode harness spec](../harnesses/zcode.md#test-coverage).
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 aab5136

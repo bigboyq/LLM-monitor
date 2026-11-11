@@ -279,13 +279,34 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 
 ## Local credentials
 
-`GlmZcodeCredentialReader` 读取 ZCode 的 `deviceMid` 与 JWT。当前观察到的本地来源为
+`GlmZcodeCredentialReader` 读取 ZCode 的 `deviceMid` 与 JWT。本地来源为
 `~/.zcode/v2/telemetry-state.json`（明文设备标识）及 `~/.zcode/v2/credentials.json`
-（`zcodejwttoken` 等 `enc:v1:` 值）；Swift reader 使用 CryptoKit AES-256-GCM，并按实现
-中的 fallback 密钥派生方式解密：SHA-256 of
-`zcode-credential-fallback:darwin:<homeDirectory>:<userName>`。具体路径可由 GLM `authPath` 指定。LLM-monitor 只在
-JWT 扩展开关开启时读取凭证；OAuth access token 不作为 GLM 请求凭证。文件格式与解密
-方法属于客户端实现观察，可能随 ZCode 版本变化。
+（`zcodejwttoken`、`oauth:bigmodel:access_token` 等，可能加密存储）；具体路径可由 GLM
+`authPath` 指定。LLM-monitor 只在 JWT 扩展开关开启时读取凭证；OAuth access token 不作为
+GLM 请求凭证。文件格式与解密方法属于客户端实现观察，可能随 ZCode 版本变化。
+
+### 凭证加密格式（v1 / v2）
+
+Swift reader 使用 CryptoKit AES-256-GCM（iv 12B / tag 16B，载荷三段 base64url
+`<iv>.<tag>.<ciphertext>`），按值前缀分派：
+
+| 前缀 | 密钥来源 | 说明 |
+|---|---|---|
+| 无前缀 | — | 明文直接使用 |
+| `enc:v1:` | SHA-256 of `zcode-credential-fallback:darwin:<homeDirectory>:<userName>`（或 `ZCODE_CREDENTIAL_SECRET` 环境变量） | 历史格式 |
+| `enc:v2:os:` | **macOS Keychain** generic password：`service = "ZCode Credential Encryption"`，`account = SHA256(credentials.json 绝对路径) 的 hex`，password 为 base64url 的 32 字节 AES 密钥（直接解码使用，不再哈希） | ZCode 3.18.0（2026-11-11 观察）引入；同目录 `credential-source` 文件内容 `os` 标记此来源 |
+| `enc:v2:env:` | SHA-256(managed secret)：优先 `ZCODE_CREDENTIAL_SECRET` 环境变量，其次 `<credentials.json 同目录>/credential-secret` 文件（32–4096 字节） | 同上 |
+
+`enc:v2:` 载荷完整形态为 `enc:v2:<os|env>:<keyId 24hex>:<iv>.<tag>.<ct>`；`keyId` 不参与
+解密。密钥解析顺序与客户端一致：managed secret（env 变量 → `credential-secret` 文件）
+优先，无则 Keychain。任何解密 / Keychain 失败降级为该凭证缺失（logWarn，不打密钥），
+不中断其余凭证加载。
+
+Keychain 读取首次会触发系统授权弹窗（「始终允许」后免提示）；app 为 ad-hoc 重签时
+cdhash 变化可能需要重新授权。2026-11-11 事故记录：ZCode 3.18.0 于 18:02 将凭证重写为
+`enc:v2:os:`，旧版 reader 不识别把密文当明文 JWT 发送，zcode.z.ai 双凭证接口
+（重置卡 / 活动套餐余额）自 18:04 起 401，营销接口因不校验 `Authorization` 仍返回 200
+（曾造成「JWT 有效」的假象）。
 
 ## ZCode desktop client polling observations (2026-11-06)
 
@@ -450,4 +471,4 @@ accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swi
 
 当前持久化缓存版本 **v15**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 aab5136
