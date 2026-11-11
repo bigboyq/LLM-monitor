@@ -44,7 +44,7 @@
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
 | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口；可选 `durationSeconds` / `ttftSeconds` 增强字段）；`CallSpeedStatistics` 按单次有效调用聚合速度分布与最新值（不连坐同 turn 其余调用）；TTFT 聚合（`CallTTFTStatistics` P50 / 窗口均值 / Σ-Σ 合并中间量）；额度窗口快照携带可选 Fleet 金额说明 `costText` |
-| `Tests/LLMMonitorTests/PromptSpeedStatisticsTests.swift` | 调用级速度统计：单次有效调用剔除无效样本而不连坐同 turn 兄弟调用、最新值不回退、奇偶 P50、P95、时间并列与零速率回归 |
+| `Tests/LLMMonitorTests/PromptSpeedStatisticsTests.swift` | 调用级速度统计：单次有效调用剔除无效样本而不连坐同 turn 兄弟调用、`ttftSeconds` 负值/非有限拒绝、最新值不回退、奇偶 P50、P95、时间并列与零速率回归 |
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` | 「思考字符数 → 思考 token 数」的守恒拆分纯函数（`reasoning + output == 账面 output` 恒成立）；5 处调用方：GLM/ZCode（`GlmZcodeDBReader`）、MiniMax Code（`MinimaxLocalUsageAggregation`）、Dsh M3（`DshLocalUsageScanner`）、OpenCode（`OpencodeDBReader`）、Agy（`AgyLocalUsageAggregation`） |
 | `Sources/LLM-monitor/Models/LocalUsageRetentionWindow.swift` | 本地用量「落盘前保留窗口」的唯一口径（`LocalUsageRetentionWindow`，Antigravity / Agy / DSH / GLM-ZCode / Minimax / OpenCode 六个 scanner 共享）；刻意区别于展示层 7 天窗口，契约由 `ScannerRetentionContractTests` 锁定——该契约逐条覆盖其中五个（Antigravity / Minimax / DSH / Opencode / GLM-ZCode），Agy 尚无逐条断言 |
@@ -81,6 +81,7 @@
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
 | `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取、多 Key Admin API 赠金并发抓取与错误隔离 + 本地 JSONL 解析 |
 | `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 额度决策树（2.5.0）：ls 可用 → 本地 RPC 主路径（不读钥匙串）→ keychain 兜底开关 → 远端配额/账号（Keychain 凭据 + Google API，主机回退）→ 过期/401 按 `allowTokenRefresh` 走 agy 代理刷新或统一提示；主额度每拍、tier 按次要信息频率 |
+| `Sources/LLM-monitor/Fetchers/AntigravityCredential.swift` | Antigravity Keychain OAuth 凭据解析（`go-keyring-base64:` 解码、本地过期判定、`refresh_token` 不建模）与 `AntigravityKeychain` 钥匙串三态读取 `readOutcome()` 及 xctest 防弹窗守卫 |
 | `Sources/LLM-monitor/Fetchers/AntigravityCredentialPolicy.swift` | Antigravity 凭据策略进程级状态（2.5.0）：启动预检三态（钥匙串授权被拒自动 disable ① / 条目缺失软不可用 / 未找到 agy CLI 自动 disable ②）、内存 token 缓存、agy 退避、`AntigravityAgyCLI`（agy 可执行查找 + `agy models` 运行：30s 超时、AsyncMutex 互斥、输出不落日志、invalid_grant 归类） |
 | `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 进程发现（pgrep 分类排序 + lsof 端口 + CSRF 提取 + `serverStillOwnsEndpoint` TOCTOU 复查），2.5.0 起决策树第 1 步（本地用量 scanner 不消费） |
 | `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 远端路径编排：主额度与次要账号/套餐（tier）、可选接口失败降级、额度失败传播、主机回退 |
@@ -130,7 +131,7 @@
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
 | `Sources/LLM-monitor/Services/StatusBarQuotaMetrics.swift` | 状态栏额度指标结构（`QuotaRingMetrics` / `StatusBarQuotaMetrics` / `StatusBarSingleQuota`），由 Icon Duo 仪表盘消费 |
 | `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成：双窗左右弧 / 有效5h数字 / 底部健康点，或单额度圆环 / 对应额度数字；共用固定字号CoreText字形轮廓并按实际边界居中（100%→00，省略百分号）；休眠灯位于同一圆周的顶部缺口内，每侧与圆弧端帽留0.75灯径净空 |
-| `Tests/LLMMonitorTests/StatusBarQuotaSelectionTests.swift` | Provider + 来源选择、动态窗口形态、API / 活动权益隔离、未知与耗尽、有效期与全局聚合回归 |
+| `Tests/LLMMonitorTests/StatusBarQuotaSelectionTests.swift` | Provider + 来源选择、动态窗口形态、单模型收缩 `.planModel` 保留、API / 活动权益隔离、未知与耗尽、有效期与全局聚合回归 |
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageAggregation.swift` | minimax reasoning 字符分摊比例回写 sample 与 per-day 聚合纯函数 |
@@ -138,7 +139,7 @@
 | `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、reasoning 拆分（f4 原生真值优先 + 字符守恒分摊回退）与日聚合纯函数 |
 | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + reasoning 字符分摊（智谱行与分片统一三段式，native 列优先）+ per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
-| `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` | ZCode 本地凭证与设备标识读取（`~/.zcode/v2/telemetry-state.json` 的 deviceMid + `credentials.json` 的 zcodejwttoken AES-256-GCM 解密） |
+| `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` | ZCode 本地凭证与设备标识读取（`~/.zcode/v2/telemetry-state.json` 的 deviceMid + `credentials.json` 的 `zcodejwttoken` 明文/`enc:v1:`/`enc:v2:os:`（macOS Keychain）/`enc:v2:env:`（managed secret）严格前缀分派 AES-256-GCM 解密，可选 `keyId`；`loadCredentials(authPath:)` 默认跳过不使用的 `oauth:bigmodel:access_token` 解密） |
 | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求；同文件定义 `ZcodePackageProviding` 协议与默认实现 `GlmZcodeAPIPackageProvider`） |
 | `Sources/LLM-monitor/Services/ZcodeAppVersionResolver.swift` | ZCode app 版本解析（按 bundle id 定位本机 ZCode.app 读 Info.plist 的 `CFBundleShortVersionString`，失败回退 `3.17.1`；进程内缓存 + 显式刷新入口，plist 路径可注入） |
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |
@@ -207,14 +208,15 @@
 | `Sources/LLM-monitor/Views/DeepseekPeakIndicatorView.swift` | DeepSeek 高峰期提示行（北京时间倒计时，内嵌余额行右侧） |
 | `Sources/LLM-monitor/Views/DeepseekBalanceRow.swift` | DeepSeek API 余额专用展示行（充值与赠金明细、高峰提示布局与 between 注入） |
 | `Sources/LLM-monitor/Views/ChatGPTPlanModelRow.swift` | ChatGPT Plan 专用模型行（双窗口 dock 进度条与本地 token 聚合计算） |
-| `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（多 Key 备注标签 `titleText`、组织信息、通栏额度条+时间标记三角、单行已用/剩余与周期倒计时、per-key 错误提示与 Formatters 倒计时复用） |
+| `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（多 Key 备注标签/序号回退 `API Key #N`、`StatusBarQuotaSourcePinButton` 固定开关、组织信息、通栏额度条+时间标记三角、已用/剩余与周期倒计时、估算图标 `showsCarryEstimateMarker`、`normalTooltip` 边界扣除明细含负值 `-$X.XX` 与 per-key 错误提示） |
 | `Sources/LLM-monitor/Views/PeakIndicatorView.swift` | 高峰提示行公共组件（`TimelineView` 外壳 + `formatDuration`，GLM / DeepSeek 共用） |
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
 | `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7 天用量新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；数值逐日价格（`LocalUsagePriceByDay`）与调用级速度 P50 memo（`LocalUsageSpeedByDay`）、调用级 TTFT P50 memo（`LocalUsageTTFTByDay`） |
-| `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标（含 TTFT）、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
+| `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 八维历史指标（含 TTFT）、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
 | `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary；expanded 表格列宽下限住在 `SevenDayUsageChartMetrics.expanded*`，expanded 下弹性填满可用宽度、compact 保持固定列宽 |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
 | `Tests/LLMMonitorTests/GlmZcodeCredentialReaderTests.swift` | ZCode 本地凭证读取与 AES-256-GCM JWT 解密/密钥派生/格式容错单元测试 |
+| `Tests/LLMMonitorTests/GlmZcodeCredentialEncV2Tests.swift` | ZCode `enc:v2:os:` / `enc:v2:env:` 密文解密、严格变体密钥路由、边界容错与 `loadCredentials` 跳过多余 Keychain 读取单测 |
 | `Tests/LLMMonitorTests/GlmZcodeAPIClientTests.swift` | ZCode 直连 API 响应解析、重置卡前三截断、套餐余额与预告、ProviderConfig/Draft 状态同步、三条 parse 路径 `code != 0` 业务错误单测 |
 | `Tests/LLMMonitorTests/GlmZcodePackageOrchestrationTests.swift` | ZCode 套餐三路编排测试（注入 `ZcodePackageProviding` stub）：部分失败降级与 `GlmFillingMissingMerger` 衔接、凭证缺失三路全跳过、marketing/reset 的开关与 background 门控、全失败保留既有数据 |
 | `Tests/LLMMonitorTests/ZcodeAppVersionResolverTests.swift` | ZCode app 版本解析（可注入 plist 路径）：正常读取/trim、缺键/空值/坏 plist/未安装回退、缓存与显式刷新 |
@@ -222,7 +224,10 @@
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条（约 100 槽微栅格体系，固定 2.0pt 点宽与 1:1 呼吸间距，Half-Down 吸附点亮）、窗口颜色与 reset 标记 + `EquivalentQuotaAllocation`（binding constraint 文案与 `bindingWindow` 判定） |
 | `Tests/LLMMonitorTests/QuotaAllocationTests.swift` | 额度分段吸附计算、周等价换算与瓶颈窗口判定回归 |
 | `Tests/LLMMonitorTests/PeakPricingConfigTests.swift` | Provider 高峰配置默认值、JSON 往返与非法值、1.5× / 3× 计价、自定义时段与午夜结束边界回归 |
-| `Tests/LLMMonitorTests/ChatGPTApiCreditsRowTests.swift` | 多 Key 赠金名称展示、首尾空白处理与未命名序号回退 |
+| `Tests/LLMMonitorTests/ChatGPTApiCreditsRowTests.swift` | 多 Key 赠金名称展示、首尾空白处理、未命名序号回退 `API Key #N`、`showsCarryEstimateMarker` 估算标记优先级及 `normalTooltip` 边界扣除明细（含负值 `-$X.XX`）单测 |
+| `Tests/LLMMonitorTests/CodexAdminBoundaryCarryTests.swift` | ChatGPT API 赠金边界日扣除求解器（含 UTC 00:00 无重叠、1h 窗口 `$0` 省略桶兜底）、窗口缓存、`AppState` 静默写回与 `mergedCarryAdjust` 定值合并单测 |
+| `Tests/LLMMonitorTests/CodexAdminKeyAdjustTests.swift` | `CodexAdminKeyConfig.usedAmountAdjust` / `usedAmountAdjustFixedAt` 容错编解码、草稿往返及修改账单日/时间重置回归 |
+| `Tests/LLMMonitorTests/CodexFetcherTests.swift` | ChatGPT Plan API / Admin costs 抓取、`auth.json` 读取、401 提示与 reset credits 回退链 HTTP 集成单测 |
 | `Tests/LLMMonitorTests/AlertThresholdConfigTests.swift` | 告警阈值配置默认值、取值区间裁切与 critical <= warning 约束单测 |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SleepAssertionOffender+RowText.swift` | 「阻止休眠的第三方应用」行文案（`SleepAssertionOffender` 的行格式化 extension）+ 主面板 header 悬浮清单 `SleepOffendersHoverView`，两处共用同一份格式 |
@@ -248,6 +253,7 @@
 | `scripts/generate-icns.sh` | 从源图生成 AppIcon.icns（由 sync-icon-assets.sh 调用，也可独立使用） |
 | `scripts/sync-icon-assets.sh` | 图标资产唯一同步入口：IconPreview 副本 + 回退 icns 重生成 + sidecar 新鲜度记录；`--check` 供构建前置校验 |
 | `scripts/sync-holiday-data.sh` | 法定节假日快照唯一同步入口：拉取上游 chinese-days JSON，抽取 `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A）生成 ChinaHolidays.json，幂等 + `--check` 只读校验 |
+| `scripts/fake-fleet-node.sh` | 仿真 Fleet 副节点向 hub 推送 `NodeUsageReport` 的本地联调脚本 |
 | `Tests/LLMMonitorTests/DataSourceRegressionTests.swift` | OpenCode/MiniMax 分拆守恒、Agy 耗时排除与数据库变更、数值极值、DSH 流式输出上限回归 |
 | `Tests/LLMMonitorTests/CrossReviewDataTests.swift` | 计量交叉复核：同窗守恒、原生/配对/残余分配、DB 删除、数值边界及子进程 EOF 超时/取消 |
 | `Tests/LLMMonitorTests/CrossReviewRuntimeTests.swift` | 运行时交叉复核：停止/重启、排队配置、取消后成功、扫描代际原子应用与不完整结果发布顺序 |
@@ -275,4 +281,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-11 · 代码 761b0c6
+> 核对基线：2026-11-11 · 代码 fc07716

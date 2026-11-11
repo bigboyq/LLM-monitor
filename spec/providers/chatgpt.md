@@ -47,7 +47,7 @@ Supported provider fields:
 | `displayName` | Optional card title override. |
 | `authPath` | Optional custom auth location. Accepts either an `auth.json` file path or its parent directory; see the [harness spec](../harnesses/codex.md#codex-auth-file) for default path resolution. |
 | `adminApiCreditsEnabled` | 是否启用 OpenAI API 赠金监测。缺省为 false。开启后在卡内追加「API赠金」进度条。 |
-| `adminApiKeys` | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`。优先于标量 Key。 |
+| `adminApiKeys` | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`、`usedAmountAdjust`、`usedAmountAdjustFixedAt`。优先于标量 Key。 |
 | `adminApiKey` | OpenAI Admin API Key (`sk-admin-..`)，历史单 Key 兼容字段。未配置 `adminApiKeys` 时透明回退。 |
 | `adminBillingDay` | 每月账单日（1-31，缺省 11）。单 Key 兼容模式使用。 |
 | `adminBillingTime` | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。单 Key 兼容模式使用。 |
@@ -147,7 +147,7 @@ ChatGPT 用户每月可享受官方免费 API 额度福利（API 赠金）。本
 
 ### 多 Key 配置与兼容回退
 
-通过 `providers.codex_chatgpt.adminApiKeys` 配置多 Key 列表（`[CodexAdminKeyConfig]`），支持多组织 / 多 Workspace 并行追踪。每个条目包含独立的 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`。未配置 `adminApiKeys` 时由 `effectiveAdminKeys` 透明回退到历史标量字段（`adminApiKey`、`adminBillingDay`、`adminBillingTime`、`adminMonthlyQuotaLimit`）。
+通过 `providers.codex_chatgpt.adminApiKeys` 配置多 Key 列表（`[CodexAdminKeyConfig]`），支持多组织 / 多 Workspace 并行追踪。每个条目包含独立的 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`、`usedAmountAdjust`、`usedAmountAdjustFixedAt`。未配置 `adminApiKeys` 时由 `effectiveAdminKeys` 透明回退到历史标量字段（`adminApiKey`、`adminBillingDay`、`adminBillingTime`、`adminMonthlyQuotaLimit`）。
 
 ### 端点、并发抓取与鉴权
 
@@ -158,7 +158,7 @@ Authorization: Bearer <admin_api_key>
 
 - **并发多 Key 抓取（`withTaskGroup`）**：
   当 `adminApiCreditsEnabled` 开启且 `effectiveAdminKeys` 非空时，`CodexFetcher` 在 `fetch(mode:)` 中通过 `withTaskGroup(of: (Int, Result<OpenAIApiCreditDetails, Error>).self)` 并发执行所有 Key 的 `fetchAdminCosts(keyConfig:mode:)`。抓取结果带原始索引以严格保序返回。
-- **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value` 得到全桶合计；`usedAmount` 在此基础上按下文「边界日扣除」扣除 carry 并叠加 `usedAmountAdjust` 得到。
+- **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value` 得到全桶合计；`usedAmount` 在此基础上按下文「边界日扣除」计算并扣除 carry 得到（`max(0, 全桶合计 − carry)`，单层修正模型）。
 - **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；缺失时若备注 `label` 非空且不为 `"Default"`，优先作为空间名称；若仍无且处于 `.full` 模式，按次要信息频率调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`。`.background` 不调用 `/v1/me`，新赠金结果缺组织名时 merger 继承旧组织名，金额/账期/抓取时间使用新值；`.full` 采用本次查询结果（包括 nil）。普通请求或解析失败按可选元数据处理，显示「未知组织」。取消 `/v1/me` 请求会传播取消，不会把被取消的赠金查询记成成功。
 
 ### 隔离容错与快照合并（Fault Isolation & Merging）
@@ -203,8 +203,11 @@ OpenAI costs 端点只支持 `bucket_width=1d`（实测 `1h` / `1m` 报错 `Supp
 且日桶按 **UTC 0 点对齐**：`start_time` 会被向下吸附到当日 UTC 0 点。当账期锚点不在 UTC 0 点
 （如本地 11 号 15:34 = UTC 07:34）时，返回的首桶覆盖「锚点日 00:00→24:00 UTC」，把锚点之前的
 上一周期用量整桶漏入当前周期。修复方式：对本周期「边界桶」（首个满足
-`startTime ≤ cycleStart < endTime` 的日桶，因 `start_time` 吸附恒为返回页第一桶）计算边界扣除
-值，**直接落在每 Key 的 `usedAmountAdjust` 配置项上，自动与手动共享同一个值**。
+`startTime < cycleStart < endTime` 的日桶，因 `start_time` 吸附恒为返回页第一桶）计算边界扣除
+值，**直接落在每 Key 的 `usedAmountAdjust` 配置项上，自动与手动共享同一个值**。当 `cycleStart`
+恰好对齐 UTC 00:00（`Int64(cycleStart.timeIntervalSince1970) % 86_400 == 0`，`hasBoundaryOverlap == false`）
+时，Day-1 日桶不含上一周期用量，自动边界扣除跳过（不命中边界桶、不写窗口缓存、不触发自动写回；
+本周期内已手动定值的 `usedAmountAdjust` 仍有效）。
 
 已用金额公式：`usedAmount = max(0, 全桶合计 − carry)`，carry 来源由「定值」状态决定（判定字段
 `usedAmountAdjustFixedAt`，自动写入与手动修改同源更新）：
@@ -212,26 +215,25 @@ OpenAI costs 端点只支持 `bucket_width=1d`（实测 `1h` / `1m` 报错 `Supp
 | 状态 | carry 来源 | 自动写回 |
 |---|---|---|
 | 已定值（`fixedAt ∈ [cycleStart, cycleEnd)`，无论自动或手动） | `usedAmountAdjust` 配置值 | 失效，本周期不再覆写 |
-| 未定值 & `now ≤ cycleStart + 1h`（精准窗口，含锚点前读数） | 最新边界桶读数，存进程内存缓存（窗口内每次刷新覆盖刷新，向真值单调收敛） | 不写（写入即定值，会堵死窗口内覆盖刷新） |
-| 未定值 & 窗口已过 | 内存缓存有窗口读数 → 缓存值（精确）；否则边界桶当前全额（估算） | 本拍写入 config（`usedAmountAdjust = carry`、`fixedAt = now`），写后即定值 |
-| 边界桶缺失 | 0 | — |
+| 未定值且无 UTC 边界重叠（`cycleStart` 对齐 UTC 00:00） | `0` | 不写（无上一周期溢入） |
+| 未定值 & `now ≤ cycleStart + 1h` & 有 UTC 重叠（精准窗口，含锚点前读数） | 最新边界桶读数（OpenAI 省略 `$0` 桶即 `boundaryTotal == nil` 时按 `0.0` 写入缓存），存进程内存缓存（窗口内每次刷新覆盖刷新，向真值单调收敛） | 不写（写入即定值，会堵死窗口内覆盖刷新） |
+| 未定值 & 窗口已过 & 有 UTC 重叠 | 内存缓存有窗口读数 → 缓存值（精确）；否则边界桶当前全额（估算）；边界桶仍缺失 → `0` | 本拍写入 config（`usedAmountAdjust = carry`、`fixedAt = now`），写后即定值 |
 
 - 快照窗口 = `cycleStart + 1h`，依据：锚点时刻 credits 清零、+1h 才到账，期间组织无法产生
-  新用量，窗口内边界桶读数即纯上一周期溢入额；锚点之前的读数同性质（精准逼近）。窗口内读数
-  仅存进程内存（`AdminBoundaryWindowCache`，key = keyId + cycleStartEpoch）；重启丢失后退化为
+  新用量，窗口内边界桶读数即纯上一周期溢入额（含 `$0` 省略桶即 `0.0`）；锚点之前的读数同性质（精准逼近）。
+  窗口内读数仅存进程内存（`AdminBoundaryWindowCache`，key = keyId + cycleStartEpoch）；重启丢失后退化为
   窗口外估算写入，由手动微调兜底。
 - **写回链路**：fetcher 在 `OpenAIApiCreditDetails.carryPendingWriteValue` 上携带建议值，
-  `AppState` 在 provider 刷新结果应用后重读最新 config、定位同 `keyId` 条目写入并
-  `applyAndSave`（值相同跳过）。写回触发 config 热发布 → generation bump → reschedule，写后
-  即定值故无循环。fetcher 不持有 ConfigStore（`makeDescriptors()` 为 static，捕获不到实例）。
+  `AppState` 在 provider 刷新结果应用后重读最新 config，若 `adminApiKeys` 为空/nil 或仅含空 Key 且标量 `adminApiKey` 非空（`effectiveAdminKeys` 合成 `id == "default"`），则先物化 `effectiveAdminKeys` 再定位同 `keyId` 条目写入。`applyingAdminCarryWriteBacks` 仅跳过 `usedAmountAdjustFixedAt` 已落在 `[cycleStart, cycleEnd)` 内的条目（跨周期同值如连续两期 `0.0` 仍正常打上当前周期戳），且仅在 `fixedAt ∈ [cycleStart, cycleEnd)` 时生效。写入前将新配置写入 `AppState.pendingSilentCarryConfigs`，`setupConfigSubscription()` 匹配消费后直接吸收而不递增 `configurationGeneration`、不重建状态或重排调度，避免并发刷新中的兄弟 Provider 或本地扫描被取消；写后即定值故无循环。fetcher 不持有 ConfigStore（`makeDescriptors()` 为 static，捕获不到实例）。
 - **手动修改**：设置页「边界扣除 ($)」直接编辑该值；保存时值有变化 → `fixedAt = Date()`，
   本周期自动失效。draft 打开期间后台自动写入的值，保存时对用户未改动的字段保留 config 最新
-  值（`initialUsedAmountAdjust` 快照比对），防止把自动值拍回旧值。修改 `billingDay` /
-  `billingTime` 使锚点变化 → 新周期视为未定值，按上表重新采集。
+  值（`initialUsedAmountAdjust` 快照比对），防止把自动值拍回旧值。若用户未手动改动「边界扣除 ($)」
+  但修改了 `billingDay` 或 `billingTime` 使账期锚点变化，`SettingsView.mergedCarryAdjust` 重置
+  `usedAmountAdjust = 0` 与 `usedAmountAdjustFixedAt = nil`，新周期按上表重新采集。
 - 估算标记：`carryApproximate == true`（本拍 carry 为估算且尚未定值）且非失败态时，明细行
   周期信息前显示橙色 `exclamationmark.triangle`；定值后不再显示。
-- 历史遗留：2.7.6 开发中间版曾使用独立状态文件 `admin-credit-carry.json`，已退役，启动时
-  best-effort 清理。
+- 历史遗留：2.7.6 开发中间版曾使用独立状态文件 `admin-credit-carry.json`，已退役，启动时从
+  `configStore.configURL` 同目录 best-effort 清理。
 
 ### UI 呈现（`ChatGPTApiCreditsRow`）
 
@@ -239,7 +241,7 @@ OpenAI costs 端点只支持 `bucket_width=1d`（实测 `1h` / `1m` 报错 `Supp
 - **标题行**：左侧显示 `API赠金 · <Key 名称>`，名称使用设置中配置的 `label`（对应 `keyLabel`，去除首尾空白）；未命名时按列表顺序显示 `API赠金 · API Key #N`，不再用币种 USD 区分 Key。长标题单行居中截断，tooltip 显示完整名称。右侧独立显示组织/工作区名称（缺省「未知组织」）。
 - **独立进度条**：每个 Key 拥有专属的单段 `SegmentedQuotaProgressBar`（高 8pt，自适应绿/黄/红分级着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示。
 - **独立明细行**：单行整合呈现「已用 <used> 剩余：<remaining>/<total>」与该 Key 专属的「周期至 MM-dd HH:mm（剩余xx）」。
-- **估算标记与扣除明细**：`carryApproximate == true` 且非抓取失败时，明细行周期信息前显示橙色 `exclamationmark.triangle` 小图标，tooltip「边界扣除为估算（错过重置后 1 小时快照窗口），已用可能偏低，可在设置中手动微调」；抓取失败标记优先于估算标记；已定值后不再显示。正常 tooltip 在边界扣除非零时追加「，边界扣除: $X」（估算时带「（估算）」后缀）。
+- **估算标记与扣除明细**：`carryApproximate == true` 且非抓取失败时，明细行周期信息前显示橙色 `exclamationmark.triangle` 小图标，tooltip「边界扣除为估算（错过重置后 1 小时快照窗口），已用可能偏低，可在设置中手动微调」；抓取失败标记优先于估算标记；已定值后不再显示。正常 tooltip 在边界扣除非零时追加「，边界扣除: $X.XX」（负值格式化为 `-$X.XX`，估算时带「（估算）」后缀）。
 - **局部错误与警告指示**：若某单个 Key 抓取失败或处于陈旧状态，仅在该 Key 的明细行周期信息前显示警告图标（带详细 tooltip 与 accessibility label），展示上次成功的数据及独立错误提示，兄弟 Key 进度条和明细正常展示不受干扰。
 
 ## Local Pricing Snapshot
@@ -624,4 +626,4 @@ line rather than a "try again in N minutes" hint.
 The Codex harness scans local session JSONL and contributes `codexUsageDetails` after the provider batch settles. Source paths, aggregation, raw token semantics, and scanner caching are documented in the [Codex harness spec](../harnesses/codex.md#local-usage-aggregation).
 
 > 拆分来源：由原 `spec/providers/codex.md` 按 ChatGPT quota provider 职责拆分；本文件主要沿用其对应章节。
-> 核对基线：2026-11-11 · 代码 6cc1d10
+> 核对基线：2026-11-11 · 代码 fc07716

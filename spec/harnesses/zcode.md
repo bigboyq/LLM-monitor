@@ -297,10 +297,7 @@ Swift reader 使用 CryptoKit AES-256-GCM（iv 12B / tag 16B，载荷三段 base
 | `enc:v2:os:` | **macOS Keychain** generic password：`service = "ZCode Credential Encryption"`，`account = SHA256(credentials.json 绝对路径) 的 hex`，password 为 base64url 的 32 字节 AES 密钥（直接解码使用，不再哈希） | ZCode 3.18.0（2026-11-11 观察）引入；同目录 `credential-source` 文件内容 `os` 标记此来源 |
 | `enc:v2:env:` | SHA-256(managed secret)：优先 `ZCODE_CREDENTIAL_SECRET` 环境变量，其次 `<credentials.json 同目录>/credential-secret` 文件（32–4096 字节） | 同上 |
 
-`enc:v2:` 载荷完整形态为 `enc:v2:<os|env>:<keyId 24hex>:<iv>.<tag>.<ct>`；`keyId` 不参与
-解密。密钥解析顺序与客户端一致：managed secret（env 变量 → `credential-secret` 文件）
-优先，无则 Keychain。任何解密 / Keychain 失败降级为该凭证缺失（logWarn，不打密钥），
-不中断其余凭证加载。
+`enc:v2:` 载荷形态为 `enc:v2:<os|env>:[<keyId>:]<iv>.<tag>.<ct>`（`<keyId>` 为可选 24 位 hex，存在冒号前缀时取末段密文，`keyId` 本身不参与解密）。Swift reader 按变体前缀**严格分派密钥来源**，不做跨变体回退（不同于 ZCode 客户端加密时「env 变量 → `credential-secret` 文件 → Keychain」的优先选择）：`enc:v2:os:` 仅读取 macOS Keychain，`enc:v2:env:` 仅读取 managed secret（`ZCODE_CREDENTIAL_SECRET` 环境变量 → 同目录 `credential-secret` 文件）。另外 GLM Fetcher 生产调用 `loadCredentials(authPath:)` 默认跳过解密不使用的 `oauth:bigmodel:access_token`（`includeBigmodelAccessToken: Bool = false`，由已配置的 `usableAPIKey` 替代），避免触发多余 Keychain 读取（`loadTokens` 与显式路径版 `loadCredentials(telemetryStateURL:credentialsURL:)` 仍默认解密全部两项）。任何解密 / Keychain 失败降级为该凭证缺失（logWarn，不打密钥），不中断其余凭证加载。
 
 Keychain 读取首次会触发系统授权弹窗（「始终允许」后免提示）；app 为 ad-hoc 重签时
 cdhash 变化可能需要重新授权。2026-11-11 事故记录：ZCode 3.18.0 于 18:02 将凭证重写为
@@ -448,9 +445,9 @@ The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a
 
 Local SQLite reader, scanner, off-peak/category attribution, credential parsing, and context
 accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swift`,
-`GlmUsageCategoryTests.swift`, and `GlmZcodeCredentialReaderTests.swift` (under
-`Tests/LLMMonitorTests/`). Provider API/auth orchestration tests remain in the
-[GLM Provider spec](../providers/glm.md#test-coverage).
+`GlmUsageCategoryTests.swift`, `GlmZcodeCredentialReaderTests.swift`, and
+`GlmZcodeCredentialEncV2Tests.swift` (under `Tests/LLMMonitorTests/`). Provider API/auth
+orchestration tests remain in the [GLM Provider spec](../providers/glm.md#test-coverage).
 
 | Test | What it verifies |
 |---|---|
@@ -471,4 +468,4 @@ accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swi
 
 当前持久化缓存版本 **v15**：`ScannerIndexIO` 使用固定 9 位小数秒 ISO 日期，保留实际 Date 表示；旧秒级缓存一次性失效，从原始来源重建，避免 cold/warm 窗口边缘归属不同。具体契约见 `spec/local-usage-reconcile.md`。
 
-> 核对基线：2026-11-11 · 代码 aab5136
+> 核对基线：2026-11-11 · 代码 fc07716

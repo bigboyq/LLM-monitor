@@ -594,7 +594,7 @@ reported through `CardsContentHeightKey`, which the harness content reuses uncha
 content (`fixedSize(vertical: true)`) so a short client list gets a short window; the
 ceiling is `window.contentMaxSize` = `floor(visibleFrame.height × 0.70)`, set by
 `MenuPanelHeightBridge.HeightProbeView.applyMaxSize()`
-(`Views/MenuContentView.swift:727-757`，`HeightProbeView` 定义在同文件 `:716`). `cappedHeight(_:)` and `heightCapFraction`
+(`Views/MenuContentView.swift:739-770`，`HeightProbeView` 定义在同文件 `:713`). `cappedHeight(_:)` and `heightCapFraction`
 (0.70) are exposed as `static` precisely so `MenuPanelHeightBridgeTests` can pin the
 arithmetic without standing up an `NSWindow` / `NSScreen`. The cap is conditional:
 `windowMaxHeight` is `maxHeight` only when the natural height (measured cards +
@@ -684,7 +684,7 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
   `StatusBarQuotaSelector` 为菜单额度行与详情卡片共用控件；右键列出 `statusBarQuotaOptions`。
   所有模型进度条行旁均配 `StatusBarQuotaSourcePinButton`（多模型套餐 `displayedModels.count > 1` 绑定 `.planModel(modelName:)`、跳过聚合过滤直接监控该模型自身额度；单模型套餐 `displayedModels.count <= 1` 直接绑定 `.plan`）。主套餐大标题（`mainPlanTitle`）仅保留名称文本，不再放置重复的 `.plan` 小眼睛，Provider 级 `.plan` 聚合统一由卡片 / 菜单行右上角 `StatusBarQuotaSelector` 控制。ChatGPT 每个 API Key、
   GLM 每个生效中或待生效活动套餐的标题旁同一按钮亦一击锁定对应独立额度池，已选项以实心眼睛标记（`状态栏当前显示：<title>（点击恢复全局聚合）`）。
-  再次点击已选中的实心 `StatusBarQuotaSourcePinButton`（以及各宿主注入的 `AppState.toggleStatusBarQuotaSelection(_:source:)`）直接取消锁定并置 `statusBarQuotaSelection = nil` 恢复全 Provider 接力聚合；`setStatusBarQuotaSelection` 仍保留用于设置页 Picker 显式赋选。详情卡经 `\.cardStatusBarQuotaOptions` /
+  再次点击已选中的实心 `StatusBarQuotaSourcePinButton`（以及各宿主注入的 `AppState.toggleStatusBarQuotaSelection(providerID:source:)`）直接取消锁定并置 `statusBarQuotaSelection = nil` 恢复全 Provider 接力聚合；`setStatusBarQuotaSelection` 仍保留用于设置页 Picker 显式赋选。详情卡经 `\.cardStatusBarQuotaOptions` /
   `\.cardSelectStatusBarQuota` 注入选项和动作。`selectedStatusBarSource` 参与卡片 Equatable，
   同 Provider 切换 Key / 权益时也会更新，菜单勾选与 help 指向具体来源。
 
@@ -706,7 +706,7 @@ EnvironmentKey 的动作闭包采用 `@MainActor @Sendable` 类型：它们只�
 - `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（包含「额度窗口」分析/用量可切换模块与「重置卡详情」模块，详见 `spec/ui/edge-dock.md` §Quota window usage block）
 - `LocalUsageHoverViews.swift` — 本地历史数据新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；原 `LocalUsageChartDayMetrics`、`SevenDayTokenUsageHoverView`、`LocalUsageDayBar`、`LocalUsageLegendDot`、`LocalUsageFreshnessText` 与 `LocalUsageFooterView` 等 ~450 行死代码已在 M1 彻底清理
 - `SevenDayUsageHistoryChart.swift` — 菜单、Provider 卡与 Settings 共用的 7 天多指标折线图
-- `HoverPanel.swift` (386 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
+- `HoverPanel.swift` (543 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
 - 废弃图表与死代码清理：原 `QuotaHoverViews.swift`（曾保留注释的废弃明细浮层骨架）、`TokenChart.swift`（过时的 `StackedTokenBar` / `TokenBarSegment` / `TokenChartScale` 堆叠柱图原语）已在 M1 彻底删除；`HarnessUsageMenuView.swift` 中的 `FleetNodeGroupView`（曾为全宽节点行折叠组）亦随节点平铺展示设计彻底移除；`ProviderCardView.swift` 中的空 `ProviderCardLayout` 枚举一并清理
 
 Visual structure:
@@ -766,9 +766,9 @@ Row-level tint rules:
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag & Refresh button | compact `未配置` / `待更新` / `已更新` / `需重试` label (`ProviderStateLabel`)；紧邻其右侧为显式单 Provider 刷新按钮 `Image(systemName: "arrow.clockwise")`，在 `status.isLoading` 时切换为小型 `ProgressView()`（`.scaleEffect(0.55)`，14×14pt）旋转动画。时间戳胶囊本身亦保留点击刷新手势，形成双入口。`未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
-| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。8 个可选指标为总量、Rounds、价值、思考、产出、命中、TTFT、速度（2026-11-08 TTFT 插在命中与速度之间），默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；TTFT 按调用汇总为每日 P50（`LocalUsageTTFTByDay`，数值单位秒，Y 轴标签走 `Formatters.formatTTFT`）；比率指标 Y 轴按当前有效样本 min/max 自适应伸缩，刻度精度随跨度调整（如 49.8%–50.2% 不折叠为同一个 50%）；命中率和思考占比上限为 100%，产出比允许超过 100%。Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`，无本地样本时 TTFT 显示 `—`。 |
+| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。8 个可选指标为总量、Rounds、价值、思考、产出、命中、TTFT、速度（2026-11-08 TTFT 插在命中与速度之间），默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按有效单次调用汇总为每日 P50（`LocalUsageSpeedByDay` / `callSpeedStatistics`）；TTFT 按有效调用汇总为每日 P50（`LocalUsageTTFTByDay` / `callTTFTStatistics`，数值单位秒，Y 轴标签走 `Formatters.formatTTFT`）；比率指标 Y 轴按当前有效样本 min/max 自适应伸缩，刻度精度随跨度调整（如 49.8%–50.2% 不折叠为同一个 50%）；命中率和思考占比上限为 100%，产出比允许超过 100%。Fleet 使用当前 scope 的权威 `snapshot.daily`，无有效调用时长数据时速度显示 `—`，无有效 TTFT 样本时 TTFT 显示 `—`。 |
 
-The metric picker renders a single-row capsule list: **总量 / Rounds / 价值 / 思考 / 产出 / 命中 / 速度**。
+The metric picker renders a single-row capsule list: **总量 / Rounds / 价值 / 思考 / 产出 / 命中 / TTFT / 速度**。
 Total is Input + Cache + Output + Reason; cache-write tokens are excluded.
 Rounds count tokenized API calls; Turns count distinct user prompts. The three rate metrics are:
 - **思考** (thinking share): `reasoning / (output + reasoning)`
@@ -776,7 +776,7 @@ Rounds count tokenized API calls; Turns count distinct user prompts. The three r
 - **命中** (hit rate): `cacheRead / (input + cacheRead)`
 The daily table consists of 6 base columns plus 1 selected dynamic column (always 7 columns):
 - **Base columns**: `日期` (34pt), `R/T` (54pt, Rounds / Turns), `Input` (46pt), `Cache` (46pt), `Reason` (46pt), `Output` (46pt).
-- **Dynamic column** (7th column, 58pt): mirrors whichever metric is currently selected in the chart (总量, Rounds, 价值, 思考, 产出, 命中, TTFT, 速度). Single-currency value keeps its currency, mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial. Speed is Prompt-level P50 per day; TTFT is call-level P50 per day via `Formatters.formatTTFT` (seconds); unavailable durations / samples remain `—`. Fleet uses its current-scope authoritative daily snapshot and has no prompt-duration data, so Fleet speed and TTFT stay `—`.
+- **Dynamic column** (7th column, 58pt): mirrors whichever metric is currently selected in the chart (总量, Rounds, 价值, 思考, 产出, 命中, TTFT, 速度). Single-currency value keeps its currency, mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial. Speed is valid-call P50 per day (`callSpeedStatistics`); TTFT is valid-call P50 per day (`callTTFTStatistics`) via `Formatters.formatTTFT` (seconds); unavailable durations / samples remain `—`. Fleet uses its current-scope authoritative daily snapshot and has no call-duration or TTFT samples, so Fleet speed and TTFT stay `—`.
 
 scope 切换**不在标题行**：选项 ≤4 时默认在标题行**下方**独占一行
 （`ProviderCardView.scopeRow`，宽度与卡片一致）；dock 贴底边时该行移到详情内容末尾、靠近
@@ -882,10 +882,10 @@ look for a hover route to this data — the card carries it inline.
 - 同时有 5h 和周额度时合并为一条，周进度条按 6 个等价额度分段（`weeklyEquivalentMultiplier` = 6）；接口只返回一个窗口时走单窗口路径，不虚构第二窗口。
 - 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。清单（`ResetCreditsDetailList`）按到期日升序最多展示 4 张（`prefix(4)`），以两列等宽 × 至多两行的 `LazyVGrid` 行优先填充（左上 → 右上 → 左下 → 右下），对齐 GLM 重置卡块的半宽密度；每行日期格式 `MM-dd HH:mm`（与 GLM 对齐，不显示年份）+ 紧迫度圆点 + 相对倒计时。
 - **多 Key API 赠金渲染（`ChatGPTApiCreditsRow`）**：支持配置多个 Codex / ChatGPT API Key，数据源自 `info.allOpenAIApiCredits`（`[OpenAIApiCreditDetails]`）。每个有效 Key 均在 Plan 模型行下方渲染为独立的赠金配额卡片行（多 Key 间以 `Divider().opacity(0.2)` 分隔）：
-  - **首行标题与组织**：左侧展示 `API赠金 · <备注名称>`（未命名时显示 `API赠金 · USD`，`MenuTypography.hoverRowEmphasis`）；右侧居右展示所属组织名（未返回时显示 `未知组织`，`MenuTypography.dataLabel`，中间截断）；
+  - **首行标题与组织**：左侧展示 `API赠金 · <备注名称>`（`titleText` 去除首尾空白；未命名时按列表顺序显示 `API赠金 · API Key #N`，`MenuTypography.hoverRowEmphasis`，紧邻 `StatusBarQuotaSourcePinButton` 固定开关）；右侧居右展示所属组织名（未返回时显示 `未知组织`，`MenuTypography.dataLabel`，中间截断）；
   - **独立进度条**：使用 `SegmentedQuotaProgressBar` 单段展示（`segments: 1`，高度 8pt，色调 `.chatgptBrand`），根据剩余比例（`remainingPercent / 100.0`）及账单日剩余时间比例（`timeRemainingFraction(at: displayDate)`）动态呈现时间感知进度；
-  - **已用/余量与重置倒计时**：次行左侧显示 `已用 <usedAmount> 剩余：<remainingAmount>/<totalQuota>`（金额为整数时隐藏小数位，如 `40`、`18.50`）；右侧显示周期重置时间 `周期至 MM-dd HH:mm（剩余 Xd / Xh / 已到期）`（倒计时由 `Formatters.formatRelativeCountdown` 格式化）；
-  - **错误隔离与容错**：单 Key 抓取失败或降级显示上次成功数据时，倒计时左侧展示橙色警告图标 `Image(systemName: "exclamationmark.triangle")`，tooltip 悬停提示具体错误信息。多 Key 间并发请求且错误隔离，单 Key 失败不影响其他 Key 或主套餐的正常渲染与刷新；
+  - **已用/余量与重置倒计时**：次行左侧显示 `已用 <usedAmount> 剩余：<remainingAmount>/<totalQuota>`（已用 `usedAmountText` 固定两位小数，剩余/总额度整数时隐藏小数位，如 `40`、`18.50`）；右侧显示周期重置时间 `周期至 MM-dd HH:mm（剩余 Xd / Xh / 已到期）`（倒计时由 `Formatters.formatRelativeCountdown` 格式化）；
+  - **状态图标、tooltip 与错误隔离**：单 Key 抓取失败或降级显示上次成功数据时，倒计时左侧展示橙色警告图标 `Image(systemName: "exclamationmark.triangle")`，tooltip 悬停提示具体错误信息；非失败态下若 `showsCarryEstimateMarker`（错过重置后 1 小时快照窗口且尚未定值导致 `carryApproximate == true`）同样展示橙色 `exclamationmark.triangle`，提示「边界扣除为估算（错过重置后 1 小时快照窗口），已用可能偏低，可在设置中手动微调」（失败标记优先于估算标记）。正常态 `normalTooltip` 展示总额度/已用/剩余，边界扣除非零时追加 `，边界扣除: $X.XX`（负值显示 `-$X.XX`，估算时带 `（估算）` 后缀）。多 Key 间并发请求且错误隔离，单 Key 失败不影响其他 Key 或主套餐的正常渲染与刷新；
   - 当无任何成功数据且存在全局错误时，退化展示单行错误提示文案。
 - `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度窗口」模块（分析/用量可切换）与 7 天卡承担。
 
@@ -933,8 +933,8 @@ The aliases are kept in the built-in registry (`ClientProviderBinding.defaultBin
 the `UsageProjectionKernel` and `ProviderStatus.usageProjection` apply the mapping and
 fold every matched contribution into its card. OpenCode rounds are tokenized assistant
 messages. Turns are distinct user-prompt parents. The shared seven-day history chart
-shows selectable Rounds, total, value, speed, hit rate, thinking share, and
-output-to-input ratio trends.
+shows selectable total, Rounds, value, thinking share, output-to-input ratio,
+hit rate, TTFT, and speed trends.
 
 ChatGPT's 5h / weekly summaries retain the preaggregated native Codex totals and add the
 automatically attributed OpenCode contribution. The native samples already represented
@@ -1027,10 +1027,10 @@ Claude and GPT models 组 N=2）。括号把差额摆到明面上。
 
 | Rule | Value |
 |---|---|
-| 显示条件 | `QuotaBarWithMetadata.weeklyBindingEffectivePercent(model:multiplier:)` 返回非 nil（`QuotaViews.swift:477`）——纯函数，双窗口以外一律 nil |
-| 判定谓词 | **复用** `EquivalentQuotaAllocation.bindingWindow(...) == .weekly`（`SegmentedQuotaProgressBar.swift:316`）：周 × N **严格**小于 5h 才算周瓶颈，并列按同一约定落到 5h、不显示括号。这样括号出现与否与本行的分段条永远同源，不会条缩了文字没缩 |
-| 括号值 | `EquivalentQuotaAllocation.effectivePrimaryFraction(...) × 100`（`SegmentedQuotaProgressBar.swift:292`），经 `Formatters.formatQuotaPercent` 格式化（至多一位小数、整数不带 `.0`，如 `30%` / `91.9%`） |
-| 渲染 | `Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")`，`MenuTypography.dataValue`（10pt semibold monospacedDigit），`Color.criticalTint`，`.fixedSize()`（`QuotaViews.swift:598-602`） |
+| 显示条件 | `QuotaBarWithMetadata.weeklyBindingEffectivePercent(model:multiplier:)` 返回非 nil（`QuotaViews.swift:491`）——纯函数，双窗口以外一律 nil |
+| 判定谓词 | **复用** `EquivalentQuotaAllocation.bindingWindow(...) == .weekly`（`SegmentedQuotaProgressBar.swift:319`）：周 × N **严格**小于 5h 才算周瓶颈，并列按同一约定落到 5h、不显示括号。这样括号出现与否与本行的分段条永远同源，不会条缩了文字没缩 |
+| 括号值 | `EquivalentQuotaAllocation.effectivePrimaryFraction(...) × 100`（`SegmentedQuotaProgressBar.swift:295`），经 `Formatters.formatQuotaPercent` 格式化（至多一位小数、整数不带 `.0`，如 `30%` / `91.9%`） |
+| 渲染 | `Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")`，`MenuTypography.dataValue`（10pt semibold monospacedDigit），`Color.criticalTint`，`.fixedSize()`（`QuotaViews.swift:628-631`） |
 | 颜色 | **告急同款红 `Color.criticalTint`**，不是 `.secondary` 灰：括号值是"周瓶颈下实际还能用多少"的告警数字，要在原始 5h 的绿色系旁边跳出来 |
 | 宽度 | 数据列按上表走 152 → 152+56 两档，括号本身 `fixedSize` 不参与压缩 |
 | 作用域 | 只对 5h（primary）那一格传非 nil；周数值（secondary）没有对应括号——它就是周窗口自己的原始剩余，没有被折算过 |
@@ -1178,4 +1178,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-11 · 代码 761b0c6
+> 核对基线：2026-11-11 · 代码 fc07716

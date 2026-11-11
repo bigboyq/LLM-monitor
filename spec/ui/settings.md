@@ -172,15 +172,15 @@ ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `
   - **Key 名称**：输入框绑定 `keyDraft.label`，占位符为「例如：个人账号、团队项目」；帮助文字说明名称用于区分额度卡片中的各个 API Key，留空时显示 `API Key #N`。沿用 JSON 的 `label` 字段；
   - **Admin API Key**：`keyDraft.apiKey` 输入框，支持明文/密文切换（`isKeyVisible` 切换 `TextField` 与 `SecureField`，带眼睛图标按钮），占位符为 `sk-admin-...`；
   - **赠金额度 ($)**：每月额度上限输入框（`keyDraft.monthlyQuotaLimit`，默认 40）。行内实时校验：当 Key 非空且额度非大于 0 的有限数字时，输入框下方即时呈现红色错误文案「请输入大于 0 的有限数字。」。在表单保存时（`SettingsView.saveAndApply()`）执行强校验拦截，非法时抛出错误阻止保存；
-  - **边界扣除 ($)**：当前账期边界日扣除值输入框（`keyDraft.usedAmountAdjust`，支持负数），带 `.help` 浮层说明：当前账期边界日溢入的自动扣除值（快照窗口结束后自动写入，可手动修改）；本周期内一旦定值（含自动写入）不再自动更新。行内实时校验：当 Key 非空且非有限数字时显示红色错误文案「请输入有限数字（支持负数）。」；保存时经 `SettingsView.validUsedAmountAdjust` 强校验拦截，非法抛出「已用修正必须是有限数字（支持负数）。」。保存合并：用户未改动该字段（与 `initialUsedAmountAdjust` 快照一致）时保留 config 最新值（连同 `usedAmountAdjustFixedAt`），防止把后台自动写入值拍回旧值；改动则以 draft 值为准并刷新 `usedAmountAdjustFixedAt = Date()`（语义见 `providers/chatgpt.md` §边界日扣除）；
+  - **边界扣除 ($)**：当前账期边界日扣除值输入框（`keyDraft.usedAmountAdjust`，支持负数），带 `.help` 浮层说明：当前账期边界日溢入的自动扣除值（冻结后自动写入，可手动修改）；本周期内一旦修改（含自动写入）不再自动更新。行内实时校验：当 Key 非空且非有限数字时显示红色错误文案「请输入有限数字（支持负数）。」；保存时经 `SettingsView.validUsedAmountAdjust` 强校验拦截，非法抛出「边界扣除必须是有限数字（支持负数）。」。保存合并：用户未改动该字段（与 `initialUsedAmountAdjust` 快照一致）时，若 `billingDay` 或 `billingTime` 改变则重置 `usedAmountAdjust = 0` 与 `usedAmountAdjustFixedAt = nil` 以便新账期重新采集；账单锚点未变时保留 config 最新值（连同 `usedAmountAdjustFixedAt`），防止把后台自动写入值拍回旧值；改动该字段则以 draft 值为准并刷新 `usedAmountAdjustFixedAt = Date()`（语义见 `providers/chatgpt.md` §边界日扣除）；
   - **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日，绑定 `keyDraft.billingDay`）；
   - **重置时间**：`DatePicker` 时分输入组件（精确至分钟粒度，默认 `08:00`，绑定 `keyDraft.billingTime`）。
-- **添加 Key 按钮**：卡片列表下方提供「添加 API Key」操作（`plus.circle.fill` 图标），点击向 `draft.chatgptAdminKeys` 追加新的 `CodexAdminKeyConfigDraft`（新生成 UUID，默认额度 40，账单日 11 日，重置时间 08:00，已用修正 0）。
+- **添加 Key 按钮**：卡片列表下方提供「添加 API Key」操作（`plus.circle.fill` 图标），点击向 `draft.chatgptAdminKeys` 追加新的 `CodexAdminKeyConfigDraft`（新生成 UUID，默认额度 40，账单日 11 日，重置时间 08:00，边界扣除 0）。
 - **双向兼容与数据持久化**：
   - `SettingsFormDraft` 提供 `chatgptAdminApiKey`、`chatgptBillingDay`、`chatgptBillingTime`、`chatgptMonthlyQuotaLimit` 计算属性，双向代理映射至首个 Key（`chatgptAdminKeys.first`）；
   - 保存时，有效非空 Key 列表（`compactMap { $0.toConfig() }`）写入 `ProviderConfig.adminApiKeys` 数组；同时将首个有效 Key 镜像同步至传统标量字段（`chatgpt.adminApiKey` 等），确保旧版本客户端与单 Key 接口完全兼容；
   - 所有卡片字段通过 `CodexAdminKeyConfigDraft: Equatable` 参与 `SettingsFormDraft: Equatable` 统一脏检查与保存流。
-- API 赠金节 footer 说明首月统计可能存在偏差，后续按完整账期计算；首月校准与边界扣除估算偏差通过每 Key 的「已用修正」手动完成（见 `providers/chatgpt.md` §边界日扣除）。
+- API 赠金节 footer（`SettingsProviderPanes.swift:117`）说明多 Key 独立追踪、支持按需自定义账单重置时间与额度上限，以及首月统计可能存在偏差、后续按完整账期计算（未提及手动修正）；每 Key 的边界扣除估算偏差调整与首月微调均通过卡片内的「边界扣除 ($)」控件完成（见 `providers/chatgpt.md` §边界日扣除）。
 
 ### 客户端 (Clients) 与用量 pane
 
@@ -208,8 +208,8 @@ Antigravity Provider 的所有 Harness 贡献（Antigravity、Agy、OpenCode）�
 
 Each expanded provider also uses the shared `SevenDayUsageHistoryView` shown by provider
 cards. It plots one selected metric across seven daily slots: total, Rounds, value,
-thinking share, output-to-input ratio, hit rate, or speed; total is the default. Missing dates appear as
-gaps and today is marked incomplete. Speed is calculated as daily Prompt P50. The selected
+thinking share, output-to-input ratio, hit rate, TTFT, or speed; total is the default. Missing dates appear as
+gaps and today is marked incomplete. Speed is calculated as valid-call P50 per day (`callSpeedStatistics`), and TTFT is calculated as valid-call P50 per day (`callTTFTStatistics`). The selected
 metric is persisted independently under `usageHistoryMetric` and is not coupled to the
 quota-window Analysis/Usage switch.
 设置页展开行的历史区可横向滚动；内容宽度取可用宽度与 expanded 表格 466pt 下限的
@@ -246,7 +246,7 @@ Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图
 - **Provider + 额度来源 Picker**（`statusBarQuotaSelection`）：
   - Provider「全部聚合（非零最小值）」对应 nil，沿用所有有效 Provider 的全局接力读数；
   - 选中 Provider 后显示其可用额度来源：主套餐（多模型套餐额外展开全部活跃单模型 `.planModel(modelName:)`，如 `Gemini Models` / `Gemini 4 Argon` / `Claude and GPT models` 或 `MiniMax video`）、每个独立 Admin API Key、每份 ZCode Start Plan entitlement；切换 Provider 将来源重置为主套餐；
-  - 暂无数据或暂时不可用的已保存来源保留为占位选项，不会自动改选；Provider 卡片眼睛单击选择/取消主套餐，右键菜单可直选同一 Provider 的其它额度来源；设置与卡片双向同步；
+  - 暂无数据或暂时不可用的已保存来源保留为占位选项，不会自动改选；卡片右上角与菜单栏右键眼睛菜单可直选该 Provider 的全部可用额度来源，且再次点击已选中的眼睛项直接取消锁定恢复全局聚合（`AppState.toggleStatusBarQuotaSelection(providerID:source:)`）；各模型进度条、API Key 与活动权益标题旁的 `StatusBarQuotaSourcePinButton` 亦可单击固定或取消锁定对应具体额度；设置与卡片/菜单双向同步；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
 ### GLM API Key、ZCode JWT 扩展与高峰期提示
@@ -458,6 +458,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。expanded 表格由 `ExpandedUsageHistoryTableLayout` 显式分配七列：日期固定 42pt，其余六列在各自下限上均分额外空间（下限常量住在 `SevenDayUsageChartMetrics.expanded*`），行高随单元格测量结果变化。466pt 下限可完整布局，放大时随窗口拉伸；compact 保留原有 Grid 与固定列宽。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
-> 核对基线：2026-11-11 · 代码 6cc1d10
+> 核对基线：2026-11-11 · 代码 fc07716
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

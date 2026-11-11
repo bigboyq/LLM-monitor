@@ -341,8 +341,8 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   不解析 `valueText`。`FleetUsageProjection.bucketCostEstimate` 优先使用日桶
   `valueByCurrency`，旧桶才回退逐模型数值；混币按既有 `MixedCurrencyEstimate`
   CNY 估算口径合并。来源不完整、截断及未完整计价随部分标记保留。
-  这是 L3 投影，wire 未扩展；远端无 Prompt 时长，历史速度显示不可用。
-  菜单「用量历史」及独立详情窗使用同一九维单指标折线，edge 浮层仅保留套餐详情。
+  这是 L3 投影，wire 未扩展；远端无调用时长与 TTFT 样本，历史速度与 TTFT 显示不可用。
+  菜单「用量历史」及独立详情窗使用同一八维单指标折线，edge 浮层仅保留套餐详情。
 - **日桶可用性**：多节点全局 / 已存在的所选节点缺少今日桶时显示“尚未同步”
   与 `—`，不回落本机数据、不冒充完整零值；卡片仍保留已同步的历史日图。
   partial 桶显示健康来源及保留值，并提示不可用客户端、原因及可能包含上次数据。
@@ -452,7 +452,7 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-11-10 · 代码 871db54
+> 核对基线：2026-11-11 · 代码 fc07716
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
 > 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。

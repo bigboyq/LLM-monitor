@@ -255,6 +255,7 @@ tool call 或 `<0.5s` 短调用把同 turn 内正常的流式输出调用一并�
 再计算单次速率 `(Output + Reason) ÷ decode`。
 
 有效性校验仍通过 `hasValidDecodeDuration` 执行：要求 `durationSeconds` 有限且在 `[0.2, 3600]` 秒内，
+若有 `ttftSeconds` 则要求其有限且 `>= 0`（与 `hasValidTTFT` 对齐，防止异常负值 / 非有限 TTFT 放大解码时长），
 并且 `decode` 有限且严格大于 0。缺失时长、`<0.5s` 被 reader 置 `nil` 的批量调用或 `ttft >= duration`
 的异常样本只跳过该单次调用，不 disqualify 同一 `promptID` 下其余有效调用。`validCallCount` / `totalCallCount`
 供 UI 披露有效调用覆盖率；Turns 列计数与速度统计解耦，由 `HarnessModelRow.turnCount` / `HarnessSection.turnCount`
@@ -272,7 +273,7 @@ P95 为就近秩法（第 `⌈0.95n⌉` 个观测值）。输出为零但解码�
 
 ## 七天历史趋势
 
-七天历史图的七种单选指标为总量、Rounds、价值、思考、产出、命中、速度。
+七天历史图的八种单选指标为总量、Rounds、价值、思考、产出、命中、TTFT、速度。
 总量严格为规范化四桶之和（Input + Cache + Output + Reason），不含诊断字段 `cacheWrite`；
 Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`，思考占比为 `reasoning / (output + reasoning)`，
 产出比为 `(output + reasoning) / (input + cacheRead)`。每次选择只使用所选指标自身的线性 Y 轴，
@@ -283,8 +284,8 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 价值图使用 `ModelCostEstimate.value` 与 `currency` 数值字段，不从格式化文案逆向解析。若七日内
 出现多种币种，整条价值序列统一换算为 CNY（USD 使用 `MixedCurrencyEstimate.usdToCNYRate`）；
 单币种序列保留原币种。部分计价、样本截断或来源日估价标记必须随价值数据披露。每日速度图
-只展示 `LocalUsageSummaryBuilder.callSpeedStatistics` 的 P50；Fleet 无本地调用时长样本时
-速度不可用。每日权威 token 桶不因样本截断而变成部分值，但样本推导的价值 / 速度需标为部分。
+只展示 `LocalUsageSummaryBuilder.callSpeedStatistics` 的 P50，每日 TTFT 图只展示同源样本的
+`callTTFTStatistics` P50；Fleet 无本地调用时长 / TTFT 样本时速度与 TTFT 均不可用。每日权威 token 桶不因样本截断而变成部分值，但样本推导的价值 / 速度需标为部分。
 有效调用少于总调用数时（`validCallCount < totalCallCount`），P50 同样标注部分样本（缺少有效时长的调用不参与分布）。
 设置客户端页的 `ClientProviderUsageSummary.samplesTruncated` 沿投影传递样本覆盖状态，
 与日桶源级 `isTruncated` 分开保留；两者都会影响样本推导指标的完整性提示。
@@ -355,4 +356,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-11 · 代码 fc07716

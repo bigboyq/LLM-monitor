@@ -104,7 +104,7 @@ time-aware yellow-line caliber — has no exit on the permanent surface: when th
 weekly window is the tighter one (GLM at N=5 is the typical case — a 5h 90% green
 ring against a weekly 45% that already reads yellow early in the week) nothing on
 screen says so. `EdgeDockEntry.weeklyEscalationHealth`
-(`Sources/LLM-monitor/Models/EdgeDockEntry.swift:68`) is a pure computed property
+(`Sources/LLM-monitor/Models/EdgeDockEntry.swift:85`) is a pure computed property
 returning the weekly level **only when `weeklyHealth < intervalHealth`**
 (`HealthLevel` is `Comparable` with smallest-rank-worst, so `<` reads as "weekly is
 worse"), nil otherwise. The dot therefore carries the invariant **when it appears,
@@ -427,7 +427,7 @@ Since 2026-10-04 that line shows, next to the raw 5h reading, the 5h
 below it draws `min(5h, weekly × N)` while the number is the raw 5h — without the
 suffix a 30%-long bar next to "5h 100%" reads as a bug (the user reported exactly
 that). The predicate is `QuotaBarWithMetadata.weeklyBindingEffectivePercent`
-(`QuotaViews.swift:477`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
+(`QuotaViews.swift:491`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
 weekly × N must be *strictly* tighter, ties fall to 5h, and single-window models
 never get a suffix. The value is `effectivePrimaryFraction × 100`, printed in
 `Color.criticalTint`. The row's data column switches from 152pt to 208pt
@@ -656,7 +656,7 @@ window, the Account Info row gives the content three reading sections: *who is t
 |---|---|---|
 | Provider header | Brand logo + provider name, with quota refresh time / state on the right and the pinned-provider action where supported. The timestamp refreshes only this provider's quota via `\.cardQuotaRefreshAction`. Scope control appears below the header (or at the bottom for the bottom-edge dock). | Same shared Provider header and quota refresh action. |
 | Plan | **Account Info + Plan**: account name and plan pill, 「Plan详情」 title, provider quota bars, quota-window usage / analysis-usage switch and reset-credit details. | Same shared Account Info + Plan. |
-| History | Not rendered. | Separate card titled 「最近7天使用历史」. Its local-scope freshness timestamp is tappable and triggers only local usage rescanning; for Fleet / node scope the local timestamp and rescan action are hidden. The shared chart has seven day slots and seven independently selectable series (total, Rounds, value, thinking share, output-to-input ratio, hit rate, speed), defaulting to total. Missing dates are gaps; today is marked incomplete. Speed is daily Prompt P50, and Fleet history has no speed because Fleet snapshots contain no prompt durations. |
+| History | Not rendered. | Separate card titled 「最近7天使用历史」. Its local-scope freshness timestamp is tappable and triggers only local usage rescanning; for Fleet / node scope the local timestamp and rescan action are hidden. The shared chart has seven day slots and eight independently selectable series (total, Rounds, value, thinking share, output-to-input ratio, hit rate, TTFT, speed), defaulting to total. Missing dates are gaps; today is marked incomplete. Speed is valid-call P50 per day (`callSpeedStatistics`) and TTFT is valid-call P50 per day (`callTTFTStatistics`), and Fleet history has neither speed nor TTFT because Fleet snapshots contain no call-duration or TTFT samples. |
 
 **Section 1 — Account Info** is `QuotaWindowAccountInfoRow`, one row, no section
 title: account name (email, monospaced, tail-truncated) + the plan pill (the very
@@ -1358,4 +1358,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-11-10 · 代码 91f6cd4
+> 核对基线：2026-11-11 · 代码 fc07716
