@@ -77,7 +77,7 @@ The app reads and writes this shape:
 | `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`）；仅 JWT 扩展开启、读取到 JWT 且通知渠道开启时，按次要信息频率轮询（仅 `.full` 模式），发现活动 1h 内不重复推送，防抖不限制接口请求。 |
 | `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。仅当 `zcodeJWTEnabled` 和 `glmAuthMode` 缺失时，按上表优先级取首个非 nil 值用于迁移；设置页保存时不落盘。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
-| `providers.<id>.adminApiKeys` | provider | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`（UUID 字符串）、`label`（自定义备注标签）、`apiKey`（`sk-admin-...`）、`monthlyQuotaLimit`（月度赠金额度上限美元，默认 40.0）、`billingDay`（账单日 1-31，默认 11）、`billingTime`（重置时刻 `HH:mm`，默认 "00:00"）。若存在且非空，优先使用此列表。 |
+| `providers.<id>.adminApiKeys` | provider | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`（UUID 字符串）、`label`（自定义备注标签）、`apiKey`（`sk-admin-...`）、`monthlyQuotaLimit`（月度赠金额度上限美元，默认 40.0）、`billingDay`（账单日 1-31，默认 11）、`billingTime`（重置时刻 `HH:mm`，默认 "00:00"）、`usedAmountAdjust`（当前账期边界日扣除值：自动写入或手动定值，美元，可为负，默认 0）、`usedAmountAdjustFixedAt`（该值最近一次定值时间，自动/手动同源；处于当前账期内时自动修正失效，默认 null）。若存在且非空，优先使用此列表。 |
 | `providers.<id>.adminApiKey` | legacy / fallback | OpenAI Admin API Key（`sk-admin-...`），历史单 Key 兼容标量字段。当 `adminApiKeys` 缺失或为空时，由 `effectiveAdminKeys` 自动合成为单个 `id: "default"`, `label: "Default"` 配置。 |
 | `providers.<id>.adminBillingDay` | legacy / fallback | 每月账单日（1-31，缺省 11）。仅在回退至单 Key 兼容模式时作为默认账单日使用。 |
 | `providers.<id>.adminBillingTime` | legacy / fallback | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。仅在回退至单 Key 兼容模式时使用。 |
@@ -115,6 +115,8 @@ to their defaults; cosmetic config errors do not trigger recovery of the provide
 - `monthlyQuotaLimit: Double`: 每月赠金额度上限（美元，缺省 `40.0`）。
 - `billingDay: Int`: 每月账单日（`1...31`，缺省 `11`）。
 - `billingTime: String`: 账单重置时刻（`HH:mm`，如 `"00:00"` 或 `"08:00"`，缺省 `"00:00"`）。
+- `usedAmountAdjust: Double`: 当前账期边界日扣除值（美元，可为负，缺省 `0`）。由 app 在快照窗口结束后自动写入，也可在设置页手动定值（支持负数）；两者共享该字段，语义见 `providers/chatgpt.md` §边界日扣除。
+- `usedAmountAdjustFixedAt: Date?`: `usedAmountAdjust` 最近一次定值时间（自动写入与手动修改同源更新；Codable 默认日期策略，JSON 表现为相对 2001-01-01 的秒数）。该时间落在当前账期 `[cycleStart, cycleEnd)` 内时，本周期自动修正失效；缺省 `null`。
 
 **双模式解析与透明回退（`effectiveAdminKeys`）**：
 1. **多 Key 优先**：若 `adminApiKeys` 存在且过滤掉空白 Key 后非空，`effectiveAdminKeys`（及 `effectiveAdminApiKeys`）直接返回该有效 Key 列表。
@@ -324,4 +326,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-11 · 代码 6cc1d10
