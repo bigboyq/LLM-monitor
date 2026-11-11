@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 /// ZCode 本地凭证快照（deviceMid、解密后的 JWT Token 与 BigModel Access Token）。
 struct GlmZcodeCredentials: Equatable, Sendable {
@@ -34,11 +35,19 @@ struct GlmZcodeCredentials: Equatable, Sendable {
 /// 凭证存储规范（与 ZCode 客户端保持一致）：
 /// 1. `deviceMid`：明文存储于 `~/.zcode/v2/telemetry-state.json`，格式为 UUID 字符串。
 /// 2. `zcodejwttoken`：存储于 `~/.zcode/v2/credentials.json`。
-///    - 若带有 `enc:v1:` 前缀，表示使用 AES-256-GCM 加密；
-///    - 加密格式：`enc:v1:<base64url(iv)>.<base64url(tag)>.<base64url(ciphertext)>`；
-///    - 密钥派生源：`ZCODE_CREDENTIAL_SECRET` 环境变量，或默认回退
+///    - ZCode 客户端 3.18.0 起，token 由明文/`enc:v1:` 改为 `enc:v2:` 加密；
+///    - `enc:v2:` 格式：`enc:v2:<variant>:[<keyId>:]<base64url(iv)>.<base64url(tag)>.<base64url(ciphertext)>`
+///      （AES-256-GCM，iv 12B / tag 16B；`<keyId>` 为客户端密钥编号提示，不参与解密）；
+///    - `os` 变体密钥：macOS Keychain generic password（service = "ZCode Credential Encryption"，
+///      account = SHA256(credentials.json 绝对路径).hex），条目 password 即 base64url 的
+///      32 字节 AES key（直接解码使用，不再哈希）；
+///    - `env` 变体密钥：SHA256(managed secret)——`ZCODE_CREDENTIAL_SECRET` 环境变量，
+///      或 `<credentials.json 同目录>/credential-secret` 文件内容（32–4096 字节）；
+///    - 若带有 `enc:v1:` 前缀，表示旧版 AES-256-GCM 加密：
+///      `enc:v1:<base64url(iv)>.<base64url(tag)>.<base64url(ciphertext)>`，
+///      密钥派生源：`ZCODE_CREDENTIAL_SECRET` 环境变量，或默认回退
 ///      `zcode-credential-fallback:darwin:<homeDirectory>:<userName>` 的 SHA256 摘要；
-///    - 若无 `enc:v1:` 前缀，直接当作原始 Token 返回。
+///    - 若无前缀，直接当作原始 Token 返回。
 enum GlmZcodeCredentialReader {
     nonisolated static let defaultDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".zcode", isDirectory: true)
@@ -156,6 +165,7 @@ enum GlmZcodeCredentialReader {
             guard !trimmed.isEmpty else { return nil }
             return decryptCredential(
                 trimmed,
+                credentialsURL: fileURL,
                 homeDirectory: homeDirectory,
                 userName: userName,
                 environmentSecret: environmentSecret
@@ -167,6 +177,7 @@ enum GlmZcodeCredentialReader {
             guard !trimmed.isEmpty else { return nil }
             return decryptCredential(
                 trimmed,
+                credentialsURL: fileURL,
                 homeDirectory: homeDirectory,
                 userName: userName,
                 environmentSecret: environmentSecret
@@ -201,20 +212,40 @@ enum GlmZcodeCredentialReader {
         }
         return decryptCredential(
             rawToken,
+            credentialsURL: fileURL,
             homeDirectory: homeDirectory,
             userName: userName,
             environmentSecret: environmentSecret
         )
     }
 
-    /// 解密可能包含 `enc:v1:` 前缀的 ZCode 凭证。
+    /// 解密可能包含 `enc:v1:` / `enc:v2:` 前缀的 ZCode 凭证。
     /// 若无前缀直接返回原值；解密失败（如文件损坏、密钥不匹配、结构畸形）返回 nil。
+    ///
+    /// - `credentialsURL`：凭证文件实际路径，v2 `os` 变体据此推导 Keychain account、
+    ///   `env` 变体据此定位同目录 `credential-secret` 文件；
+    /// - `keychainReader`：v2 `os` 变体的 Keychain 密钥读取（account → password），
+    ///   默认走真实 SecItem 实现，供单测注入假实现。
     nonisolated static func decryptCredential(
         _ raw: String,
+        credentialsURL: URL = defaultCredentialsURL,
         homeDirectory: String = NSHomeDirectory(),
         userName: String = NSUserName(),
-        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]
+        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"],
+        keychainReader: ((String) -> String?)? = nil
     ) -> String? {
+        if raw.hasPrefix("enc:v2:") {
+            return decryptEncV2(
+                raw,
+                credentialsPath: credentialsURL.path,
+                managedSecret: resolveManagedSecret(
+                    environmentSecret: environmentSecret,
+                    credentialsURL: credentialsURL
+                ),
+                keychainReader: keychainReader ?? readZcodeCredentialKeychainPassword
+            )
+        }
+
         guard raw.hasPrefix("enc:v1:") else {
             return raw
         }
@@ -241,6 +272,126 @@ enum GlmZcodeCredentialReader {
         }
 
         return String(data: decryptedData, encoding: .utf8)
+    }
+
+    // MARK: - enc:v2（ZCode 客户端 3.18.0 起）
+
+    /// ZCode 客户端（@napi-rs/keyring）的凭证加密密钥 Keychain 条目服务名。
+    nonisolated static let zcodeCredentialKeychainService = "ZCode Credential Encryption"
+
+    /// Keychain generic password 的 account：SHA256(credentials.json 绝对路径) 的
+    /// 64 位小写 hex。路径须与客户端实际解析的绝对路径一致（含 authPath 自定义
+    /// 场景，与 `resolveURLs` 返回值同源）。
+    nonisolated static func keychainAccount(forCredentialsPath path: String) -> String {
+        SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 读 ZCode 凭证加密密钥条目（返回 base64url 的 32 字节 AES key 字符串）。
+    ///
+    /// 与 `AntigravityKeychain` 同款测试进程护栏：xctest 产物不在条目 ACL 内，
+    /// 真实 `SecItemCopyMatching` 会触发系统授权弹窗，测试进程内恒返回 nil；
+    /// 单测通过 `decryptCredential` 的 `keychainReader` 注入假实现。
+    nonisolated static func readZcodeCredentialKeychainPassword(account: String) -> String? {
+        if AntigravityKeychain.isRunningInTestProcess { return nil }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: zcodeCredentialKeychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// 解密 `enc:v2:` 凭证密文（纯函数，供单测注入密钥来源）。
+    ///
+    /// 载荷：`enc:v2:<variant>:[<keyId>:]<iv>.<tag>.<ciphertext>`，三段均为
+    /// base64url（AES-256-GCM，iv 12B / tag 16B）；`<keyId>` 为客户端的密钥编号
+    /// 提示，不参与解密，容忍任意内容。
+    /// - `os` 变体：密钥在 macOS Keychain（见 `readZcodeCredentialKeychainPassword`），
+    ///   条目 password 直接 base64url 解码即 32 字节 AES key，不再哈希；
+    /// - `env` 变体：密钥 = SHA256(managed secret)。
+    /// 任何失败（结构畸形 / 密钥不可得 / GCM 校验失败）logWarn（脱敏，不打密钥）
+    /// 后返回 nil，不抛错中断整个凭证加载。
+    nonisolated static func decryptEncV2(
+        _ value: String,
+        credentialsPath: String,
+        managedSecret: String?,
+        keychainReader: ((String) -> String?)?
+    ) -> String? {
+        let body: String
+        let key: SymmetricKey?
+        if value.hasPrefix("enc:v2:os:") {
+            body = String(value.dropFirst("enc:v2:os:".count))
+            guard let reader = keychainReader else {
+                logWarn("[glm-zcode] enc:v2:os 密文缺少 Keychain 读取通道，跳过解密")
+                return nil
+            }
+            let account = keychainAccount(forCredentialsPath: credentialsPath)
+            guard let stored = reader(account) else {
+                logWarn("[glm-zcode] Keychain 无 ZCode 凭证加密密钥（service=\(zcodeCredentialKeychainService)），无法解密 enc:v2:os")
+                return nil
+            }
+            guard let keyData = base64URLDecode(stored), keyData.count == 32 else {
+                logWarn("[glm-zcode] Keychain 密钥条目不是 base64url 的 32 字节 AES-256 密钥，无法解密 enc:v2:os")
+                return nil
+            }
+            key = SymmetricKey(data: keyData)
+        } else if value.hasPrefix("enc:v2:env:") {
+            body = String(value.dropFirst("enc:v2:env:".count))
+            guard let managedSecret, !managedSecret.isEmpty else {
+                logWarn("[glm-zcode] 无 managed secret（ZCODE_CREDENTIAL_SECRET / credential-secret 文件），无法解密 enc:v2:env")
+                return nil
+            }
+            key = SymmetricKey(data: SHA256.hash(data: Data(managedSecret.utf8)))
+        } else {
+            logWarn("[glm-zcode] 未知的 enc:v2 变体前缀，无法解密")
+            return nil
+        }
+
+        // `<keyId>:<iv>.<tag>.<ciphertext>`：keyId 不参与解密。base64url 字符集
+        // 不含 `:`，出现冒号即视为带 keyId 段（兼容空 keyId 与任意内容）。
+        let payload = body.contains(":")
+            ? String(body.split(separator: ":", maxSplits: 1).last ?? "")
+            : body
+        let parts = payload.split(separator: ".")
+        guard parts.count == 3,
+              let ivData = base64URLDecode(String(parts[0])),
+              let tagData = base64URLDecode(String(parts[1])),
+              let ciphertextData = base64URLDecode(String(parts[2])),
+              let key,
+              let nonce = try? AES.GCM.Nonce(data: ivData),
+              let sealedBox = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertextData, tag: tagData),
+              let decryptedData = try? AES.GCM.open(sealedBox, using: key) else {
+            logWarn("[glm-zcode] enc:v2 密文结构畸形或 AES-GCM 校验失败（密钥不匹配），返回 nil")
+            return nil
+        }
+        return String(data: decryptedData, encoding: .utf8)
+    }
+
+    /// v2 managed secret：`ZCODE_CREDENTIAL_SECRET` 环境变量优先，其次
+    /// credentials.json 同目录的 `credential-secret` 文件（32–4096 字节，内容
+    /// 原样使用不 trim，与客户端一致）。都没有返回 nil（`os` 变体走 Keychain，
+    /// 与此独立）。
+    private nonisolated static func resolveManagedSecret(
+        environmentSecret: String?,
+        credentialsURL: URL
+    ) -> String? {
+        if let env = environmentSecret?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
+            return env
+        }
+        let secretURL = credentialsURL.deletingLastPathComponent()
+            .appendingPathComponent("credential-secret", isDirectory: false)
+        guard let data = try? Data(contentsOf: secretURL),
+              (32...4096).contains(data.count),
+              let text = String(data: data, encoding: .utf8),
+              !text.isEmpty else {
+            return nil
+        }
+        return text
     }
 
     /// 将明文凭证加密为带有 `enc:v1:` 前缀的标准密文（主要用于单元测试与凭证回写）。

@@ -2,6 +2,12 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.7] - 2026-11-11
+
+### Fixed
+
+- 修复 GLM 重置卡与活动套餐信息静默消失：ZCode 客户端 3.18.0 将 `~/.zcode/v2/credentials.json` 凭证重写为 `enc:v2:` 加密格式，旧版 reader 把密文当明文 JWT 发送导致 zcode.z.ai 双凭证接口 401（营销接口不校验 Authorization 仍 200）。`GlmZcodeCredentialReader` 新增 `enc:v2:` 解密（CryptoKit AES-256-GCM：`os` 变体钥匙串取钥、`env` 变体环境/文件派生），失败降级为凭证缺失并落脱敏日志；`enc:v1:` 与明文路径不变。
+
 ## [2.7.6] - 2026-11-11
 
 ### Fixed
