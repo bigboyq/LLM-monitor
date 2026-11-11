@@ -1049,34 +1049,21 @@ struct QuotaSummary: View {
     }
 
     var body: some View {
-        let showsPerModelPinButtons = displayedModels.count > 1
+        let bindsPerModelQuotaSource = displayedModels.count > 1
         VStack(alignment: .leading, spacing: 10) {
             if hasMainQuotaModels, providerKind != .deepseek {
-                HStack(spacing: 4) {
-                    Text(mainPlanTitle)
-                        .font(MenuTypography.metricLabel.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help(mainPlanTitle)
-                    if showsPerModelPinButtons,
-                       ProviderKind.windowedKinds.contains(providerKind),
-                       let onSelectQuotaSource {
-                        StatusBarQuotaSourcePinButton(
-                            isSelected: selectedQuotaSource == .plan,
-                            title: mainPlanTitle
-                        ) {
-                            onSelectQuotaSource(.plan)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
+                Text(mainPlanTitle)
+                    .font(MenuTypography.metricLabel.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(mainPlanTitle)
             }
             ForEach(Array(displayedModels.enumerated()), id: \.offset) { index, model in
                 // 卡片级信息（高峰期倒计时）只在**第一个** model 行上出现一次：
                 // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
                 // model 重复一次会读成"每个 model 各有一组倒计时"。
                 let between = index == 0 ? betweenBarAndColumns : AnyView(EmptyView())
-                let modelSource: StatusBarQuotaSource = showsPerModelPinButtons
+                let modelSource: StatusBarQuotaSource = bindsPerModelQuotaSource
                     ? .planModel(modelName: model.modelName)
                     : .plan
                 let isModelSelected = selectedQuotaSource == modelSource

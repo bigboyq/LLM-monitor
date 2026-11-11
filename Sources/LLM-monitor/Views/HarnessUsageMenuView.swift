@@ -998,7 +998,7 @@ struct MenuQuotaOverviewView: View {
                     configStore: state.configStore,
                     onTogglePin: { state.toggleStatusBarPinnedProvider(status.id) },
                     onSelectStatusBarQuota: { source in
-                        state.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: status.id, source: source))
+                        state.toggleStatusBarQuotaSelection(providerID: status.id, source: source)
                     },
                     onRefresh: { onRefreshProvider(status.id) },
                     onUsageRefresh: { Task { await state.triggerLocalUsageRescan() } },

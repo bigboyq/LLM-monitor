@@ -111,7 +111,7 @@ struct ProviderDetailWindowView: View {
                 })
                 .environment(\.cardStatusBarQuotaOptions, { id in state.statusBarQuotaOptions(providerID: id) })
                 .environment(\.cardSelectStatusBarQuota, { id, source in
-                    state.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: id, source: source))
+                    state.toggleStatusBarQuotaSelection(providerID: id, source: source)
                 })
             }
             .onAppear { displayClock.start() }

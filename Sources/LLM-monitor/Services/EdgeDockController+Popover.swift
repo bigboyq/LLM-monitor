@@ -242,7 +242,7 @@ extension EdgeDockController {
     private var cardSelectStatusBarQuota: CardSelectStatusBarQuotaAction? {
         guard let state else { return nil }
         return { [weak self, weak state] id, source in
-            state?.setStatusBarQuotaSelection(StatusBarQuotaSelection(providerID: id, source: source))
+            state?.toggleStatusBarQuotaSelection(providerID: id, source: source)
             if self?.selectedIndex != nil { self?.updatePopover() }
         }
     }

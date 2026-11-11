@@ -931,6 +931,13 @@ final class AppState: ObservableObject {
         setStatusBarQuotaSelection(selection)
     }
 
+    /// 切换选中或取消 Provider 的指定额度来源；再次点击当前已选中来源时恢复全 Provider 聚合。
+    func toggleStatusBarQuotaSelection(providerID: String, source: StatusBarQuotaSource) {
+        let target = StatusBarQuotaSelection(providerID: providerID, source: source)
+        let selection = configStore.config.statusBarQuotaSelection == target ? nil : target
+        setStatusBarQuotaSelection(selection)
+    }
+
     /// 选择一个 Provider 的独立额度池；nil 表示恢复全 Provider 聚合。
     func setStatusBarQuotaSelection(_ selection: StatusBarQuotaSelection?) {
         var cfg = configStore.config

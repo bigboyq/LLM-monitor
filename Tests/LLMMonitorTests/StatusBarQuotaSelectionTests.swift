@@ -1,5 +1,7 @@
-import XCTest
+import AppKit
 import Foundation
+import SwiftUI
+import XCTest
 @testable import LLM_monitor
 
 /// The status item is a projection of one stable provider/source identity. These tests
@@ -602,5 +604,154 @@ final class StatusBarQuotaSelectionTests: XCTestCase {
         let missingVideoTitle = state.statusBarQuotaTitle(at: now)
         XCTAssertTrue(missingVideoTitle.contains("视频生成"))
         XCTAssertTrue(missingVideoTitle.contains("暂无数据"))
+    }
+
+    @MainActor
+    func testToggleStatusBarQuotaSelectionClearsWhenReClickedAndSwitchesDirectly() throws {
+        let keys = [
+            CodexAdminKeyConfig(id: "workspace-a", label: "A", apiKey: "sk-a", monthlyQuotaLimit: 100),
+            CodexAdminKeyConfig(id: "workspace-b", label: "B", apiKey: "sk-b", monthlyQuotaLimit: 100),
+        ]
+        let (state, store, directory) = try makeFixture(adminEnabled: true, adminKeys: keys, zcodeEnabled: true)
+        defer { state.stop(); try? FileManager.default.removeItem(at: directory) }
+
+        let sources: [(String, StatusBarQuotaSource)] = [
+            ("codex_chatgpt", .plan),
+            ("antigravity", .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue)),
+            ("codex_chatgpt", .apiCredit(keyID: "workspace-a")),
+            ("glm_coding_plan", .activityPlan(planID: "start", entitlementID: "entitlement-a")),
+        ]
+
+        // Selecting a source sets it; clicking the same source again clears back to global relay (`nil`).
+        for (providerID, source) in sources {
+            XCTAssertNil(store.config.statusBarQuotaSelection)
+            state.toggleStatusBarQuotaSelection(providerID: providerID, source: source)
+            XCTAssertEqual(
+                store.config.statusBarQuotaSelection,
+                StatusBarQuotaSelection(providerID: providerID, source: source)
+            )
+            state.toggleStatusBarQuotaSelection(providerID: providerID, source: source)
+            XCTAssertNil(store.config.statusBarQuotaSelection)
+        }
+
+        // Switching directly between sources within the same provider or across providers updates without clearing.
+        state.toggleStatusBarQuotaSelection(providerID: "codex_chatgpt", source: .apiCredit(keyID: "workspace-a"))
+        state.toggleStatusBarQuotaSelection(providerID: "codex_chatgpt", source: .apiCredit(keyID: "workspace-b"))
+        XCTAssertEqual(
+            store.config.statusBarQuotaSelection,
+            StatusBarQuotaSelection(providerID: "codex_chatgpt", source: .apiCredit(keyID: "workspace-b"))
+        )
+        state.toggleStatusBarQuotaSelection(
+            providerID: "minimax_token_plan",
+            source: .planModel(modelName: MinimaxModelKind.video.rawValue)
+        )
+        XCTAssertEqual(
+            store.config.statusBarQuotaSelection,
+            StatusBarQuotaSelection(
+                providerID: "minimax_token_plan",
+                source: .planModel(modelName: MinimaxModelKind.video.rawValue)
+            )
+        )
+        state.toggleStatusBarQuotaSelection(
+            providerID: "minimax_token_plan",
+            source: .planModel(modelName: MinimaxModelKind.video.rawValue)
+        )
+        XCTAssertNil(store.config.statusBarQuotaSelection)
+
+        // Menu row wiring through `selectPlanQuotaSource` toggles on and off cleanly.
+        let chatgptStatus = try XCTUnwrap(state.statuses.first { $0.id == "codex_chatgpt" })
+        let row = MenuQuotaProviderRow(
+            status: chatgptStatus, localStatus: chatgptStatus, fleet: nil,
+            selectedStatusBarSource: .apiCredit(keyID: "workspace-a"), configStore: store,
+            onSelectStatusBarQuota: { source in
+                state.toggleStatusBarQuotaSelection(providerID: "codex_chatgpt", source: source)
+            },
+            onRefresh: {}, onUsageRefresh: {}, onSettings: {}, onOpenDetails: {}
+        )
+        row.selectPlanQuotaSource(.apiCredit(keyID: "workspace-a"))
+        XCTAssertEqual(
+            store.config.statusBarQuotaSelection,
+            StatusBarQuotaSelection(providerID: "codex_chatgpt", source: .apiCredit(keyID: "workspace-a"))
+        )
+        row.selectPlanQuotaSource(.apiCredit(keyID: "workspace-a"))
+        XCTAssertNil(store.config.statusBarQuotaSelection)
+    }
+
+    @MainActor
+    func testQuotaPinHelpTextsAndQuotaSummaryMultiModelRendering() throws {
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let selectorUnselected = StatusBarQuotaSelector(
+            selectedSource: nil,
+            options: [StatusBarQuotaOption(source: .plan, title: "主套餐 · 5h / 周")],
+            onToggle: {},
+            onSelect: { _ in }
+        )
+        XCTAssertTrue(selectorUnselected.helpText.contains("各额度行旁的眼睛"))
+
+        let selectorSelected = StatusBarQuotaSelector(
+            selectedSource: .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue),
+            options: [
+                StatusBarQuotaOption(source: .plan, title: "主套餐 · 5h"),
+                StatusBarQuotaOption(
+                    source: .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue),
+                    title: "Gemini 4 Argon"
+                ),
+            ],
+            onToggle: {},
+            onSelect: { _ in }
+        )
+        XCTAssertTrue(selectorSelected.helpText.contains("Gemini 4 Argon"))
+        XCTAssertTrue(selectorSelected.helpText.contains("各额度行旁的眼睛"))
+
+        let barUnselected = StatusBarQuotaSourcePinButton(
+            isSelected: false,
+            title: "Gemini 4 Argon",
+            action: {}
+        )
+        XCTAssertEqual(barUnselected.helpText, "在状态栏显示：Gemini 4 Argon")
+
+        let barSelected = StatusBarQuotaSourcePinButton(
+            isSelected: true,
+            title: "Gemini 4 Argon",
+            action: {}
+        )
+        XCTAssertEqual(barSelected.helpText, "状态栏当前显示：Gemini 4 Argon（点击恢复全局聚合）")
+
+        let info = QuotaInfo(
+            models: [
+                makeModel(
+                    name: AntigravityModelKind.geminiModels.rawValue,
+                    interval: 90, weekly: nil, intervalSeconds: 18_000, now: now
+                ),
+                makeModel(
+                    name: AntigravityModelKind.geminiArgon.rawValue,
+                    interval: nil, weekly: 15, weeklySeconds: 604_800, now: now
+                ),
+                makeModel(
+                    name: AntigravityModelKind.claudeAndGptModels.rawValue,
+                    interval: 80, weekly: 15, intervalSeconds: 18_000, weeklySeconds: 604_800, now: now
+                ),
+            ],
+            resetCredits: nil,
+            planLabel: "Google AI Pro",
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: now
+        )
+
+        // With `onSelectQuotaSource` provided on a multi-model provider, `QuotaSummary` keeps
+        // the `mainPlanTitle` heading free of a duplicate 18pt heading pin button (only bars pin).
+        let withSelector = QuotaSummary(
+            info: info,
+            providerKind: .antigravity,
+            accentColor: .antigravity,
+            localSamples: [],
+            selectedQuotaSource: .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue),
+            onSelectQuotaSource: { _ in }
+        )
+        let hosting = NSHostingView(rootView: withSelector.frame(width: 320))
+        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 320)
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(hosting.fittingSize.height, 0)
     }
 }

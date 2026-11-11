@@ -2,6 +2,13 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.5] - 2026-11-11
+
+### Changed
+
+- 统一菜单与卡片「小眼睛」固定规则：所有 Provider（含 Antigravity、MiniMax 等多模型套餐）的主套餐大标题均只展示名称文本、移除标题旁重复小眼睛；右上角 `StatusBarQuotaSelector` 统一负责 Provider 级 `.plan` 聚合切换与右键全来源菜单，每条模型进度条、ChatGPT API Key 与 GLM ZCode 活动套餐标题旁的 `StatusBarQuotaSourcePinButton` 负责固定对应独立额度来源。
+- 支持点击已选中的实心来源小眼睛（`StatusBarQuotaSourcePinButton`）取消锁定并恢复全 Provider 接力聚合（`statusBarQuotaSelection = nil`）；所有 UI 宿主通过 `AppState.toggleStatusBarQuotaSelection(providerID:source:)` 切换来源，并同步更新按钮提示文案。
+
 ## [2.7.4] - 2026-11-11
 
 ### Fixed
