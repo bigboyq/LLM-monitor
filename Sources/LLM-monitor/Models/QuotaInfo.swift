@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// 单个 model 的额度快照（来自 minimax API 的一个 model_remains 条目）
 struct ModelQuota: Equatable, Codable, Sendable {
@@ -695,6 +696,15 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
     let keyLabel: String?
     /// 该 Key 独立的抓取失败信息
     let errorMessage: String?
+    /// 边界日扣除额（美元）：账期锚点所在 UTC 日桶中属于上一周期的用量，默认 0
+    let carryDeduction: Double
+    /// carry 扣除是否为错过精准窗口（锚点 +1h 清零窗口）后的估算，默认 false
+    let carryApproximate: Bool
+    /// 本拍 carry 是否来自已定值的 config `usedAmountAdjust`（单层修正模型：
+    /// 自动写回与手动修改共用一个值，定值后本周期内不再自动更新），默认 false
+    let carryFixedInCycle: Bool
+    /// 建议编排层写回 config 的边界扣除值（窗口结束首拍产出，写回即定值），默认 nil
+    let carryPendingWriteValue: Double?
 
     var id: String {
         keyId ?? organizationName ?? UUID().uuidString
@@ -710,7 +720,11 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
         lastAttemptFailed: Bool? = false,
         keyId: String? = nil,
         keyLabel: String? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        carryDeduction: Double = 0,
+        carryApproximate: Bool = false,
+        carryFixedInCycle: Bool = false,
+        carryPendingWriteValue: Double? = nil
     ) {
         self.organizationName = organizationName
         self.totalQuota = totalQuota
@@ -722,6 +736,35 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
         self.keyId = keyId
         self.keyLabel = keyLabel
         self.errorMessage = errorMessage
+        self.carryDeduction = carryDeduction
+        self.carryApproximate = carryApproximate
+        self.carryFixedInCycle = carryFixedInCycle
+        self.carryPendingWriteValue = carryPendingWriteValue
+    }
+
+    /// 旧编码缺省 carry 三字段时回退默认值，语义与 `lastAttemptFailed` 的容错注释一致。
+    private enum CodingKeys: String, CodingKey {
+        case organizationName, totalQuota, usedAmount, cycleStart, cycleEnd, fetchedAt
+        case lastAttemptFailed, keyId, keyLabel, errorMessage
+        case carryDeduction, carryApproximate, carryFixedInCycle, carryPendingWriteValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        organizationName = try c.decodeIfPresent(String.self, forKey: .organizationName)
+        totalQuota = try c.decode(Double.self, forKey: .totalQuota)
+        usedAmount = try c.decode(Double.self, forKey: .usedAmount)
+        cycleStart = try c.decode(Date.self, forKey: .cycleStart)
+        cycleEnd = try c.decode(Date.self, forKey: .cycleEnd)
+        fetchedAt = try c.decodeIfPresent(Date.self, forKey: .fetchedAt)
+        lastAttemptFailed = try c.decodeIfPresent(Bool.self, forKey: .lastAttemptFailed)
+        keyId = try c.decodeIfPresent(String.self, forKey: .keyId)
+        keyLabel = try c.decodeIfPresent(String.self, forKey: .keyLabel)
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        carryDeduction = try c.decodeIfPresent(Double.self, forKey: .carryDeduction) ?? 0
+        carryApproximate = try c.decodeIfPresent(Bool.self, forKey: .carryApproximate) ?? false
+        carryFixedInCycle = try c.decodeIfPresent(Bool.self, forKey: .carryFixedInCycle) ?? false
+        carryPendingWriteValue = try c.decodeIfPresent(Double.self, forKey: .carryPendingWriteValue)
     }
 
     func markingStale(errorMessage: String? = nil) -> OpenAIApiCreditDetails {
@@ -735,7 +778,11 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
             lastAttemptFailed: true,
             keyId: keyId,
             keyLabel: keyLabel,
-            errorMessage: errorMessage ?? self.errorMessage
+            errorMessage: errorMessage ?? self.errorMessage,
+            carryDeduction: carryDeduction,
+            carryApproximate: carryApproximate,
+            carryFixedInCycle: carryFixedInCycle,
+            carryPendingWriteValue: carryPendingWriteValue
         )
     }
 
@@ -808,6 +855,81 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
         }
 
         return (start, end)
+    }
+
+    /// 单层修正模型的边界扣除求解器（纯函数，供单测直接驱动）。
+    ///
+    /// config 每 Key 的 `usedAmountAdjust` + `usedAmountAdjustFixedAt` 共用
+    /// 「定值」语义：fixedAt 落在当前账期 `[cycleStart, cycleEnd)` 内 →
+    /// carry = adjust（无论自动写回还是手动修改），自动机制完全失效、不写回。
+    /// 未定值时按锚点 +1h 精准窗口决定 carry（credits 在锚点处清零、+1 小时
+    /// 才到账且期间无新用量，窗口内边界桶读数即上一周期尾巴）：
+    /// - 窗口内：carry = 最新边界桶读数（每次成功刷新覆盖刷新，读数向真值单调
+    ///   收敛），approximate = false；只更新进程内存缓存、**不写 config**——
+    ///   写早了会立刻定值、堵死窗口内的覆盖刷新。
+    /// - 窗口已过：缓存有值（窗口内跑到了最后）→ 精确 carry、approximate =
+    ///   false；无缓存 → 边界桶当前全额（错过窗口的估算）、approximate =
+    ///   true。两种都产出 `pendingWrite` 建议编排层写回 config，写回即定值。
+    /// - 边界桶缺失（boundaryTotal == nil）：carry = 0，不写回。
+    ///
+    /// 返回 `newWindowReading` 非 nil 表示窗口内拿到了新读数，调用方应据此
+    /// 更新 `AdminBoundaryWindowCache`；其余情况为 nil（不更新缓存）。
+    static func solveAdminBoundaryCarry(
+        boundaryTotal: Double?,
+        cycleStart: Date,
+        cycleEnd: Date,
+        now: Date,
+        adjust: Double,
+        fixedAt: Date?,
+        snapshotWindow: TimeInterval = 3600,
+        cachedWindowReading: Double?
+    ) -> (carry: Double, approximate: Bool, fixedInCycle: Bool, pendingWrite: Double?, newWindowReading: Double?) {
+        // 已定值：carry = adjust，自动机制失效，不产出写回
+        if let fixedAt, fixedAt >= cycleStart, fixedAt < cycleEnd {
+            return (adjust, false, true, nil, nil)
+        }
+        if now.timeIntervalSince(cycleStart) <= snapshotWindow {
+            // 精准窗口内：carry = 最新边界桶读数，只进内存缓存
+            if let boundaryTotal {
+                return (boundaryTotal, false, false, nil, boundaryTotal)
+            }
+            return (0, false, false, nil, nil)
+        }
+        // 窗口已过：缓存优先（窗口内的最后读数，精确）；无缓存用当前全额（估算）。
+        // 都产出 pendingWrite，由编排层写回 config（写回即定值）。
+        if let cached = cachedWindowReading {
+            return (cached, false, false, cached, nil)
+        }
+        if let boundaryTotal {
+            return (boundaryTotal, true, false, boundaryTotal, nil)
+        }
+        return (0, false, false, nil, nil)
+    }
+}
+
+/// 窗口内边界桶读数的进程内存缓存：makeFetcher 每次刷新重建 fetcher，静态
+/// 缓存是唯一跨实例载体。key = keyId + cycleStartEpoch，周期切换天然换 key；
+/// `update` 顺带清掉同 keyId 旧周期条目，容量以 admin key 数为上界。
+/// `OSAllocatedUnfairLock` 的 stateful 形态自带保护，无需额外隔离标注。
+enum AdminBoundaryWindowCache {
+    private static let lock = OSAllocatedUnfairLock(initialState: [String: Double]())
+
+    private static func key(_ keyId: String, cycleStartEpoch: Int64) -> String {
+        "\(keyId)#\(cycleStartEpoch)"
+    }
+
+    static func reading(keyId: String, cycleStartEpoch: Int64) -> Double? {
+        let cacheKey = key(keyId, cycleStartEpoch: cycleStartEpoch)
+        return lock.withLock { $0[cacheKey] }
+    }
+
+    /// 记录窗口内最新读数，并清掉同 keyId 旧周期的条目（每 key 只留最新一条）。
+    static func update(keyId: String, cycleStartEpoch: Int64, value: Double) {
+        lock.withLock { state in
+            let prefix = keyId + "#"
+            state = state.filter { !$0.key.hasPrefix(prefix) }
+            state[key(keyId, cycleStartEpoch: cycleStartEpoch)] = value
+        }
     }
 }
 

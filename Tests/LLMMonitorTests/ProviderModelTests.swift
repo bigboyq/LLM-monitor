@@ -220,6 +220,24 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNil(info.accountEmail)
     }
 
+    /// 旧版 OpenAIApiCreditDetails 编码（无 carry 字段）能解码，回退默认值。
+    func testOpenAIApiCreditDetailsCarryBackwardCompat() throws {
+        let json = """
+        {"organizationName":"Personal","totalQuota":40,"usedAmount":1.5,
+         "cycleStart":"2026-11-11T07:34:00Z","cycleEnd":"2026-12-11T07:34:00Z",
+         "fetchedAt":"2026-11-11T10:00:00Z","lastAttemptFailed":false,
+         "keyId":"default","keyLabel":null,"errorMessage":null}
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let credits = try decoder.decode(OpenAIApiCreditDetails.self, from: json)
+        XCTAssertEqual(credits.carryDeduction, 0)
+        XCTAssertFalse(credits.carryApproximate)
+        XCTAssertFalse(credits.carryFixedInCycle)
+        XCTAssertNil(credits.carryPendingWriteValue)
+        XCTAssertEqual(credits.keyId, "default")
+    }
+
     func testMenuShowsSetupGuideOnlyWhenAllProvidersAreNotConfigured() {
         let makeStatus: (ProviderStatus.State) -> ProviderStatus = { state in
             ProviderStatus(

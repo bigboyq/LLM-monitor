@@ -1169,6 +1169,140 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertEqual(mergedK2.errorMessage, "HTTP 429")
     }
 
+    // MARK: - Admin Costs 边界日 carry 扣除（单层修正模型）
+
+    /// 构造锚点在 now 附近的 keyConfig（offsetFromNow 为负 = 锚点已过），
+    /// 返回 (config, cycleStart 估算值) —— fetchAdminCosts 内部用同样的
+    /// billingDay/billingTime 计算 cycleStart，与估算值至多差一个分钟粒度的
+    /// 滚动，mock 日桶按估算值前后各留足余量即可稳定命中。keyId 随机：
+    /// AdminBoundaryWindowCache 是进程级 static，随机 id 隔离各用例的缓存。
+    private func makeCarryKeyConfig(offsetFromNow: TimeInterval = 0) -> (config: CodexAdminKeyConfig, cycleStart: Date) {
+        let cal = Calendar.current
+        let now = Date()
+        let ref = now.addingTimeInterval(offsetFromNow)
+        let day = cal.component(.day, from: ref)
+        let hour = cal.component(.hour, from: ref)
+        let minute = cal.component(.minute, from: ref)
+        let config = CodexAdminKeyConfig(
+            id: "carry-\(UUID().uuidString.prefix(8))",
+            label: "",
+            apiKey: "sk-admin-carry-test",
+            monthlyQuotaLimit: 100.0,
+            billingDay: day,
+            billingTime: String(format: "%02d:%02d", hour, minute)
+        )
+        let (cycleStart, _) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: day, hour: hour, minute: minute, now: now
+        )
+        return (config, cycleStart)
+    }
+
+    /// 窗口内（锚点 ≈ now）：carry = 边界桶读数、不产出写回；二次读数更大 → 覆盖刷新
+    func testFetchAdminCostsCarryWithinWindowNoWriteBack() async throws {
+        let (keyConfig, cycleStart) = makeCarryKeyConfig()
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [keyConfig],
+            session: makeSession()
+        )
+
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: cycleStart, boundaryValue: 5.0, laterValues: [2.0])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: keyConfig)
+        XCTAssertEqual(credits.usedAmount, 2.0, accuracy: 0.0001, "窗口内首采：边界桶 5.0 全额扣除，只留本周期用量")
+        XCTAssertEqual(credits.carryDeduction, 5.0, accuracy: 0.0001)
+        XCTAssertFalse(credits.carryApproximate)
+        XCTAssertFalse(credits.carryFixedInCycle)
+        XCTAssertNil(credits.carryPendingWriteValue, "窗口内不产出写回（写早会立刻定值、堵死覆盖刷新）")
+
+        // 窗口内二次抓取：边界桶读数上浮（迟到的旧周期用量）→ carry 覆盖刷新
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: cycleStart, boundaryValue: 5.3, laterValues: [2.0, 0.4])
+        )
+        let credits2 = try await fetcher.fetchAdminCosts(keyConfig: keyConfig)
+        XCTAssertEqual(credits2.carryDeduction, 5.3, accuracy: 0.0001, "窗口内每次成功刷新覆盖 carry")
+        XCTAssertFalse(credits2.carryApproximate)
+        XCTAssertEqual(credits2.usedAmount, 2.4, accuracy: 0.0001, "used = (5.3 + 2.4) − 5.3")
+        XCTAssertNil(credits2.carryPendingWriteValue)
+    }
+
+    /// 锚点已过 2 小时且无缓存（进程首拍）：边界桶全额估算扣减，产出写回建议
+    func testFetchAdminCostsCarryAfterWindowSuggestsWriteBack() async throws {
+        let (keyConfig, cycleStart) = makeCarryKeyConfig(offsetFromNow: -7200)
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [keyConfig],
+            session: makeSession()
+        )
+
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: cycleStart, boundaryValue: 5.0, laterValues: [1.0])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: keyConfig)
+        XCTAssertEqual(credits.carryDeduction, 5.0, accuracy: 0.0001)
+        XCTAssertTrue(credits.carryApproximate, "无缓存 + 窗口已过 → 估算")
+        XCTAssertFalse(credits.carryFixedInCycle)
+        XCTAssertEqual(credits.carryPendingWriteValue ?? 0, 5.0, accuracy: 0.0001, "窗口结束首拍产出写回建议")
+        XCTAssertEqual(credits.usedAmount, 1.0, accuracy: 0.0001, "used = (5.0 + 1.0) − 5.0")
+    }
+
+    /// 已定值（adjust + fixedAt 在账期内）：carry = adjust 短路，自动机制失效、不写回
+    func testFetchAdminCostsFixedAdjustShortCircuitsCarry() async throws {
+        let (keyConfig, cycleStart) = makeCarryKeyConfig(offsetFromNow: -7200)
+        var fixed = keyConfig
+        fixed.usedAmountAdjust = 4.0
+        fixed.usedAmountAdjustFixedAt = cycleStart.addingTimeInterval(600)
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [fixed],
+            session: makeSession()
+        )
+
+        // 边界桶 5.8 ≠ 定值 4.0：定值优先，边界桶变化不影响 carry
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: cycleStart, boundaryValue: 5.8, laterValues: [1.7])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: fixed)
+        XCTAssertEqual(credits.carryDeduction, 4.0, accuracy: 0.0001, "已定值：carry = usedAmountAdjust")
+        XCTAssertTrue(credits.carryFixedInCycle)
+        XCTAssertFalse(credits.carryApproximate)
+        XCTAssertNil(credits.carryPendingWriteValue, "已定值不产出写回")
+        XCTAssertEqual(credits.usedAmount, 3.5, accuracy: 0.0001, "used = (5.8 + 1.7) − 4.0")
+    }
+
+    /// 定值 carry 大于当前 raw 合计时 clamp 到 0
+    func testFetchAdminCostsCarryClampsToZero() async throws {
+        let (keyConfig, cycleStart) = makeCarryKeyConfig(offsetFromNow: -7200)
+        var fixed = keyConfig
+        fixed.usedAmountAdjust = 5.0
+        fixed.usedAmountAdjustFixedAt = cycleStart.addingTimeInterval(600)
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKeys: [fixed],
+            session: makeSession()
+        )
+
+        // 只回边界桶且金额小于定值：raw(4.0) − carry(5.0) < 0 → clamp 0
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.carryCostsJSON(cycleStart: cycleStart, boundaryValue: 4.0, laterValues: [])
+        )
+        let credits = try await fetcher.fetchAdminCosts(keyConfig: fixed)
+        XCTAssertEqual(credits.usedAmount, 0.0, "raw − carry < 0 时 clamp 到 0")
+        XCTAssertEqual(credits.carryDeduction, 5.0, accuracy: 0.0001)
+        XCTAssertTrue(credits.carryFixedInCycle)
+    }
+
     // MARK: - 辅助 JSON 构造
 
     private static let costsPath = "/v1/organization/costs"
@@ -1196,6 +1330,53 @@ final class CodexFetcherTests: XCTestCase {
                     "results": [result]
                 ]
             ],
+            "has_more": false
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    /// carry 测试用的多桶 `v1/organization/costs` 响应：
+    /// 边界桶 [cycleStart−2h, cycleStart+22h) 包含锚点，其后逐日排布 laterValues。
+    private static func carryCostsJSON(
+        cycleStart: Date,
+        boundaryValue: Double,
+        laterValues: [Double],
+        orgName: String? = "Personal"
+    ) -> Data {
+        func carryResult(_ value: Double) -> [String: Any] {
+            [
+                "object": "organization.costs.result",
+                "amount": [
+                    "currency": "usd",
+                    "value": value
+                ],
+                "line_item": NSNull(),
+                "project_id": NSNull(),
+                "organization_name": orgName as Any
+            ]
+        }
+        let startEpoch = Int(cycleStart.timeIntervalSince1970)
+        var buckets: [[String: Any]] = [
+            [
+                "object": "bucket",
+                "start_time": startEpoch - 7_200,
+                "end_time": startEpoch + 79_200,
+                "results": [carryResult(boundaryValue)]
+            ]
+        ]
+        var cursor = startEpoch + 79_200
+        for value in laterValues {
+            buckets.append([
+                "object": "bucket",
+                "start_time": cursor,
+                "end_time": cursor + 86_400,
+                "results": [carryResult(value)]
+            ])
+            cursor += 86_400
+        }
+        let json: [String: Any] = [
+            "object": "page",
+            "data": buckets,
             "has_more": false
         ]
         return try! JSONSerialization.data(withJSONObject: json)

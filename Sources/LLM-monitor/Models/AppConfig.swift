@@ -1106,6 +1106,13 @@ public struct CodexAdminKeyConfig: Codable, Equatable, Identifiable, Sendable {
     public var monthlyQuotaLimit: Double
     public var billingDay: Int
     public var billingTime: String
+    /// 当前账期边界日扣除值（美元，可为负）：自动写回与手动修改共用（单层修正
+    /// 模型），正数=增加已用。0 表示不扣除。
+    public var usedAmountAdjust: Double
+    /// 边界扣除的定值时间戳：落在当前账期内表示该值已定（自动写入或手动修改），
+    /// 本周期内不再自动更新；nil = 未定值。JSON 里 Date 走 Codable 默认日期策略
+    /// （相对 2001-01-01 的秒数），编码解码对称。
+    public var usedAmountAdjustFixedAt: Date?
 
     public init(
         id: String = UUID().uuidString,
@@ -1113,7 +1120,9 @@ public struct CodexAdminKeyConfig: Codable, Equatable, Identifiable, Sendable {
         apiKey: String = "",
         monthlyQuotaLimit: Double = 40.0,
         billingDay: Int = 11,
-        billingTime: String = "00:00"
+        billingTime: String = "00:00",
+        usedAmountAdjust: Double = 0.0,
+        usedAmountAdjustFixedAt: Date? = nil
     ) {
         self.id = id
         self.label = label
@@ -1121,10 +1130,13 @@ public struct CodexAdminKeyConfig: Codable, Equatable, Identifiable, Sendable {
         self.monthlyQuotaLimit = monthlyQuotaLimit
         self.billingDay = billingDay
         self.billingTime = billingTime
+        self.usedAmountAdjust = usedAmountAdjust
+        self.usedAmountAdjustFixedAt = usedAmountAdjustFixedAt
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, label, apiKey, monthlyQuotaLimit, billingDay, billingTime
+        case id, label, apiKey, monthlyQuotaLimit, billingDay, billingTime, usedAmountAdjust
+        case usedAmountAdjustFixedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -1135,6 +1147,8 @@ public struct CodexAdminKeyConfig: Codable, Equatable, Identifiable, Sendable {
         self.monthlyQuotaLimit = try c.decodeIfPresent(Double.self, forKey: .monthlyQuotaLimit) ?? 40.0
         self.billingDay = try c.decodeIfPresent(Int.self, forKey: .billingDay) ?? 11
         self.billingTime = try c.decodeIfPresent(String.self, forKey: .billingTime) ?? "00:00"
+        self.usedAmountAdjust = (try? c.decodeIfPresent(Double.self, forKey: .usedAmountAdjust)) ?? 0.0
+        self.usedAmountAdjustFixedAt = (try? c.decodeIfPresent(Date.self, forKey: .usedAmountAdjustFixedAt)) ?? nil
     }
 }
 

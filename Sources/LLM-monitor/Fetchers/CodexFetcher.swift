@@ -384,18 +384,51 @@ struct CodexFetcher: QuotaFetcher {
         let (data, _) = try await adminCostsClient.send(request)
         let page = try JSONDecoder().decode(OpenAICostsPage.self, from: data)
 
-        var totalCost: Double = 0
+        var rawSum: Double = 0
+        var boundaryTotal: Double? = nil
         var orgName: String? = nil
 
         for bucket in page.data {
+            var bucketSum: Double = 0
             for result in bucket.results {
                 if let val = result.amount?.value {
-                    totalCost += val
+                    bucketSum += val
                 }
                 if orgName == nil, let org = result.organizationName, !org.isEmpty {
                     orgName = org
                 }
             }
+            rawSum += bucketSum
+            // 边界桶：包含账期锚点的 UTC 日桶，混入上一周期在边界日当天的用量，
+            // 由求解器按清零窗口语义决定扣除额
+            if boundaryTotal == nil,
+               bucket.startTime <= startTimeEpoch, startTimeEpoch < bucket.endTime {
+                boundaryTotal = bucketSum
+            }
+        }
+
+        // 单层修正模型：config 的 usedAmountAdjust（+FixedAt）是唯一修正层；
+        // 自动机制收敛后经 carryPendingWriteValue 由编排层写回 config（fetcher
+        // 不碰 ConfigStore）。窗口内读数存进程内存缓存（跨 fetcher 实例）。
+        let cycleStartEpoch64 = Int64(startTimeEpoch)
+        let carrySolution = OpenAIApiCreditDetails.solveAdminBoundaryCarry(
+            boundaryTotal: boundaryTotal,
+            cycleStart: cycleStart,
+            cycleEnd: cycleEnd,
+            now: Date(),
+            adjust: keyConfig.usedAmountAdjust,
+            fixedAt: keyConfig.usedAmountAdjustFixedAt,
+            cachedWindowReading: AdminBoundaryWindowCache.reading(
+                keyId: keyConfig.id,
+                cycleStartEpoch: cycleStartEpoch64
+            )
+        )
+        if let newReading = carrySolution.newWindowReading {
+            AdminBoundaryWindowCache.update(
+                keyId: keyConfig.id,
+                cycleStartEpoch: cycleStartEpoch64,
+                value: newReading
+            )
         }
 
         // 金额每拍更新；独立组织资料查询属于次要信息。
@@ -410,14 +443,18 @@ struct CodexFetcher: QuotaFetcher {
         return OpenAIApiCreditDetails(
             organizationName: resolvedOrgName,
             totalQuota: keyConfig.monthlyQuotaLimit,
-            usedAmount: totalCost,
+            usedAmount: max(0, rawSum - carrySolution.carry),
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,
             fetchedAt: Date(),
             lastAttemptFailed: false,
             keyId: keyConfig.id,
             keyLabel: label,
-            errorMessage: nil
+            errorMessage: nil,
+            carryDeduction: carrySolution.carry,
+            carryApproximate: carrySolution.approximate,
+            carryFixedInCycle: carrySolution.fixedInCycle,
+            carryPendingWriteValue: carrySolution.pendingWrite
         )
     }
 

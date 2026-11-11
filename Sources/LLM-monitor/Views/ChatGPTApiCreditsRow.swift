@@ -66,6 +66,14 @@ struct ChatGPTApiCreditsRow: View {
                                 .foregroundStyle(.orange)
                                 .accessibilityLabel("API赠金更新失败，显示上次成功的数据")
                         }
+                        // 估算标记：边界扣除为错过精准窗口的估算（失败警告优先，二者互斥）
+                        if showsCarryEstimateMarker {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.orange)
+                                .help(carryEstimateNotice)
+                                .accessibilityLabel(carryEstimateNotice)
+                        }
                         Text("周期至 \(Formatters.formatMonthDayMinute(credits.cycleEnd))（\(expiryCountdownText)）")
                             .font(MenuTypography.resetDate)
                             .foregroundStyle(Color.secondaryLabel)
@@ -75,7 +83,7 @@ struct ChatGPTApiCreditsRow: View {
                 .minimumScaleFactor(0.85)
                 .help(credits.lastAttemptFailed == true || credits.errorMessage != nil || error != nil
                     ? failureTooltip
-                    : "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))")
+                    : normalTooltip)
             } else {
                 Text(error ?? "API赠金暂无数据")
                     .font(MenuTypography.dataLabel)
@@ -113,6 +121,28 @@ struct ChatGPTApiCreditsRow: View {
         let effectiveError = credits?.errorMessage ?? error
         guard let effectiveError, !effectiveError.isEmpty else { return explanation }
         return "\(explanation)：\(effectiveError)"
+    }
+
+    /// 估算标记：边界扣除为错过精准窗口的估算，且当前非失败态（失败警告优先显示）
+    var showsCarryEstimateMarker: Bool {
+        guard let credits, credits.carryApproximate else { return false }
+        return !(credits.lastAttemptFailed == true || credits.errorMessage != nil || error != nil)
+    }
+
+    /// 估算标记的 tooltip / accessibility 文案
+    private var carryEstimateNotice: String {
+        "边界扣除为估算（错过重置后 1 小时快照窗口），已用可能偏低，可在设置中手动微调"
+    }
+
+    /// 正常态 tooltip：额度明细，边界扣除仅在非零时追加
+    var normalTooltip: String {
+        guard let credits else { return "" }
+        var text = "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))"
+        if credits.carryDeduction != 0 {
+            let suffix = credits.carryApproximate ? "（估算）" : ""
+            text += "，边界扣除: $\(String(format: "%.2f", credits.carryDeduction))\(suffix)"
+        }
+        return text
     }
 
     private var expiryCountdownText: String {

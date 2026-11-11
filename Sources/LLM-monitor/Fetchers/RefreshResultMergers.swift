@@ -83,7 +83,11 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
                                 lastAttemptFailed: newKey.lastAttemptFailed,
                                 keyId: newKey.keyId,
                                 keyLabel: newKey.keyLabel,
-                                errorMessage: newKey.errorMessage
+                                errorMessage: newKey.errorMessage,
+                                carryDeduction: newKey.carryDeduction,
+                                carryApproximate: newKey.carryApproximate,
+                                carryFixedInCycle: newKey.carryFixedInCycle,
+                                carryPendingWriteValue: newKey.carryPendingWriteValue
                             ))
                         } else {
                             merged.append(newKey)

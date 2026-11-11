@@ -346,6 +346,14 @@ final class AppState: ObservableObject {
             }
         )
 
+        // 旧 2.7.6 中间版把边界扣除状态存 admin-credit-carry.json（AdminCredits-
+        // CarryStore 已随单层修正模型退役）：启动时 best-effort 清理孤儿文件，
+        // 幂等，失败忽略。
+        try? FileManager.default.removeItem(
+            at: URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support/LLM-monitor/admin-credit-carry.json")
+        )
+
         logInfo("AppState: 初始化，\(descriptors.count) 个 fetcher 已注册")
         for d in descriptors {
             logInfo("  - fetcher: \(d.id) (\(d.displayName))")
@@ -1279,6 +1287,8 @@ final class AppState: ObservableObject {
                     $0.state = .failed(message: message, lastSuccess: info)
                 }
                 lastRefreshAt = Date()
+                // 主额度失败但 Admin 赠金可能独立成功：结果已入库，同样结算写回
+                applyAdminCarryWriteBacks(providerID: providerID, from: info)
                 return .completed(success: false)
             }
             logInfo("  [\(providerID)] 刷新成功，\(info.models.count) 个 model (\(Int(Date().timeIntervalSince(startedAt) * 1000))ms)")
@@ -1367,6 +1377,10 @@ final class AppState: ObservableObject {
             }
             let resetDates = info.models.flatMap { [$0.intervalResetsAt, $0.weeklyResetsAt] }.compactMap { $0 }
             refreshScheduler.scheduleMidCycleResetRefreshes(for: providerID, resetsAtDates: resetDates)
+            // 结果已入库（无在途丢弃风险）后再结算 Admin 边界扣除写回——
+            // 写回触发 config 发布 → generation bump → reschedule，必须放在
+            // 本次刷新的全部状态变更之后。
+            applyAdminCarryWriteBacks(providerID: providerID, from: info)
             return .completed(success: true)
         } catch {
             // 取消请求不能误判为失败：配置变更 / 停止刷新 / 窗口关闭时取消，
@@ -1395,6 +1409,70 @@ final class AppState: ObservableObject {
             }
             return .completed(success: false)
         }
+    }
+
+    // MARK: - Admin 赠金边界扣除写回（单层修正模型）
+
+    /// fetcher 不碰 ConfigStore（makeDescriptors 是 static，闭包捕获不到
+    /// configStore），只在 `OpenAIApiCreditDetails.carryPendingWriteValue` 上带回
+    /// 「建议写回」的边界扣除（窗口结束首拍产出）。provider 刷新结果入库后由
+    /// 这里结算：`usedAmountAdjust = value` + `usedAmountAdjustFixedAt = now`
+    /// （写回即定值，本周期内不再自动更新）。写回条件是「未定值」，写完即
+    /// 定值，config 发布 → generation bump → reschedule 不会形成写回死循环。
+    private func applyAdminCarryWriteBacks(providerID: String, from info: QuotaInfo) {
+        guard info.allOpenAIApiCredits.contains(where: { $0.carryPendingWriteValue != nil }) else { return }
+        var newConfig = configStore.config
+        let (updated, changedKeys) = Self.applyingAdminCarryWriteBacks(
+            info.allOpenAIApiCredits,
+            providerID: providerID,
+            to: newConfig,
+            fixedAt: Date()
+        )
+        guard !changedKeys.isEmpty else { return }
+        newConfig = updated
+        do {
+            try configStore.applyAndSave(newConfig)
+            logInfo("  [\(providerID)] 赠金边界扣除写回: \(changedKeys.joined(separator: ", "))")
+        } catch {
+            logWarn("  [\(providerID)] 赠金边界扣除写回失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 写回的纯函数核心（便于单测）：按 credits 上的 pendingWrite 重读 config
+    /// 最新值定位同 keyId 的 adminApiKeys 条目，重验「未定值」（fixedAt 在
+    /// `[cycleStart, cycleEnd)` 内则跳过，防止覆盖在途的用户编辑），值与定值
+    /// 时间戳都相同则跳过。返回更新后的 config 与实际写回的 keyIds（空 = 无变化）。
+    nonisolated static func applyingAdminCarryWriteBacks(
+        _ credits: [OpenAIApiCreditDetails],
+        providerID: String,
+        to config: AppConfig,
+        fixedAt: Date
+    ) -> (AppConfig, [String]) {
+        guard var provider = config.providers[providerID] else { return (config, []) }
+        var changedKeys: [String] = []
+        for entry0 in credits {
+            guard let keyId = entry0.keyId,
+                  let pendingValue = entry0.carryPendingWriteValue,
+                  var keys = provider.adminApiKeys,
+                  let index = keys.firstIndex(where: { $0.id == keyId }) else { continue }
+            // 已定值（本账期内）→ 不再写
+            if let fixed = keys[index].usedAmountAdjustFixedAt,
+               fixed >= entry0.cycleStart, fixed < entry0.cycleEnd {
+                continue
+            }
+            // 值相同且已带定值时间戳 → 完全 no-op
+            if keys[index].usedAmountAdjust == pendingValue, keys[index].usedAmountAdjustFixedAt != nil {
+                continue
+            }
+            keys[index].usedAmountAdjust = pendingValue
+            keys[index].usedAmountAdjustFixedAt = fixedAt
+            provider.adminApiKeys = keys
+            changedKeys.append(keyId)
+        }
+        guard !changedKeys.isEmpty else { return (config, []) }
+        var newConfig = config
+        newConfig.providers[providerID] = provider
+        return (newConfig, changedKeys)
     }
 
     // MARK: - 状态变更辅助

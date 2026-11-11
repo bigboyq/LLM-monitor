@@ -76,6 +76,38 @@ struct SettingsView: View {
         return value
     }
 
+    /// 已用金额手动修正只要求有限数字：允许负数与 0，仅拒绝非数字 / 非有限。
+    static func validUsedAmountAdjust(_ rawValue: String) -> Double? {
+        guard let value = Double(rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value.isFinite else { return nil }
+        return value
+    }
+
+    /// 单层修正模型的边界扣除定值合并（纯函数，便于单测）：
+    /// - 草稿文本与打开设置时的快照相同（用户没动）→ 保留 config 现值
+    ///   （adjust + fixedAt 原样，含自动写回的定值）；
+    /// - 用户改了 → adjust 用草稿值、fixedAt 定值为本拍，本周期内不再自动更新；
+    /// - config 侧无同 keyId 条目（新增 key）：没动 → 维持草稿产出（未定值，
+    ///   交给自动机制），改了 → 同样定值。
+    static func mergedCarryAdjust(
+        drafted: CodexAdminKeyConfig,
+        adjustText: String,
+        initialAdjustText: String,
+        existing: CodexAdminKeyConfig?,
+        now: Date = Date()
+    ) -> CodexAdminKeyConfig {
+        var result = drafted
+        if adjustText == initialAdjustText {
+            if let existing {
+                result.usedAmountAdjust = existing.usedAmountAdjust
+                result.usedAmountAdjustFixedAt = existing.usedAmountAdjustFixedAt
+            }
+        } else {
+            result.usedAmountAdjustFixedAt = now
+        }
+        return result
+    }
+
     func refreshNotificationAuthorization() {
         Task {
             notificationAuthorization = await readNotificationAuthorization()
@@ -493,6 +525,13 @@ struct SettingsView: View {
                         userInfo: [NSLocalizedDescriptionKey: "赠金额度必须是大于 0 的有限数字。"]
                     )
                 }
+                if !cleanKey.isEmpty && Self.validUsedAmountAdjust(keyDraft.usedAmountAdjust) == nil {
+                    throw NSError(
+                        domain: "SettingsValidation",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "已用修正必须是有限数字（支持负数）。"]
+                    )
+                }
             }
         }
 
@@ -596,7 +635,16 @@ struct SettingsView: View {
             chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: draft.chatgptInterval)
             chatgpt.adminApiCreditsEnabled = draft.chatgptAdminCreditsEnabled
 
-            let validConfigs = draft.chatgptAdminKeys.compactMap { $0.toConfig() }
+            let existingAdminKeys = config.providers[id]?.adminApiKeys ?? []
+            let validConfigs = draft.chatgptAdminKeys.compactMap { keyDraft -> CodexAdminKeyConfig? in
+                guard let drafted = keyDraft.toConfig() else { return nil }
+                return Self.mergedCarryAdjust(
+                    drafted: drafted,
+                    adjustText: keyDraft.usedAmountAdjust,
+                    initialAdjustText: keyDraft.initialUsedAmountAdjust,
+                    existing: existingAdminKeys.first(where: { $0.id == keyDraft.id })
+                )
+            }
             chatgpt.adminApiKeys = validConfigs.isEmpty ? nil : validConfigs
 
             if let primary = validConfigs.first {

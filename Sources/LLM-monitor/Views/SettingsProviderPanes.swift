@@ -140,7 +140,8 @@ extension SettingsView {
                                     apiKey: "",
                                     monthlyQuotaLimit: "40",
                                     billingDay: 11,
-                                    billingTime: SettingsFormDraft.defaultBillingTime()
+                                    billingTime: SettingsFormDraft.defaultBillingTime(),
+                                    usedAmountAdjust: "0"
                                 )
                             )
                         } label: {
@@ -586,6 +587,22 @@ struct CodexAdminKeyCardView: View {
                         .frame(width: SettingsLayout.standardControlWidth)
                     if SettingsView.validMonthlyQuotaLimit(keyDraft.monthlyQuotaLimit) == nil && !keyDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("请输入大于 0 的有限数字。")
+                            .font(SettingsTypography.status)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            SettingsControlRow("边界扣除 ($)") {
+                VStack(alignment: .trailing, spacing: 4) {
+                    TextField("边界扣除 ($)", text: $keyDraft.usedAmountAdjust, prompt: Text("0"))
+                        .labelsHidden()
+                        .accessibilityLabel("边界扣除 ($)")
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: SettingsLayout.standardControlWidth)
+                        .help("当前账期边界日溢入的自动扣除值（冻结后自动写入，可手动修改）；本周期内一旦修改（含自动写入）不再自动更新。")
+                    if SettingsView.validUsedAmountAdjust(keyDraft.usedAmountAdjust) == nil && !keyDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("请输入有限数字（支持负数）。")
                             .font(SettingsTypography.status)
                             .foregroundStyle(.red)
                     }
