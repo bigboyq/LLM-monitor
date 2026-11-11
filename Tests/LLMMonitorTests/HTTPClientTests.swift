@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import os
 @testable import LLM_monitor
 
 /// `Services/Infra/HTTPClient.swift`：取消透传、诊断错误体截断、QuotaError
@@ -580,12 +581,12 @@ final class HTTPClientTests: XCTestCase {
             error: nil,
             sender: DummyChallengeSender()
         )
-        var called = false
+        let called = OSAllocatedUnfairLock(initialState: false)
         delegate.urlSession(.shared, didReceive: challenge) { disposition, _ in
-            called = true
+            called.withLock { $0 = true }
             XCTAssertEqual(disposition, .performDefaultHandling)
         }
-        XCTAssertTrue(called)
+        XCTAssertTrue(called.withLock { $0 })
         XCTAssertTrue(parent.didReceiveChallenge)
     }
 
@@ -608,12 +609,12 @@ final class HTTPClientTests: XCTestCase {
             error: nil,
             sender: DummyChallengeSender()
         )
-        var called = false
+        let called = OSAllocatedUnfairLock(initialState: false)
         delegate.urlSession(.shared, task: task, didReceive: challenge) { disposition, _ in
-            called = true
+            called.withLock { $0 = true }
             XCTAssertEqual(disposition, .performDefaultHandling)
         }
-        XCTAssertTrue(called)
+        XCTAssertTrue(called.withLock { $0 })
         XCTAssertTrue(parent.didReceiveChallenge)
     }
 

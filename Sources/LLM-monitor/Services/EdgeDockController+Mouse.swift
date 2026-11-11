@@ -491,7 +491,10 @@ extension EdgeDockController {
     /// 检查顶部状态栏动态显隐是否发生变化。
     /// 当用户将鼠标移至屏幕上沿调出状态栏，或移开后状态栏自动隐藏时，
     /// 驱动悬浮窗平滑下移避让或上移复位。
-    func checkDynamicMenuBar(at mouse: CGPoint) {
+    func checkDynamicMenuBar(
+        at mouse: CGPoint,
+        windowEntries: [FullscreenProbe.WindowEntry]? = nil
+    ) {
         guard config.edge == .top, !isDragging, !isFormMorphInFlight else { return }
         let screen = Self.targetScreen
         let isMouseOnThisScreen = screen.frame.contains(mouse)
@@ -533,7 +536,11 @@ extension EdgeDockController {
             && mouse.y >= screen.frame.maxY - 6.0
 
         // 2. 实时窗口层级探查（覆盖系统动画中与已展开态）
-        var current = ScreenChromeProbe.menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)
+        var current = ScreenChromeProbe.menuBarState(
+            on: screen,
+            isFullscreenSpace: isFullscreenSpace,
+            windowEntries: windowEntries
+        )
 
         // 若光标正在顶沿触碰中，但窗口尚未移入屏幕（系统前置等待期），提前置为可见态
         if isTouchingTopEdge && !current.isVisible {

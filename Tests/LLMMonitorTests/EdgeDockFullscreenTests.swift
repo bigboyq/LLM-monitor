@@ -312,15 +312,24 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         let controller = EdgeDockController.shared
         let originalConfig = controller.config
         let originalState = controller.lastMenuBarState
+        let originalFullscreen = controller.isFullscreenSpace
+        let originalDragging = controller.isDragging
+        let originalMorphInFlight = controller.isFormMorphInFlight
         addTeardownBlock {
             controller.applyRuntimeConfig { $0 = originalConfig }
             controller.lastMenuBarState = originalState
+            controller.isFullscreenSpace = originalFullscreen
+            controller.isDragging = originalDragging
+            controller.isFormMorphInFlight = originalMorphInFlight
         }
 
+        controller.isDragging = false
+        controller.isFormMorphInFlight = false
         controller.applyRuntimeConfig {
             $0.edge = .top
             $0.mode = .statusWindow
         }
+        controller.isFullscreenSpace = true
         let targetScreen = EdgeDockController.targetScreen
         controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: false, height: 0)
 
@@ -329,7 +338,7 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         let topY = targetScreen.frame.maxY - 2
         let mouseOutside = CGPoint(x: outsideX, y: topY)
 
-        controller.checkDynamicMenuBar(at: mouseOutside)
+        controller.checkDynamicMenuBar(at: mouseOutside, windowEntries: [])
 
         // 鼠标不在本屏，即便 Y 坐标位于顶沿，绝不能误判为本屏顶沿触碰
         XCTAssertEqual(
@@ -344,45 +353,52 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         let controller = EdgeDockController.shared
         let originalConfig = controller.config
         let originalState = controller.lastMenuBarState
+        let originalFullscreen = controller.isFullscreenSpace
+        let originalDragging = controller.isDragging
+        let originalMorphInFlight = controller.isFormMorphInFlight
         addTeardownBlock {
             controller.applyRuntimeConfig { $0 = originalConfig }
             controller.lastMenuBarState = originalState
+            controller.isFullscreenSpace = originalFullscreen
+            controller.isDragging = originalDragging
+            controller.isFormMorphInFlight = originalMorphInFlight
         }
 
+        controller.isDragging = false
+        controller.isFormMorphInFlight = false
         controller.applyRuntimeConfig {
             $0.edge = .top
             $0.mode = .statusWindow
         }
+        // 动态菜单栏自动隐藏与移开复位发生在全屏空间（或无常驻菜单栏状态），固定菜单栏桌面态
+        // 按 spec/ui/edge-dock.md §Dynamic Menu Bar Tracking 会跳过轮询以省去跨进程 IPC。
+        controller.isFullscreenSpace = true
         let targetScreen = EdgeDockController.targetScreen
 
         // 预设状态栏当前处于被唤出避让状态（isVisible = true）
         controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: true, height: 30)
 
-        // 鼠标移至屏幕中央（远离顶端）
+        // 鼠标移至屏幕中央（远离顶端），注入空窗口列表模拟动态菜单栏已收起
         let centerMouse = CGPoint(x: targetScreen.frame.midX, y: targetScreen.frame.midY)
-        controller.checkDynamicMenuBar(at: centerMouse)
+        controller.checkDynamicMenuBar(at: centerMouse, windowEntries: [])
 
         // 状态栏已消失（且鼠标远离顶端），必须恢复为不可见并触发上移复位
-        if !ScreenChromeProbe.isMenuBarVisible(on: targetScreen, isFullscreenSpace: controller.isFullscreenSpace) {
-            XCTAssertEqual(
-                controller.lastMenuBarState?.isVisible,
-                false,
-                "光标移开顶端且状态栏收起后，lastMenuBarState 必须恢复为 false，悬浮窗回弹贴顶"
-            )
-        }
+        XCTAssertEqual(
+            controller.lastMenuBarState?.isVisible,
+            false,
+            "光标移开顶端且状态栏收起后，lastMenuBarState 必须恢复为 false，悬浮窗回弹贴顶"
+        )
 
-        // 若鼠标进一步跨屏移出当前屏幕
+        // 若鼠标进一步跨屏移出当前屏幕，同样必须复位为 false
         controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: true, height: 30)
         let outsideMouse = CGPoint(x: targetScreen.frame.maxX + 500, y: targetScreen.frame.midY)
-        controller.checkDynamicMenuBar(at: outsideMouse)
+        controller.checkDynamicMenuBar(at: outsideMouse, windowEntries: [])
 
-        if !ScreenChromeProbe.isMenuBarVisible(on: targetScreen, isFullscreenSpace: controller.isFullscreenSpace) {
-            XCTAssertEqual(
-                controller.lastMenuBarState?.isVisible,
-                false,
-                "光标移出屏幕后，状态栏收起时同样必须复位为 false"
-            )
-        }
+        XCTAssertEqual(
+            controller.lastMenuBarState?.isVisible,
+            false,
+            "光标移出屏幕后，状态栏收起时同样必须复位为 false"
+        )
     }
 
     // MARK: - 窗口与屏幕切换协同重算测试

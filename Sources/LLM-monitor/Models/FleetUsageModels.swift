@@ -884,7 +884,7 @@ private extension FleetTotals {
 
 /// hover 卡 / dock 浮层共用的 fleet 上下文（§10.1）：scope 分段控制、fleet 用量
 /// 区块数据、生效额度（来源标注从它派生）。`onScopeChange` 闭包不参与相等比较。
-struct FleetCardContext {
+struct FleetCardContext: Sendable {
     var scope: FleetScope = .local
     /// fleet 只有 1 台机器时不显示分段（§10.6 L：退化成今天的样子）。
     var multiNode: Bool = false
@@ -895,7 +895,7 @@ struct FleetCardContext {
     var fleetUsage: FleetCardUsage?
     var nodeUsages: [UUID: FleetCardUsage] = [:]
     var effectiveQuota: FleetEffectiveQuota?
-    var onScopeChange: ((FleetScope) -> Void)?
+    var onScopeChange: (@MainActor @Sendable (FleetScope) -> Void)?
 }
 
 extension FleetCardContext: Equatable {

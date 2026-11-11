@@ -214,9 +214,8 @@ final class MinimaxDBReader {
     func aggregate(calendar: Calendar = .current,
                    cutoff: Date? = nil,
                    sessionModelResolver: MinimaxSessionModelResolver? = nil) throws -> MinimaxDBAggregate {
-        // 本地 var：resolver 内部有 per-session 缓存，样本 map 闭包里要能写它
-        // （闭包是 non-escaping，捕获的是引用）。
-        var resolver = sessionModelResolver
+        // resolver 为引用类型，样本 map 闭包里只读写其内部 per-session 缓存，无需可变绑定。
+        let resolver = sessionModelResolver
         let resolvedTableName = Self.runtimeTableName
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
         let safeRawExpr = "CASE WHEN json_valid(t.raw) THEN t.raw ELSE '{}' END"

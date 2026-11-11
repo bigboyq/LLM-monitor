@@ -614,7 +614,7 @@ struct ProviderCardView: View, Equatable {
     /// 今行的行标签（第五轮改版从「今日」缩成「今」，与「5h」「周」同一长度档）。
     /// 测试钉住，改文案必须连测试一起改。行本身由 `ProviderCardDerivedValues`
     /// 产出（与投影是同一个 memo 值）。
-    static let todayRowLabel = "今"
+    nonisolated static let todayRowLabel = "今"
 
     /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
     ///

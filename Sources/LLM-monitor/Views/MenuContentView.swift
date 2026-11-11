@@ -363,7 +363,7 @@ struct MenuContentView: View {
                         }
                         MenuQuotaOverviewView(
                             state: state,
-                            onRefreshProvider: refreshProviderFromMenu,
+                            onRefreshProvider: { @MainActor @Sendable id in refreshProviderFromMenu(id) },
                             onOpenSettings: openProviderSettings,
                             onOpenDetails: openProviderDetails
                         )

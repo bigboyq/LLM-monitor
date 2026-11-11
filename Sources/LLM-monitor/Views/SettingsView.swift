@@ -684,7 +684,7 @@ struct SettingsView: View {
         }
     }
 
-    static func defaultBillingTime(hour: Int = 0, minute: Int = 0) -> Date {
+    nonisolated static func defaultBillingTime(hour: Int = 0, minute: Int = 0) -> Date {
         var comp = Calendar.current.dateComponents([.year, .month, .day], from: Date())
         comp.hour = hour
         comp.minute = minute
@@ -692,7 +692,7 @@ struct SettingsView: View {
         return Calendar.current.date(from: comp) ?? Date()
     }
 
-    static func parseBillingTime(from timeString: String?) -> Date {
+    nonisolated static func parseBillingTime(from timeString: String?) -> Date {
         guard let timeString else { return SettingsFormDraft.defaultBillingTime() }
         let parts = timeString.split(separator: ":")
         let hour = parts.count > 0 ? (Int(parts[0]) ?? 0) : 0

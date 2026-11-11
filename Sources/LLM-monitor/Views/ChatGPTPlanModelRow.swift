@@ -83,7 +83,7 @@ struct ChatGPTPlanModelRow: View {
     /// ChatGPT 的窗口用量有特殊口径（`codexUsageDetails` 预聚合 + OpenCode 补充），
     /// 两条消费路径必须逐字段一致；写成两个 `static` 之后，模型行与卡片区块
     /// 不可能各算一套。
-    static func windowUsages(
+    nonisolated static func windowUsages(
         model: ModelQuota,
         usageDetails: CodexUsageDetails?,
         samples: [LocalTokenUsageSample]
@@ -94,7 +94,7 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    static func intervalUsage(
+    nonisolated static func intervalUsage(
         model: ModelQuota,
         usageDetails: CodexUsageDetails?,
         samples: [LocalTokenUsageSample]
@@ -121,7 +121,7 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    static func weeklyUsage(
+    nonisolated static func weeklyUsage(
         model: ModelQuota,
         usageDetails: CodexUsageDetails?,
         samples: [LocalTokenUsageSample]
@@ -148,7 +148,7 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    static func localUsage(
+    nonisolated static func localUsage(
         samples: [LocalTokenUsageSample],
         quotaModelName: String,
         start: Date?,
@@ -163,7 +163,7 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    static func openCodeUsageSummary(
+    nonisolated static func openCodeUsageSummary(
         samples: [LocalTokenUsageSample],
         quotaModelName: String,
         start: Date?,
@@ -184,7 +184,7 @@ struct ChatGPTPlanModelRow: View {
     /// `usageDetails` 已由同一批 Codex session samples 聚合而来；不能再与
     /// `localUsage` 相加，否则窗口内的 input/cache/output 会全部重复计算。
     /// 有详情时仅追加已启用的 OpenCode 来源；详情尚未生成时从合并 samples 回退。
-    static func preferUsageDetails(
+    nonisolated static func preferUsageDetails(
         _ usageDetails: UsageMetricSummary?,
         _ localFallback: @autoclosure () -> UsageMetricSummary?,
         externalUsage: @autoclosure () -> UsageMetricSummary? = nil

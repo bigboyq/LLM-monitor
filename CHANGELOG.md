@@ -2,6 +2,13 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.4] - 2026-11-11
+
+### Fixed
+
+- 清理 `Sources/` 在 Swift 5 与 Swift 6（Debug / Release）模式下的全部并发与编译器警告（`HTTPClient`、`LANAddressResolver`、`FleetCardContext`、`QuotaUpdateNotifier`、`MinimaxDBReader`、`HarnessUsageMenuView`、`MenuContentView`、`ProviderCardView`、`ChatGPTPlanModelRow`、`SettingsView`），并同步以 `OSAllocatedUnfairLock` 消除 `HTTPClientTests` 闭包捕获警告。
+- 修复 `EdgeDockFullscreenTests.testDynamicMenuBarRecoversWhenMouseLeavesTopEdgeOrScreen` 等测试受宿主机桌面窗口与共享控制器状态干扰的问题：为 `EdgeDockController.checkDynamicMenuBar(at:windowEntries:)` 增加默认 `nil` 的可注入窗口列表参数，测试中隔离全屏/拖拽状态并注入确定性窗口列表以确保稳定校验。
+
 ## [2.7.3] - 2026-11-11
 
 ### Changed

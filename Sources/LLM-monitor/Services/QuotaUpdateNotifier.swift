@@ -488,12 +488,12 @@ final class SystemQuotaUpdateNotifier: NSObject,
                     content: content,
                     trigger: nil
                 )
-                self.center?.add(request) { error in
-                    if let error {
-                        logWarn("[quota-notification] 发送 \(providerName) 活动通知失败: \(error.localizedDescription)")
-                    } else {
-                        logInfo("[quota-notification] 已发送 \(providerName) 活动通知: \(delivery.title ?? delivery.id)")
-                    }
+                guard let center = self.center else { return }
+                do {
+                    try await center.add(request)
+                    logInfo("[quota-notification] 已发送 \(providerName) 活动通知: \(delivery.title ?? delivery.id)")
+                } catch {
+                    logWarn("[quota-notification] 发送 \(providerName) 活动通知失败: \(error.localizedDescription)")
                 }
             }
         }

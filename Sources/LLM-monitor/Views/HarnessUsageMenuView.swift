@@ -761,7 +761,7 @@ struct HarnessSectionView: View {
     /// 竖引导线的水平位置（≈ 展开三角形中轴）。
     static let guideX: CGFloat = 4
     /// 缩进块（今日摘要 / 截断提示 / 模型行）的左缩进。
-    static let treeIndent: CGFloat = 14
+    nonisolated static let treeIndent: CGFloat = 14
     /// 模型行的 ├─ 短横刻线宽度。
     static let tickWidth: CGFloat = 7
     /// 引导线 / 刻线透明度（比 `MenuHairline` 的 8% 略深，缩进对照下要立得住）。
@@ -1166,7 +1166,9 @@ struct MenuQuotaProviderRow: View {
                     .environment(\.hoverRevealMode, .alwaysVisible)
                     .environment(\.displayDate, displayDate)
                     .environment(\.quotaWindowSegmentEditable, true)
-                    .environment(\.cardUsageRefreshAction, onUsageRefresh)
+                    .environment(\.cardUsageRefreshAction, { @MainActor @Sendable in
+                        onUsageRefresh()
+                    })
             }
         }
         .padding(8)

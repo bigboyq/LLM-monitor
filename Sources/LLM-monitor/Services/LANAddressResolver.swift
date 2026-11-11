@@ -73,7 +73,7 @@ enum LANAddressResolver {
             let interface = current.pointee
             // 先推进游标再 continue：循环体里的 `continue` 不会跳到这里。
             cursor = interface.ifa_next
-            guard let name = String(validatingUTF8: interface.ifa_name) else { continue }
+            guard let name = String(validatingCString: interface.ifa_name) else { continue }
             if interface.ifa_flags & UInt32(IFF_LOOPBACK) != 0 {
                 loopbackInterfaces.insert(name)
             }
@@ -89,7 +89,11 @@ enum LANAddressResolver {
                 var addr = sockaddrIn.sin_addr
                 var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                 guard inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
-                ipv4ByInterface[name] = String(cString: buffer)
+                let length = buffer.firstIndex(of: 0) ?? buffer.count
+                ipv4ByInterface[name] = String(
+                    decoding: buffer[..<length].map(UInt8.init(bitPattern:)),
+                    as: UTF8.self
+                )
             case UInt8(AF_LINK):
                 let link = ifaAddr.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { $0.pointee }
                 guard link.sdl_alen == 6 else { continue }
