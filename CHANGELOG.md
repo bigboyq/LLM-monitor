@@ -2,6 +2,13 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.3] - 2026-11-11
+
+### Changed
+
+- 菜单用量 Speed 列与 7 天速度历史改为按单次有效模型调用统计 Min / P50 / P95 / Max 与最新值（剔除缺少或无效解码时长的单次调用本身，不再因同轮存在 tool call 或 `<0.5s` 批量调用而连坐整轮样本），Turns 列继续按去重 `promptID` 计数。
+- 所有模型额度进度条旁补齐状态栏直选小眼睛（`StatusBarQuotaSource.planModel(modelName:)`）：多模型套餐（如 Antigravity 的 `Gemini Models` / `Gemini 4 Argon` / `Claude and GPT models`、MiniMax 的 `video` 等）主套餐标题保留聚合小眼睛，各模型进度条旁的小眼睛允许主动跳过聚合排除并直接将该模型固定到状态栏与设置选项；单模型套餐取消大标题处重复眼睛，直接由唯一进度条承载主套餐选择。
+
 ## [2.7.2] - 2026-11-10
 
 ### Fixed

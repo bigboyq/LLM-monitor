@@ -73,6 +73,29 @@ final class StatusBarConfigTests: XCTestCase {
         XCTAssertEqual(draft.statusBarQuotaSource, .activityPlan(planID: "plan-a", entitlementID: "entitlement-b"))
     }
 
+    func testPlanModelSourceCodableRoundTripAndFallbackTitle() throws {
+        let source = StatusBarQuotaSource.planModel(modelName: "gemini_argon")
+        XCTAssertEqual(source.fallbackTitle, "Gemini 4 Argon")
+
+        var config = AppConfig.default
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "antigravity",
+            source: source
+        )
+        let encoded = try JSONEncoder().encode(config)
+        let jsonObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let selectionObject = try XCTUnwrap(jsonObject["statusBarQuotaSelection"] as? [String: Any])
+        let sourceObject = try XCTUnwrap(selectionObject["source"] as? [String: Any])
+        XCTAssertEqual(sourceObject["kind"] as? String, "planModel")
+        XCTAssertEqual(sourceObject["modelName"] as? String, "gemini_argon")
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+        XCTAssertEqual(decoded.statusBarQuotaSelection, config.statusBarQuotaSelection)
+        let draft = SettingsFormDraft(from: decoded, descriptors: [])
+        XCTAssertEqual(draft.statusBarQuotaProvider, "antigravity")
+        XCTAssertEqual(draft.statusBarQuotaSource, source)
+    }
+
     /// 设置页 picker 与主面板 header 使用的 App 图标设计稿必须能从资源包加载；
     /// 加载失败会静默回退，这里钉住资源打包不回退。
     func testQuotaLogoPickerPreviewUsesDesignAsset() {

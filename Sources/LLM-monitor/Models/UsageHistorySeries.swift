@@ -148,7 +148,7 @@ enum UsageHistorySeriesBuilder {
     static func build<Daily: LocalUsageDaily>(
         days: [Daily],
         costByDay: [Date: ModelCostEstimate],
-        speedByDay: [Date: PromptSpeedStatistics],
+        speedByDay: [Date: CallSpeedStatistics],
         ttftByDay: [Date: CallTTFTStatistics] = [:],
         samplesTruncated: Bool,
         isTruncated: Bool = false,
@@ -213,7 +213,7 @@ enum UsageHistorySeriesBuilder {
                 valueIsPartial: costPartial,
                 speed: UsageHistoryNumber.finiteNonnegative(speedStats?.p50),
                 speedIsPartial: samplesTruncated || isTruncated
-                    || (speedStats.map { $0.validPromptCount < $0.totalPromptCount } ?? false),
+                    || (speedStats.map { $0.validCallCount < $0.totalCallCount } ?? false),
                 ttft: UsageHistoryNumber.finiteNonnegative(ttftByDay[dayStart]?.p50),
                 input: inputTokens,
                 cache: cacheTokens,

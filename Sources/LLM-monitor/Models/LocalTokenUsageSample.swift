@@ -67,15 +67,17 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     }
 }
 
-/// Per-prompt token-speed distribution for a set of local usage samples.
+/// Call-level token-speed distribution for a set of local usage samples.
 ///
-/// A prompt is included in the distribution only when every call in that prompt
-/// has a valid decode duration (call duration in range and positive after
-/// subtracting TTFT). This avoids presenting partial multi-call prompts as a
-/// complete request speed. `latest` always refers to the newest prompt in the
-/// input, and is nil when that prompt is incomplete; it never falls back to an
-/// older prompt.
-struct PromptSpeedStatistics: Equatable, Sendable {
+/// The statistical unit is a single model call (`sample` in `samples`), matching
+/// `CallTTFTStatistics`. A call is included when `hasValidDecodeDuration(sample)`
+/// passes (`durationSeconds` in `[0.2, 3600]`, finite, and positive decode time
+/// after subtracting `ttftSeconds`). Invalid calls (such as missing duration or
+/// `ttft >= duration`) are skipped without disqualifying sibling calls in the
+/// same turn (`promptID`). `latest` always refers to the newest single call in
+/// the input, and is `nil` when that call lacks a valid decode duration; it never
+/// falls back to an older call.
+struct CallSpeedStatistics: Equatable, Sendable {
     let minimum: Double?
     let maximum: Double?
     let p50: Double?
@@ -83,23 +85,23 @@ struct PromptSpeedStatistics: Equatable, Sendable {
     /// （1-based），无有效样本为 nil。
     let p95: Double?
     let latest: Double?
-    let validPromptCount: Int
-    let totalPromptCount: Int
+    let validCallCount: Int
+    let totalCallCount: Int
 
-    static let empty = PromptSpeedStatistics(
+    static let empty = CallSpeedStatistics(
         minimum: nil,
         maximum: nil,
         p50: nil,
         p95: nil,
         latest: nil,
-        validPromptCount: 0,
-        totalPromptCount: 0
+        validCallCount: 0,
+        totalCallCount: 0
     )
 }
 
 /// Call-level TTFT (time-to-first-token) distribution for a set of local usage
-/// samples. The statistical unit is a single model call (unlike
-/// `PromptSpeedStatistics`, which groups calls by prompt): every sample with a
+/// samples. The statistical unit is a single model call (matching
+/// `CallSpeedStatistics`): every sample with a
 /// valid `ttftSeconds` contributes one value, and MiniMax Code's explicit 0
 /// participates like any other value. `p50` is nil iff there is no valid
 /// sample; `validCallCount` / `totalCallCount` let the UI disclose coverage.
@@ -454,53 +456,63 @@ enum LocalUsageSummaryBuilder {
         windowTokenRateComponents(samples: samples).map { $0.numerator / $0.denominator }
     }
 
-    /// Prompt-level speed distribution. Calls sharing a namespaced `promptID`
-    /// form one statistical sample; its speed is the combined billable output
-    /// divided by the combined decode duration (call duration minus TTFT; calls
-    /// without TTFT count their full duration). A prompt with any call whose
-    /// duration is missing, out of range, or leaves no positive decode time is
-    /// omitted from min/max/P50/P95 in its entirety.
-    /// The newest prompt is selected by its latest `completedAt`; promptID
-    /// ascending is the deterministic tie break when timestamps match.
-    nonisolated static func promptSpeedStatistics(
+    /// Call-level speed distribution. Each individual call (`sample` in `samples`)
+    /// is evaluated independently via `hasValidDecodeDuration`: per-call speed is
+    /// billable output (`outputTokens + reasoningOutputTokens`) divided by decode
+    /// duration (`durationSeconds - (ttftSeconds ?? 0)`). Calls with missing,
+    /// out-of-range, or non-positive decode durations are skipped without
+    /// disqualifying sibling calls in the same turn (`promptID`).
+    /// `latest` evaluates only the newest single call (`completedAt` descending,
+    /// `promptID` ascending, array index descending) and is `nil` when that call
+    /// fails `hasValidDecodeDuration`.
+    nonisolated static func callSpeedStatistics(
         samples: [LocalTokenUsageSample]
-    ) -> PromptSpeedStatistics {
-        let grouped = Dictionary(grouping: samples, by: \.promptID)
-        guard !grouped.isEmpty else { return .empty }
+    ) -> CallSpeedStatistics {
+        guard !samples.isEmpty else { return .empty }
 
-        struct PromptRate {
-            let promptID: String
-            let completedAt: Date
+        var newest: (index: Int, sample: LocalTokenUsageSample, rate: Double?)?
+        var validRates: [Double] = []
+        validRates.reserveCapacity(samples.count)
+
+        for (index, sample) in samples.enumerated() {
             let rate: Double?
-        }
-
-        let prompts = grouped.map { promptID, calls -> PromptRate in
-            let completedAt = calls.map(\.completedAt).max() ?? .distantPast
-            guard calls.allSatisfy({ hasValidDecodeDuration($0) }),
-                  let rate = windowTokenRate(samples: calls) else {
-                return PromptRate(promptID: promptID, completedAt: completedAt, rate: nil)
+            if hasValidDecodeDuration(sample), let duration = sample.durationSeconds {
+                let decode = duration - (sample.ttftSeconds ?? 0)
+                rate = Double(SaturatingArithmetic.sum(sample.outputTokens, sample.reasoningOutputTokens)) / decode
+            } else {
+                rate = nil
             }
-            return PromptRate(
-                promptID: promptID,
-                completedAt: completedAt,
-                rate: rate
-            )
+            if let rate {
+                validRates.append(rate)
+            }
+
+            if let current = newest {
+                let isNewer: Bool
+                if sample.completedAt != current.sample.completedAt {
+                    isNewer = sample.completedAt > current.sample.completedAt
+                } else if sample.promptID != current.sample.promptID {
+                    isNewer = sample.promptID < current.sample.promptID
+                } else {
+                    isNewer = index > current.index
+                }
+                if isNewer {
+                    newest = (index, sample, rate)
+                }
+            } else {
+                newest = (index, sample, rate)
+            }
         }
 
-        let latestPrompt = prompts.sorted {
-            if $0.completedAt != $1.completedAt { return $0.completedAt > $1.completedAt }
-            return $0.promptID < $1.promptID
-        }.first!
-        let rates = prompts.compactMap(\.rate).sorted()
+        let rates = validRates.sorted()
         guard !rates.isEmpty else {
-            return PromptSpeedStatistics(
+            return CallSpeedStatistics(
                 minimum: nil,
                 maximum: nil,
                 p50: nil,
                 p95: nil,
-                latest: latestPrompt.rate,
-                validPromptCount: 0,
-                totalPromptCount: prompts.count
+                latest: newest?.rate,
+                validCallCount: 0,
+                totalCallCount: samples.count
             )
         }
         let middle = rates.count / 2
@@ -510,14 +522,14 @@ enum LocalUsageSummaryBuilder {
         // 就近秩法（nearest-rank）：升序第 ⌈0.95 × n⌉ 个（1-based）；n = 1 时
         // 退回唯一样本，与 min / max / P50 重合。
         let p95 = rates[max(0, Int(ceil(0.95 * Double(rates.count))) - 1)]
-        return PromptSpeedStatistics(
+        return CallSpeedStatistics(
             minimum: rates.first,
             maximum: rates.last,
             p50: p50,
             p95: p95,
-            latest: latestPrompt.rate,
-            validPromptCount: rates.count,
-            totalPromptCount: prompts.count
+            latest: newest?.rate,
+            validCallCount: rates.count,
+            totalCallCount: samples.count
         )
     }
 
@@ -543,7 +555,7 @@ enum LocalUsageSummaryBuilder {
         return (numerator: Double(numerator), denominator: denominator)
     }
 
-    /// Shared duration gate for both call-level rates and complete-prompt gating.
+    /// Shared duration gate for both window token rate and call-level speed.
     private nonisolated static func hasValidTokenRateDuration(
         _ sample: LocalTokenUsageSample
     ) -> Bool {
@@ -551,7 +563,7 @@ enum LocalUsageSummaryBuilder {
         return duration.isFinite && duration >= 0.2 && duration <= 3600
     }
 
-    /// 解码时长有效性门（窗口 token 速率与完整 prompt 门控同一份）：在
+    /// 解码时长有效性门（窗口 token 速率与单次调用速度分布同一份）：在
     /// `hasValidTokenRateDuration` 之上再要求解码时长 = 调用时长 − 首字延迟
     /// **有限且为正**。无 TTFT（nil）→ 时长全额计入；`ttft ≥ duration` 视为
     /// 账本异常，整条不参与（分子分母都不计）——宁缺毋假。
@@ -567,7 +579,7 @@ enum LocalUsageSummaryBuilder {
     // MARK: - TTFT（首字延迟）
 
     /// 调用级 TTFT（首字延迟）P50 分布，全仓唯一实现。统计单位是**单次调用**
-    /// （与 `promptSpeedStatistics` 的 prompt 级不同）：所有 `ttftSeconds` 有效
+    /// （与 `callSpeedStatistics` 同一统计单位）：所有 `ttftSeconds` 有效
     /// 样本排序取中位——偶数个取中间两数平均，奇数取中间值；p50 为 nil 当且
     /// 仅当无有效样本。MiniMax Code 显式写的 0（无上游数据）正常参与。
     nonisolated static func callTTFTStatistics(

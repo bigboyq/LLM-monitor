@@ -22,24 +22,28 @@ struct StatusBarQuotaSelection: Codable, Equatable, Sendable {
 
 enum StatusBarQuotaSource: Equatable, Hashable, Sendable, Codable {
     case plan
+    case planModel(modelName: String)
     case apiCredit(keyID: String)
     case activityPlan(planID: String, entitlementID: String)
 
     var fallbackTitle: String {
         switch self {
         case .plan: return "主套餐"
+        case .planModel(let modelName): return ModelQuota.displayName(for: modelName)
         case .apiCredit: return "API额度"
         case .activityPlan: return "Start Plan"
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, keyID, planID, entitlementID }
-    private enum Kind: String, Codable { case plan, apiCredit, activityPlan }
+    private enum CodingKeys: String, CodingKey { case kind, modelName, keyID, planID, entitlementID }
+    private enum Kind: String, Codable { case plan, planModel, apiCredit, activityPlan }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .plan: self = .plan
+        case .planModel:
+            self = .planModel(modelName: try container.decode(String.self, forKey: .modelName))
         case .apiCredit:
             self = .apiCredit(keyID: try container.decode(String.self, forKey: .keyID))
         case .activityPlan:
@@ -55,6 +59,9 @@ enum StatusBarQuotaSource: Equatable, Hashable, Sendable, Codable {
         switch self {
         case .plan:
             try container.encode(Kind.plan, forKey: .kind)
+        case .planModel(let modelName):
+            try container.encode(Kind.planModel, forKey: .kind)
+            try container.encode(modelName, forKey: .modelName)
         case .apiCredit(let keyID):
             try container.encode(Kind.apiCredit, forKey: .kind)
             try container.encode(keyID, forKey: .keyID)

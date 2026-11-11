@@ -1049,6 +1049,7 @@ struct QuotaSummary: View {
     }
 
     var body: some View {
+        let showsPerModelPinButtons = displayedModels.count > 1
         VStack(alignment: .leading, spacing: 10) {
             if hasMainQuotaModels, providerKind != .deepseek {
                 HStack(spacing: 4) {
@@ -1057,7 +1058,9 @@ struct QuotaSummary: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .help(mainPlanTitle)
-                    if ProviderKind.windowedKinds.contains(providerKind), let onSelectQuotaSource {
+                    if showsPerModelPinButtons,
+                       ProviderKind.windowedKinds.contains(providerKind),
+                       let onSelectQuotaSource {
                         StatusBarQuotaSourcePinButton(
                             isSelected: selectedQuotaSource == .plan,
                             title: mainPlanTitle
@@ -1073,13 +1076,22 @@ struct QuotaSummary: View {
                 // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
                 // model 重复一次会读成"每个 model 各有一组倒计时"。
                 let between = index == 0 ? betweenBarAndColumns : AnyView(EmptyView())
+                let modelSource: StatusBarQuotaSource = showsPerModelPinButtons
+                    ? .planModel(modelName: model.modelName)
+                    : .plan
+                let isModelSelected = selectedQuotaSource == modelSource
+                let selectModelAction: (() -> Void)? = ProviderKind.windowedKinds.contains(providerKind)
+                    ? onSelectQuotaSource.map { select in { select(modelSource) } }
+                    : nil
                 if Self.shouldUseChatGPTPlanRow(providerKind: providerKind, model: model) {
                     ChatGPTPlanModelRow(
                         model: model,
                         usageDetails: info.codexUsageDetails,
                         localSamples: localSamples,
                         tint: accentColor(for: model),
-                        between: between
+                        between: between,
+                        isSelectedQuotaSource: isModelSelected,
+                        onSelectQuotaSource: selectModelAction
                     )
                 } else if Self.shouldUseDeepseekBalanceRow(providerKind: providerKind, model: model) {
                     DeepseekBalanceRow(
@@ -1099,7 +1111,9 @@ struct QuotaSummary: View {
                         primaryLabel: Self.primaryWindowLabel(providerKind: providerKind, model: model),
                         tint: accentColor(for: model),
                         weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier(providerKind: providerKind, model: model),
-                        between: between
+                        between: between,
+                        isSelectedQuotaSource: isModelSelected,
+                        onSelectQuotaSource: selectModelAction
                     )
                 }
 

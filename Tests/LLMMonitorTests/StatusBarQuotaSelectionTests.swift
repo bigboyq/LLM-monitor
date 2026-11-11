@@ -364,4 +364,243 @@ final class StatusBarQuotaSelectionTests: XCTestCase {
                        "the global plan arc includes both plan windows, including the exhausted one")
         XCTAssertNil(metrics.singleQuota, "global multi-provider dual-window plan keeps the dual gauge")
     }
+
+    @MainActor
+    private func makeMultiModelFixture() throws -> (AppState, ConfigStore, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("status-bar-plan-model-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ConfigStore(configURL: directory.appendingPathComponent("config.json"))
+        var config = store.config
+        config.providers["antigravity"] = ProviderConfig(enabled: true)
+        config.providers["minimax_token_plan"] = ProviderConfig(enabled: true, apiKey: "minimax-test-key")
+        config.providers["codex_chatgpt"] = ProviderConfig(enabled: true, authPath: "/tmp/auth.json")
+        config.providers["glm_coding_plan"] = ProviderConfig(enabled: true, apiKey: "glm-test-key")
+        try store.applyAndSave(config)
+
+        let descriptors = [
+            FetcherDescriptor(
+                id: "antigravity", displayName: "Antigravity", kind: .antigravity,
+                iconSystemName: "sparkles", accentColor: .antigravity,
+                makeFetcher: { _ in AntigravityFetcher(credentialReader: { nil }) }
+            ),
+            FetcherDescriptor(
+                id: "minimax_token_plan", displayName: "MiniMax", kind: .minimaxTokenPlan,
+                iconSystemName: "bolt", accentColor: .minimax,
+                makeFetcher: { _ in MinimaxTokenPlanFetcher(apiKey: "minimax-test-key") }
+            ),
+            FetcherDescriptor(
+                id: "codex_chatgpt", displayName: "ChatGPT Plan", kind: .codexChatGpt,
+                iconSystemName: "star", accentColor: .chatgpt,
+                makeFetcher: { _ in CodexFetcher(authPath: nil) }
+            ),
+            FetcherDescriptor(
+                id: "glm_coding_plan", displayName: "GLM Coding Plan", kind: .glmCodingPlan,
+                iconSystemName: "sparkles", accentColor: .glm,
+                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "glm-test-key") }
+            )
+        ]
+        let state = AppState(descriptors: descriptors, configStore: store)
+        state.stop()
+        return (state, store, directory)
+    }
+
+    private func makeModel(
+        name: String,
+        interval: Double? = nil,
+        weekly: Double? = nil,
+        intervalSeconds: Int? = nil,
+        weeklySeconds: Int? = nil,
+        now: Date
+    ) -> ModelQuota {
+        ModelQuota(
+            modelName: name,
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: interval ?? 0,
+            intervalStatus: interval == nil ? .absent : .present,
+            intervalResetsAt: interval == nil ? nil : now.addingTimeInterval(3600),
+            intervalWindowSeconds: interval == nil ? nil : intervalSeconds,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: weekly ?? 0,
+            weeklyStatus: weekly == nil ? .absent : .present,
+            weeklyResetsAt: weekly == nil ? nil : now.addingTimeInterval(3 * 86_400),
+            weeklyWindowSeconds: weekly == nil ? nil : (weeklySeconds ?? 604_800)
+        )
+    }
+
+    @MainActor
+    func testMultiModelPlansExposePerModelOptionsAndBypassAggregationOnlyWhenSelected() throws {
+        let (state, store, directory) = try makeMultiModelFixture()
+        defer { state.stop(); try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+
+        let geminiModels = makeModel(
+            name: AntigravityModelKind.geminiModels.rawValue,
+            interval: 90, weekly: nil, intervalSeconds: 18_000, now: now
+        )
+        let geminiArgon = makeModel(
+            name: AntigravityModelKind.geminiArgon.rawValue,
+            interval: nil, weekly: 15, weeklySeconds: 604_800, now: now
+        )
+        let claudeAndGpt = makeModel(
+            name: AntigravityModelKind.claudeAndGptModels.rawValue,
+            interval: 80, weekly: 15, intervalSeconds: 18_000, weeklySeconds: 604_800, now: now
+        )
+        setQuota(
+            QuotaInfo(
+                models: [geminiModels, geminiArgon, claudeAndGpt],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "antigravity", in: state
+        )
+
+        let minimaxGeneral = makeModel(
+            name: "general", interval: 75, weekly: 60, intervalSeconds: 18_000, weeklySeconds: 604_800, now: now
+        )
+        let minimaxVideo = makeModel(
+            name: MinimaxModelKind.video.rawValue,
+            interval: 35, weekly: nil, intervalSeconds: nil, now: now
+        )
+        setQuota(
+            QuotaInfo(
+                models: [minimaxGeneral, minimaxVideo],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "minimax_token_plan", in: state
+        )
+
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "chatgpt_plan", interval: 85, weekly: 70, intervalSeconds: 18_000, now: now)],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "codex_chatgpt", in: state
+        )
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "glm_coding_plan", interval: 95, weekly: 90, intervalSeconds: 18_000, now: now)],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "glm_coding_plan", in: state
+        )
+
+        // Multi-model plans expose `.plan` AND all `.planModel(...)` options (including excluded ones).
+        let antigravityOptions = state.statusBarQuotaOptions(providerID: "antigravity")
+        XCTAssertEqual(antigravityOptions.map(\.source), [
+            .plan,
+            .planModel(modelName: AntigravityModelKind.geminiModels.rawValue),
+            .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue),
+            .planModel(modelName: AntigravityModelKind.claudeAndGptModels.rawValue),
+        ])
+        XCTAssertEqual(antigravityOptions.map(\.title), [
+            "主套餐 · 5h",
+            "Gemini Models",
+            "Gemini 4 Argon",
+            "Claude and GPT models",
+        ])
+
+        let minimaxOptions = state.statusBarQuotaOptions(providerID: "minimax_token_plan")
+        XCTAssertEqual(minimaxOptions.map(\.source), [
+            .plan,
+            .planModel(modelName: "general"),
+            .planModel(modelName: MinimaxModelKind.video.rawValue),
+        ])
+        XCTAssertEqual(minimaxOptions.map(\.title), [
+            "主套餐 · 5h / 周",
+            "通用 (M3)",
+            "视频生成",
+        ])
+
+        // Single-model plans do NOT produce duplicate `.planModel` options.
+        let chatgptOptions = state.statusBarQuotaOptions(providerID: "codex_chatgpt")
+        XCTAssertEqual(chatgptOptions.map(\.source), [.plan])
+        XCTAssertEqual(chatgptOptions.map(\.title), ["5h / 周"])
+        let glmOptions = state.statusBarQuotaOptions(providerID: "glm_coding_plan")
+        XCTAssertEqual(glmOptions.map(\.source), [.plan])
+        XCTAssertEqual(glmOptions.map(\.title), ["5h / 周"])
+
+        // Global relay (`nil`) still respects `aggregateQuotaModels` (excludes argon, claude_and_gpt_models, video).
+        XCTAssertNil(store.config.statusBarQuotaSelection)
+        let globalMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(globalMetrics.centerAvailable ?? -1, 0.75, accuracy: 0.001,
+                       "global relay excludes argon (15%), claude (30%), and video (35%)")
+
+        // Selecting `.plan` on multi-model providers also still respects `aggregateQuotaModels`.
+        var config = store.config
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "antigravity", source: .plan)
+        try store.applyAndSave(config)
+        let antigravityPlanMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(antigravityPlanMetrics.centerAvailable ?? -1, 0.90, accuracy: 0.001)
+        XCTAssertNotNil(antigravityPlanMetrics.singleQuota)
+
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "minimax_token_plan", source: .plan)
+        try store.applyAndSave(config)
+        let minimaxPlanMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(minimaxPlanMetrics.centerAvailable ?? -1, 0.75, accuracy: 0.001)
+        XCTAssertNil(minimaxPlanMetrics.singleQuota, "MiniMax .plan aggregate excludes video and retains dual gauge for general")
+        XCTAssertTrue(state.statusBarQuotaTitle(at: now).contains("5h / 周"))
+
+        // Selecting individual `.planModel(...)` bypasses `aggregateQuotaModels`.
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "antigravity",
+            source: .planModel(modelName: AntigravityModelKind.geminiArgon.rawValue)
+        )
+        try store.applyAndSave(config)
+        let argonMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNotNil(argonMetrics.singleQuota, "weekly-only gemini_argon uses single-gauge presentation")
+        XCTAssertEqual(argonMetrics.singleQuota?.remainingFraction ?? -1, 0.15, accuracy: 0.001)
+        XCTAssertEqual(argonMetrics.centerAvailable ?? -1, 0.15, accuracy: 0.001)
+        let argonTitle = state.statusBarQuotaTitle(at: now)
+        XCTAssertTrue(argonTitle.contains("Antigravity"))
+        XCTAssertTrue(argonTitle.contains("Gemini 4 Argon"))
+        XCTAssertTrue(argonTitle.contains("15%"))
+
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "antigravity",
+            source: .planModel(modelName: AntigravityModelKind.claudeAndGptModels.rawValue)
+        )
+        try store.applyAndSave(config)
+        let claudeMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(claudeMetrics.singleQuota, "dual-window claude_and_gpt_models uses dual-gauge presentation")
+        XCTAssertEqual(claudeMetrics.interval.avgAvailable, 0.80, accuracy: 0.001)
+        XCTAssertEqual(claudeMetrics.weekly.avgAvailable, 0.15, accuracy: 0.001)
+        XCTAssertEqual(claudeMetrics.centerAvailable ?? -1, 0.30, accuracy: 0.001,
+                       "Claude weekly multiplier is 2.0, so min(80%, 15% * 2) = 30%")
+        let claudeTitle = state.statusBarQuotaTitle(at: now)
+        XCTAssertTrue(claudeTitle.contains("Antigravity"))
+        XCTAssertTrue(claudeTitle.contains("Claude and GPT models"))
+        XCTAssertTrue(claudeTitle.contains("30%"))
+
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "minimax_token_plan",
+            source: .planModel(modelName: MinimaxModelKind.video.rawValue)
+        )
+        try store.applyAndSave(config)
+        let videoMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNotNil(videoMetrics.singleQuota, "MiniMax video daily-only pool uses single-gauge presentation")
+        XCTAssertEqual(videoMetrics.singleQuota?.remainingFraction ?? -1, 0.35, accuracy: 0.001)
+        XCTAssertEqual(videoMetrics.centerAvailable ?? -1, 0.35, accuracy: 0.001)
+        let videoTitle = state.statusBarQuotaTitle(at: now)
+        XCTAssertTrue(videoTitle.contains("MiniMax"))
+        XCTAssertTrue(videoTitle.contains("视频生成"))
+        XCTAssertTrue(videoTitle.contains("35%"))
+
+        // Missing data for a selected `.planModel` uses its `fallbackTitle`.
+        setQuota(
+            QuotaInfo(models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                      codexUsageDetails: nil, fetchedAt: now),
+            for: "minimax_token_plan", in: state
+        )
+        let missingVideoMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(missingVideoMetrics.centerAvailable)
+        let missingVideoTitle = state.statusBarQuotaTitle(at: now)
+        XCTAssertTrue(missingVideoTitle.contains("视频生成"))
+        XCTAssertTrue(missingVideoTitle.contains("暂无数据"))
+    }
 }

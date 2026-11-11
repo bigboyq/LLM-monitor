@@ -12,6 +12,8 @@ struct ChatGPTPlanModelRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
+    var isSelectedQuotaSource: Bool = false
+    var onSelectQuotaSource: (() -> Void)? = nil
 
     /// 直接渲染 dock 形态。此前是 `if isDockLayout { dockBlock } else { menuLayout }`：
     /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真（生产路径上唯一的宿主
@@ -47,7 +49,9 @@ struct ChatGPTPlanModelRow: View {
                     primaryLabel: pair.primary,
                     secondaryLabel: pair.secondary,
                     weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier,
-                    tint: tint
+                    tint: tint,
+                    isSelectedQuotaSource: isSelectedQuotaSource,
+                    onSelectQuotaSource: onSelectQuotaSource
                 ),
                 between: between
             )

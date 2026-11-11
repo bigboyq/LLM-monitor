@@ -116,7 +116,10 @@ final class CrossReviewUITests: StateTestCase {
             iconSystemName: "star", accentColor: .chatgpt, refreshIntervalSeconds: 300, state: .ready
         )
         let sources: [StatusBarQuotaSource] = [
-            .plan, .apiCredit(keyID: "key-a"), .apiCredit(keyID: "key-b"),
+            .plan,
+            .planModel(modelName: "gemini_argon"),
+            .planModel(modelName: "claude_and_gpt_models"),
+            .apiCredit(keyID: "key-a"), .apiCredit(keyID: "key-b"),
             .activityPlan(planID: "plan-a", entitlementID: "grant-a"),
             .activityPlan(planID: "plan-a", entitlementID: "grant-b"),
         ]

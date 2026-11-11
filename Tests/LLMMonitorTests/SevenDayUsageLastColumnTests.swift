@@ -44,32 +44,33 @@ final class SevenDayUsageHistoryMetricTests: XCTestCase {
         XCTAssertFalse(UsageHistoryMetric.ttft.isBoundedRate)
     }
 
-    func testDailySpeedUsesPromptP50AndExcludesIncompletePrompts() {
+    func testDailySpeedUsesCallP50AndSkipsInvalidCallsWithoutDisqualifyingSiblings() {
         let day = dayStart(0)
         let samples = [
-            // Two calls are one prompt: (100 + 100) / (1 + 1) = 100 tok/s.
-            sample(promptID: "prompt-1", hour: 10, output: 100, duration: 1),
-            sample(promptID: "prompt-1", hour: 10, output: 100, duration: 1),
-            sample(promptID: "prompt-2", hour: 11, output: 300, duration: 3),
-            // This newest prompt is omitted in full because one call has no duration.
-            sample(promptID: "prompt-3", hour: 12, output: 100, duration: 1),
+            // Same turn with two independent valid calls: 100 and 200 tok/s.
+            sample(promptID: "prompt-1", hour: 10, output: 200, duration: 2),
+            sample(promptID: "prompt-1", hour: 10, output: 400, duration: 2),
+            sample(promptID: "prompt-2", hour: 11, output: 300, duration: 2),
+            // Newest turn mixes a valid streaming call (250 tok/s) and a nil-duration tool call.
+            // Only the nil-duration call is skipped; sibling valid call remains included.
+            sample(promptID: "prompt-3", hour: 12, output: 500, duration: 2),
             sample(promptID: "prompt-3", hour: 12, output: 100, duration: nil),
         ]
 
         let statistics = LocalUsageSpeedByDay.statistics(dayStarts: [day], recentSamples: samples)
 
-        XCTAssertEqual(statistics[day]?.p50, 100)
-        XCTAssertEqual(statistics[day]?.validPromptCount, 2)
-        XCTAssertEqual(statistics[day]?.totalPromptCount, 3)
-        XCTAssertNil(statistics[day]?.latest, "Newest incomplete prompt must not fall back to an older speed")
+        XCTAssertEqual(statistics[day]?.p50 ?? -1, 175, accuracy: 1e-9)
+        XCTAssertEqual(statistics[day]?.validCallCount, 4)
+        XCTAssertEqual(statistics[day]?.totalCallCount, 5)
+        XCTAssertNil(statistics[day]?.latest, "Newest invalid call must not fall back to an older speed")
     }
 
-    func testFleetWithoutPromptSamplesHasNoSpeedStatistics() {
+    func testFleetWithoutSamplesHasNoSpeedStatistics() {
         XCTAssertTrue(LocalUsageSpeedByDay.statistics(dayStarts: [dayStart(0)], recentSamples: []).isEmpty)
     }
 
-    /// 每日调用级 TTFT 统计：统计单位是**单次调用**（与 prompt 级速度不同），
-    /// 有效样本排序取中位；memo key `"call-ttft"` 与速度的 `"prompt-speed"` 分开。
+    /// 每日调用级 TTFT 统计：统计单位均为**单次调用**，
+    /// 有效样本排序取中位；memo key `"call-ttft"` 与速度的 `"call-speed"` 分开。
     func testDailyTTFTUsesCallLevelP50() {
         let day = dayStart(0)
         let samples = [

@@ -81,11 +81,27 @@ extension AppState {
             return [.init(option: .init(source: .plan, title: "主套餐"), reading: .plan([]))]
         }
         let models = statusBarPlanModels(for: status, at: now)
+        let activeModels = (status.isEnabled ? fleetEffectiveQuota(for: status.kind).quota?.activeModels : nil) ?? []
+        let baseTitle = StatusBarQuotaProjection.planTitle(models: models.map(\.model))
+        let planOptionTitle = activeModels.count > 1
+            ? (baseTitle == "主套餐" ? "主套餐" : "主套餐 · \(baseTitle)")
+            : baseTitle
+        let notice = status.isEnabled ? fleetEffectiveQuota(for: status.kind).sourceTagText : "Provider 已停用"
         var pools = [StatusBarQuotaPool(
-            option: .init(source: .plan, title: StatusBarQuotaProjection.planTitle(models: models.map(\.model))),
+            option: .init(source: .plan, title: planOptionTitle),
             reading: .plan(models),
-            notice: status.isEnabled ? fleetEffectiveQuota(for: status.kind).sourceTagText : "Provider 已停用"
+            notice: notice
         )]
+        if activeModels.count > 1 {
+            var seenModelNames = Set<String>()
+            for model in activeModels where seenModelNames.insert(model.modelName).inserted {
+                pools.append(StatusBarQuotaPool(
+                    option: .init(source: .planModel(modelName: model.modelName), title: model.displayName),
+                    reading: .plan([StatusBarPlanModel(kind: status.kind, model: model, isPeak: status.isGlmPeak(at: now))]),
+                    notice: notice
+                ))
+            }
+        }
         let config = configStore.config.providers[providerID]
         if status.kind == .codexChatGpt, config?.adminApiCreditsEnabled == true {
             for (index, key) in (config?.effectiveAdminKeys ?? []).enumerated() {

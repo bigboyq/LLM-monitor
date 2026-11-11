@@ -165,16 +165,16 @@ final class UsageHistorySeriesTests: XCTestCase {
         XCTAssertEqual(series[6].currency, ModelPriceCurrency.usd)
     }
 
-    func testSpeedUsesPromptP50AndRemainsUnavailableWithoutSamples() throws {
+    func testSpeedUsesCallP50AndRemainsUnavailableWithoutSamples() throws {
         let today = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 29)))
-        let stat = PromptSpeedStatistics(
+        let stat = CallSpeedStatistics(
             minimum: 10,
             maximum: 80,
             p50: 40,
             p95: 70,
             latest: 80,
-            validPromptCount: 2,
-            totalPromptCount: 2
+            validCallCount: 2,
+            totalCallCount: 2
         )
         let series = UsageHistorySeriesBuilder.build(
             days: [Daily](),
@@ -190,17 +190,33 @@ final class UsageHistorySeriesTests: XCTestCase {
         XCTAssertFalse(series[6].speedIsPartial)
     }
 
-    func testSpeedMarksCoveragePartialWhenPromptsLackValidDurations() throws {
+    func testSpeedMarksCoveragePartialWhenCallsLackValidDurations() throws {
         let today = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 29)))
-        let stat = PromptSpeedStatistics(
-            minimum: 10,
-            maximum: 80,
-            p50: 40,
-            p95: 70,
-            latest: 80,
-            validPromptCount: 2,
-            totalPromptCount: 3
-        )
+        let samples = [
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(60),
+                modelName: "model",
+                promptID: "turn-1",
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 400,
+                reasoningOutputTokens: 0,
+                durationSeconds: 2
+            ),
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(120),
+                modelName: "model",
+                promptID: "turn-1",
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 100,
+                reasoningOutputTokens: 0,
+                durationSeconds: nil
+            )
+        ]
+        let stat = LocalUsageSummaryBuilder.callSpeedStatistics(samples: samples)
+        XCTAssertEqual(stat.validCallCount, 1)
+        XCTAssertEqual(stat.totalCallCount, 2)
 
         let series = UsageHistorySeriesBuilder.build(
             days: [Daily](),
@@ -211,6 +227,7 @@ final class UsageHistorySeriesTests: XCTestCase {
             now: today
         )
 
+        XCTAssertEqual(series[6].speed, 200)
         XCTAssertTrue(series[6].speedIsPartial)
     }
 
@@ -222,14 +239,14 @@ final class UsageHistorySeriesTests: XCTestCase {
             pricedModelNames: ["model"],
             unpricedModelNames: []
         )
-        let badSpeed = PromptSpeedStatistics(
+        let badSpeed = CallSpeedStatistics(
             minimum: 1,
             maximum: 1,
             p50: .nan,
             p95: 1,
             latest: 1,
-            validPromptCount: 1,
-            totalPromptCount: 1
+            validCallCount: 1,
+            totalCallCount: 1
         )
         let series = UsageHistorySeriesBuilder.build(
             days: [Daily](),

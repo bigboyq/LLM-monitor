@@ -6,7 +6,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
     let modelName: String
 
     /// 显示名（rule-based mapping of modelName → 用户可读名）
-    var displayName: String {
+    static func displayName(for modelName: String) -> String {
         switch modelName.lowercased() {
         case "general":       return "通用 (M3)"
         case MinimaxModelKind.video.rawValue: return "视频生成"
@@ -22,6 +22,11 @@ struct ModelQuota: Equatable, Codable, Sendable {
         case "deepseek_balance": return "DeepSeek API 余额"
         default:              return modelName
         }
+    }
+
+    /// 显示名（rule-based mapping of modelName → 用户可读名）
+    var displayName: String {
+        Self.displayName(for: modelName)
     }
 
     // MARK: 5 小时窗口

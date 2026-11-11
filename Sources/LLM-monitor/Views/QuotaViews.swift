@@ -184,6 +184,8 @@ struct CombinedQuotaWindowRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
+    var isSelectedQuotaSource: Bool = false
+    var onSelectQuotaSource: (() -> Void)? = nil
 
     /// 直接渲染 dock 形态。此前是 `if isDockLayout { dockBlock } else { menuLayout }`：
     /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真（生产路径上唯一的宿主
@@ -214,7 +216,9 @@ struct CombinedQuotaWindowRow: View {
                     primaryLabel: primaryLabel,
                     secondaryLabel: QuotaSummary.weeklyWindowLabel(),
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    tint: tint
+                    tint: tint,
+                    isSelectedQuotaSource: isSelectedQuotaSource,
+                    onSelectQuotaSource: onSelectQuotaSource
                 ),
                 between: between
             )
@@ -225,7 +229,9 @@ struct CombinedQuotaWindowRow: View {
                     primaryLabel: primaryLabel,
                     secondaryLabel: "",
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    tint: tint
+                    tint: tint,
+                    isSelectedQuotaSource: isSelectedQuotaSource,
+                    onSelectQuotaSource: onSelectQuotaSource
                 ),
                 between: between
             )
@@ -236,7 +242,9 @@ struct CombinedQuotaWindowRow: View {
                     primaryLabel: QuotaSummary.weeklyWindowLabel(),
                     secondaryLabel: "",
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    tint: tint
+                    tint: tint,
+                    isSelectedQuotaSource: isSelectedQuotaSource,
+                    onSelectQuotaSource: onSelectQuotaSource
                 ),
                 between: between
             )
@@ -377,6 +385,8 @@ struct QuotaBarWithMetadata: View {
     let secondaryLabel: String
     let weeklyEquivalentMultiplier: Double
     let tint: Color
+    var isSelectedQuotaSource: Bool = false
+    var onSelectQuotaSource: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -398,7 +408,9 @@ struct QuotaBarWithMetadata: View {
                         primaryResetsAt: model.intervalResetsAt,
                         weeklyResetsAt: model.weeklyResetsAt,
                         multiplier: weeklyEquivalentMultiplier
-                    )
+                    ),
+                    isSelectedQuotaSource: isSelectedQuotaSource,
+                    onSelectQuotaSource: onSelectQuotaSource
                 )
                 CombinedQuotaBar(
                     model: model,
@@ -420,7 +432,9 @@ struct QuotaBarWithMetadata: View {
                         label: single.label,
                         percent: single.percent,
                         resetsAt: single.resetsAt,
-                        timeFraction: colorFraction
+                        timeFraction: colorFraction,
+                        isSelectedQuotaSource: isSelectedQuotaSource,
+                        onSelectQuotaSource: onSelectQuotaSource
                     )
                     SingleQuotaBar(
                         percent: single.percent,
@@ -549,6 +563,8 @@ private struct CombinedQuotaMetadataLine: View {
     let secondaryPercent: Double
     let secondaryTimeFraction: Double?
     let resetsAt: Date?
+    var isSelectedQuotaSource: Bool = false
+    var onSelectQuotaSource: (() -> Void)? = nil
 
     /// 恒 `true`：百分比与重置时间**始终**作为一组聚在行尾。
     ///
@@ -563,7 +579,17 @@ private struct CombinedQuotaMetadataLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            QuotaRowModelName(name: name)
+            HStack(spacing: 4) {
+                QuotaRowModelName(name: name)
+                if let onSelectQuotaSource, !name.isEmpty {
+                    StatusBarQuotaSourcePinButton(
+                        isSelected: isSelectedQuotaSource,
+                        title: name,
+                        action: onSelectQuotaSource
+                    )
+                }
+            }
+            .layoutPriority(-1)
             Spacer(minLength: 12)
             HStack(spacing: 6) {
                 quotaValue(
@@ -615,11 +641,23 @@ private struct SingleQuotaMetadataLine: View {
     let percent: Double
     let resetsAt: Date?
     var timeFraction: Double? = nil
+    var isSelectedQuotaSource: Bool = false
+    var onSelectQuotaSource: (() -> Void)? = nil
     /// 同 `CombinedQuotaMetadataLine`：读数一律聚在行尾，对齐不再按环境分叉。
 
     var body: some View {
         HStack(spacing: 6) {
-            QuotaRowModelName(name: name)
+            HStack(spacing: 4) {
+                QuotaRowModelName(name: name)
+                if let onSelectQuotaSource, !name.isEmpty {
+                    StatusBarQuotaSourcePinButton(
+                        isSelected: isSelectedQuotaSource,
+                        title: name,
+                        action: onSelectQuotaSource
+                    )
+                }
+            }
+            .layoutPriority(-1)
             Spacer(minLength: 12)
             HStack(spacing: 4) {
                 Text(label)

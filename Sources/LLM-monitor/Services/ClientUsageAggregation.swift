@@ -328,9 +328,13 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// 显式写的 0（无上游数据）正常参与。`nil` = 批内没有 TTFT 有效的样本
     /// （不是"延迟为 0"），UI 显示「—」。
     let ttftSeconds: Double?
-    /// Prompt-level today speed distribution. Incomplete prompts are excluded
-    /// from the distribution and remain visible in `totalPromptCount`.
-    let promptSpeedStatistics: PromptSpeedStatistics
+    /// Distinct Turn (`promptID`) count over today's samples for this row.
+    /// Keeps the UI's `Turns` column prompt/turn-scoped while `callSpeedStatistics`
+    /// measures single effective calls.
+    let turnCount: Int
+    /// Call-level today speed distribution. Invalid-duration calls are excluded
+    /// from the distribution without disqualifying sibling calls in the same turn.
+    let callSpeedStatistics: CallSpeedStatistics
     private let cachedCostEstimate: ModelCostEstimate
 
     var id: String { "\(clientID):\(quotaProviderID):\(modelName ?? "")" }
@@ -466,7 +470,8 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
         )
         self.tokensPerSecond = LocalUsageSummaryBuilder.windowTokenRate(samples: samples)
         self.ttftSeconds = LocalUsageSummaryBuilder.callTTFTStatistics(samples: samples).p50
-        self.promptSpeedStatistics = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples)
+        self.turnCount = Set(samples.map(\.promptID)).count
+        self.callSpeedStatistics = LocalUsageSummaryBuilder.callSpeedStatistics(samples: samples)
         self.cachedCostEstimate = ModelPricingCatalog.estimate(
             samples: samples,
             quotaProviderID: quotaProviderID,
@@ -492,12 +497,14 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     let tokensPerSecond: Double?
     /// 段级今日首字延迟 P50（秒）：对 `samplesByClient` 今日全部样本并集调
     /// `LocalUsageSummaryBuilder.callTTFTStatistics(samples:).p50`（模式照段级
-    /// tokensPerSecond / promptSpeedStatistics——在并集上取 P50，而不是各行
+    /// tokensPerSecond / callSpeedStatistics——在并集上取 P50，而不是各行
     /// P50 的平均）。`nil` = 并集内没有 TTFT 有效的样本，UI 显示「—」；fleet 段
     /// 无本地样本，恒 nil。
     let ttftSeconds: Double?
-    /// Client-level prompt speed distribution over today's samples.
-    let promptSpeedStatistics: PromptSpeedStatistics
+    /// Distinct Turn (`promptID`) count over today's client samples.
+    let turnCount: Int
+    /// Client-level call speed distribution over today's samples.
+    let callSpeedStatistics: CallSpeedStatistics
     let value: MixedCurrencyEstimate
     let rows: [HarnessModelRow]
     /// 本段任一贡献来源的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
@@ -516,7 +523,8 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         iconSystemName: String,
         buckets: TokenUsageBuckets,
         tokensPerSecond: Double?,
-        promptSpeedStatistics: PromptSpeedStatistics = .empty,
+        turnCount: Int = 0,
+        callSpeedStatistics: CallSpeedStatistics = .empty,
         value: MixedCurrencyEstimate,
         rows: [HarnessModelRow],
         isTruncated: Bool,
@@ -529,7 +537,8 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         self.iconSystemName = iconSystemName
         self.buckets = buckets
         self.tokensPerSecond = tokensPerSecond
-        self.promptSpeedStatistics = promptSpeedStatistics
+        self.turnCount = turnCount
+        self.callSpeedStatistics = callSpeedStatistics
         self.value = value
         self.rows = rows
         self.isTruncated = isTruncated
@@ -812,6 +821,7 @@ struct HarnessTodaySummary: Equatable, Sendable {
             ) ?? HarnessClientSegment.dominantQuotaProviderID(
                 clientRows.map { ($0.quotaProviderID, $0.totalTokens) }
             )
+            let clientSamples = samplesByClient[clientID] ?? []
             return HarnessSection(
                 clientID: clientID,
                 displayName: descriptor?.displayName
@@ -820,10 +830,11 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 iconSystemName: descriptor?.iconSystemName ?? "terminal",
                 buckets: clientBuckets,
                 tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(
-                    samples: samplesByClient[clientID] ?? []
+                    samples: clientSamples
                 ),
-                promptSpeedStatistics: LocalUsageSummaryBuilder.promptSpeedStatistics(
-                    samples: samplesByClient[clientID] ?? []
+                turnCount: Set(clientSamples.map(\.promptID)).count,
+                callSpeedStatistics: LocalUsageSummaryBuilder.callSpeedStatistics(
+                    samples: clientSamples
                 ),
                 value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),
                 rows: clientRows.sorted(by: modelRowOrder),
@@ -831,7 +842,7 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 samplesTruncated: samplesTruncatedClients.contains(clientID),
                 dominantQuotaProviderID: dominantQuotaProviderID,
                 ttftSeconds: LocalUsageSummaryBuilder.callTTFTStatistics(
-                    samples: samplesByClient[clientID] ?? []
+                    samples: clientSamples
                 ).p50
             )
         }

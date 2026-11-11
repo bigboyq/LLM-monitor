@@ -166,22 +166,22 @@ enum LocalUsageSpeedByDay {
         let timeZoneIdentifier: String
     }
 
-    private static let statisticsMemo = DerivedValueMemo<String, StatisticsKey, [Date: PromptSpeedStatistics]>()
+    private static let statisticsMemo = DerivedValueMemo<String, StatisticsKey, [Date: CallSpeedStatistics]>()
 
-    /// Daily Prompt-level speed distribution for the selectable history chart.
+    /// Daily call-level speed distribution for the selectable history chart.
     /// No sample means unavailable (no key); a sampled day with no valid durations
     /// retains an empty statistic so it is distinguishable from known zero speed.
     static func statistics(
         dayStarts: [Date],
         recentSamples: [LocalTokenUsageSample]
-    ) -> [Date: PromptSpeedStatistics] {
+    ) -> [Date: CallSpeedStatistics] {
         guard !recentSamples.isEmpty else { return [:] }
         let key = StatisticsKey(
             dayStarts: dayStarts,
             recentSamples: recentSamples,
             timeZoneIdentifier: Calendar.current.timeZone.identifier
         )
-        return statisticsMemo.value(for: "prompt-speed", key: key) {
+        return statisticsMemo.value(for: "call-speed", key: key) {
             computeStatistics(dayStarts: dayStarts, recentSamples: recentSamples)
         }
     }
@@ -189,7 +189,7 @@ enum LocalUsageSpeedByDay {
     private static func computeStatistics(
         dayStarts: [Date],
         recentSamples: [LocalTokenUsageSample]
-    ) -> [Date: PromptSpeedStatistics] {
+    ) -> [Date: CallSpeedStatistics] {
         let calendar = Calendar.current
         let grouped = Dictionary(grouping: recentSamples) {
             calendar.startOfDay(for: $0.completedAt)
@@ -197,7 +197,7 @@ enum LocalUsageSpeedByDay {
         return Dictionary(uniqueKeysWithValues: dayStarts.compactMap { dayStart in
             let key = calendar.startOfDay(for: dayStart)
             guard let samples = grouped[key] else { return nil }
-            return (key, LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples))
+            return (key, LocalUsageSummaryBuilder.callSpeedStatistics(samples: samples))
         })
     }
 }
@@ -205,8 +205,8 @@ enum LocalUsageSpeedByDay {
 /// 7 天用量的**每日调用级 TTFT 分布**（`[dayStart: CallTTFTStatistics]`）——7 天
 /// 表动态列 TTFT（每日 P50）的数据源，与 `LocalUsageSpeedByDay`（速度列）同一
 /// 分工：按日分组后逐日调 `LocalUsageSummaryBuilder.callTTFTStatistics`（统计
-/// 单位是单次调用，与 prompt 级速度不同），memo key 用 `"call-ttft"` 与速度的
-/// `"prompt-speed"` 分开。
+/// 单位均为单次调用），memo key 用 `"call-ttft"` 与速度的
+/// `"call-speed"` 分开。
 ///
 /// 分组口径与 `LocalUsageSpeedByDay` 一致（`Calendar.current` 的
 /// `startOfDay(for: completedAt)`）；有样本但全部 TTFT 无效的日保留空统计

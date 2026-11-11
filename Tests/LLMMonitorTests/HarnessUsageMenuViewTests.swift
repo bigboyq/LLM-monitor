@@ -64,7 +64,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     func testSpeedDistributionHelpFallsBackToMetricDescriptionWithoutSamples() {
         XCTAssertEqual(
             HarnessMetricColumns.speedDistributionHelp(.empty),
-            "完整 Prompt 解码速度 P50，单位 tok/s"
+            "单次有效调用解码速度 P50，单位 tok/s"
         )
     }
 
@@ -73,23 +73,23 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 样本覆盖完整时不带后缀。
     func testSpeedDistributionHelpListsTheActualDistribution() {
         XCTAssertEqual(
-            HarnessMetricColumns.speedDistributionHelp(PromptSpeedStatistics(
+            HarnessMetricColumns.speedDistributionHelp(CallSpeedStatistics(
                 minimum: 9.5, maximum: 80, p50: 40, p95: 70,
-                latest: 80, validPromptCount: 2, totalPromptCount: 2
+                latest: 80, validCallCount: 2, totalCallCount: 2
             )),
             "Min: 9.5 · P50: 40 · P95: 70 · Max: 80 tok/s"
         )
     }
 
-    /// 有效样本不全时追加「valid/total Prompt 有有效时长」披露残缺统计——
+    /// 有效样本不全时追加「valid/total 次调用有有效时长」披露残缺统计——
     /// 与历史序列 `speedIsPartial` 同一披露语义。
     func testSpeedDistributionHelpAppendsPartialCoverageSuffix() {
         XCTAssertEqual(
-            HarnessMetricColumns.speedDistributionHelp(PromptSpeedStatistics(
+            HarnessMetricColumns.speedDistributionHelp(CallSpeedStatistics(
                 minimum: 9.5, maximum: 80, p50: 40, p95: 70,
-                latest: 80, validPromptCount: 2, totalPromptCount: 3
+                latest: 80, validCallCount: 2, totalCallCount: 3
             )),
-            "Min: 9.5 · P50: 40 · P95: 70 · Max: 80 tok/s（2/3 Prompt 有有效时长）"
+            "Min: 9.5 · P50: 40 · P95: 70 · Max: 80 tok/s（2/3 次调用有有效时长）"
         )
     }
 
@@ -336,8 +336,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             samples: [Self.sample(at: Date())],
             calendar: .current
         )
-        XCTAssertEqual(row.promptSpeedStatistics.totalPromptCount, 1)
-        XCTAssertEqual(row.promptSpeedStatistics.validPromptCount, 0)
+        XCTAssertEqual(row.turnCount, 1)
+        XCTAssertEqual(row.callSpeedStatistics.totalCallCount, 1)
+        XCTAssertEqual(row.callSpeedStatistics.validCallCount, 0)
         let content = HarnessModelRowView(row: row)
             .frame(width: contentWidth, alignment: .leading)
         let hosting = NSHostingView(rootView: AnyView(content))
@@ -347,6 +348,85 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
         XCTAssertGreaterThan(hosting.fittingSize.height, 0, "模型行必须实际布局出内容")
         XCTAssertLessThanOrEqual(hosting.fittingSize.height, 20, "速度范围图已移除，模型行应只剩单行指标文本")
+    }
+
+    /// 多轮调用的同一 Turn 内混杂无时长工具调用或无效时长调用时，
+    /// `turnCount` 保留去重 Prompt ID 计数，有效同级调用仍参与单次调用速度统计。
+    @MainActor
+    func testMultiCallTurnPreservesTurnCountAndSiblingCallSpeedWhenMixedWithInvalidCalls() throws {
+        let now = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
+        let samples = [
+            LocalTokenUsageSample(
+                completedAt: now,
+                modelName: "gpt-5.5",
+                promptID: "turn-1",
+                inputTokens: 500,
+                cachedInputTokens: 0,
+                outputTokens: 500,
+                reasoningOutputTokens: 0,
+                durationSeconds: nil
+            ),
+            LocalTokenUsageSample(
+                completedAt: now.addingTimeInterval(1),
+                modelName: "gpt-5.5",
+                promptID: "turn-1",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 200,
+                reasoningOutputTokens: 0,
+                durationSeconds: 0.1
+            ),
+            LocalTokenUsageSample(
+                completedAt: now.addingTimeInterval(2),
+                modelName: "gpt-5.5",
+                promptID: "turn-1",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 200,
+                reasoningOutputTokens: 0,
+                durationSeconds: 2
+            ),
+            LocalTokenUsageSample(
+                completedAt: now.addingTimeInterval(3),
+                modelName: "gpt-5.5",
+                promptID: "turn-1",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 160,
+                reasoningOutputTokens: 40,
+                durationSeconds: 6,
+                ttftSeconds: 1
+            ),
+            LocalTokenUsageSample(
+                completedAt: now.addingTimeInterval(4),
+                modelName: "gpt-5.5",
+                promptID: "turn-2",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 320,
+                reasoningOutputTokens: 0,
+                durationSeconds: 2
+            )
+        ]
+        let status = Self.codexFixture(samples: samples, now: now)
+        let summary = HarnessTodaySummary.summarize(statuses: [status], now: now, calendar: .current)
+        let section = try XCTUnwrap(summary.sections.first)
+        let row = try XCTUnwrap(section.rows.first)
+
+        XCTAssertEqual(section.turnCount, 2)
+        XCTAssertEqual(section.callSpeedStatistics.validCallCount, 3)
+        XCTAssertEqual(section.callSpeedStatistics.totalCallCount, 5)
+        XCTAssertEqual(try XCTUnwrap(section.callSpeedStatistics.minimum), 40, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(section.callSpeedStatistics.p50), 100, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(section.callSpeedStatistics.maximum), 160, accuracy: 1e-9)
+
+        XCTAssertEqual(row.turnCount, 2)
+        XCTAssertEqual(row.callSpeedStatistics, section.callSpeedStatistics)
+        XCTAssertEqual(
+            HarnessMetricColumns.speedDistributionHelp(row.callSpeedStatistics),
+            "Min: 40 · P50: 100 · P95: 160 · Max: 160 tok/s（3/5 次调用有有效时长）"
+        )
+        XCTAssertLessThanOrEqual(width(of: HarnessModelRowView(row: row)), contentWidth)
     }
 
     /// 段头与模型行同构（Token 小计 / 命中占位 / 速度汇总 / 价值四格定宽）后，
@@ -855,8 +935,11 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
-    private static func codexFixture() -> ProviderStatus {
-        let samples = [sample(at: Date())]
+    private static func codexFixture(
+        samples: [LocalTokenUsageSample]? = nil,
+        now: Date = Date()
+    ) -> ProviderStatus {
+        let samples = samples ?? [sample(at: now)]
         let info = QuotaInfo(
             models: [],
             resetCredits: nil,
@@ -867,9 +950,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
                 secondary: nil,
                 dailyTokenUsage: [],
                 recentSamples: samples,
-                scannedAt: Date()
+                scannedAt: now
             ),
-            fetchedAt: Date()
+            fetchedAt: now
         )
         return ProviderStatus(
             id: "codex_chatgpt",

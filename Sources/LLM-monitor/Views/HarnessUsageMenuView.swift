@@ -649,16 +649,16 @@ enum HarnessMetricColumns {
 
     /// Speed 格的 hover 文案：给**这一行的实际分布值**（Min / P50 / P95 / Max，
     /// 统一走 `Formatters.formatSpeed` 紧凑格式）；无有效样本时退回口径说明。
-    /// 有效样本不全时追加「（valid/total Prompt 有有效时长）」披露残缺统计——
+    /// 有效样本不全时追加「（valid/total 次调用有有效时长）」披露残缺统计——
     /// 与 `speedIsPartial` 同一披露语义。
-    static func speedDistributionHelp(_ stats: PromptSpeedStatistics) -> String {
-        guard let p50 = stats.p50 else { return "完整 Prompt 解码速度 P50，单位 tok/s" }
+    static func speedDistributionHelp(_ stats: CallSpeedStatistics) -> String {
+        guard let p50 = stats.p50 else { return "单次有效调用解码速度 P50，单位 tok/s" }
         var text = "Min: \(Formatters.formatSpeed(stats.minimum))"
             + " · P50: \(Formatters.formatSpeed(p50))"
             + " · P95: \(Formatters.formatSpeed(stats.p95))"
             + " · Max: \(Formatters.formatSpeed(stats.maximum)) tok/s"
-        if stats.validPromptCount < stats.totalPromptCount {
-            text += "（\(stats.validPromptCount)/\(stats.totalPromptCount) Prompt 有有效时长）"
+        if stats.validCallCount < stats.totalCallCount {
+            text += "（\(stats.validCallCount)/\(stats.totalCallCount) 次调用有有效时长）"
         }
         return text
     }
@@ -721,7 +721,7 @@ enum HarnessMetricColumns {
                 .help("调用首字延迟 P50，单位秒")
             Text("Speed")
                 .frame(width: speed, alignment: .trailing)
-                .help("完整 Prompt 解码速度 P50，单位 tok/s")
+                .help("单次有效调用解码速度 P50，单位 tok/s")
             Text("Value")
                 .frame(width: value, alignment: .trailing)
                 .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
@@ -848,13 +848,13 @@ struct HarnessSectionView: View {
                 .lineLimit(1)
                 .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
             HarnessMetricColumns.cluster(
-                prompts: "\(section.promptSpeedStatistics.totalPromptCount)",
+                prompts: "\(section.turnCount)",
                 token: Formatters.formatTokenCountCompact(section.totalTokens),
                 hitRate: HarnessUsageMenuView.hitRateText(section.cacheHitRate),
                 thinking: HarnessModelRowView.thinkingPercent(section.buckets) ?? "—",
                 ttft: Formatters.formatTTFT(section.ttftSeconds),
-                speed: Formatters.speedText(section.promptSpeedStatistics.p50),
-                speedHelp: HarnessMetricColumns.speedDistributionHelp(section.promptSpeedStatistics),
+                speed: Formatters.speedText(section.callSpeedStatistics.p50),
+                speedHelp: HarnessMetricColumns.speedDistributionHelp(section.callSpeedStatistics),
                 value: section.valueText
             )
             Group {
@@ -1298,13 +1298,13 @@ struct HarnessModelRowView: View {
                 .help(row.displayName)
                 .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
             HarnessMetricColumns.cluster(
-                prompts: "\(row.promptSpeedStatistics.totalPromptCount)",
+                prompts: "\(row.turnCount)",
                 token: Formatters.formatTokenCountCompact(row.totalTokens),
                 hitRate: Self.percentText(row.cacheHitRate),
                 thinking: Self.thinkingPercent(row.buckets) ?? "—",
                 ttft: Formatters.formatTTFT(row.ttftSeconds),
-                speed: Formatters.speedText(row.promptSpeedStatistics.p50),
-                speedHelp: HarnessMetricColumns.speedDistributionHelp(row.promptSpeedStatistics),
+                speed: Formatters.speedText(row.callSpeedStatistics.p50),
+                speedHelp: HarnessMetricColumns.speedDistributionHelp(row.callSpeedStatistics),
                 value: row.costText
             )
             Color.clear
@@ -1323,7 +1323,7 @@ struct HarnessModelRowView: View {
     }
 
     private static func accessibilityMetrics(for row: HarnessModelRow) -> String {
-        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；首字延迟 P50 \(Formatters.formatTTFT(row.ttftSeconds)) 秒；速度 P50 \(Formatters.speedText(row.promptSpeedStatistics.p50))"
+        "\(row.compactDisplayName)；Prompt \(row.turnCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；首字延迟 P50 \(Formatters.formatTTFT(row.ttftSeconds)) 秒；速度 P50 \(Formatters.speedText(row.callSpeedStatistics.p50))"
     }
 
     /// 命中率文案复用汇总块的同一实现。
