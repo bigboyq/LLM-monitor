@@ -411,7 +411,7 @@ GPT models）/ `gemini_argon`（Gemini 4 Argon）。这些都是独立配额池�
 
 状态栏以 `StatusBarQuotaSelection` 表达 Provider + 独立额度来源，配置入口为
 `statusBarQuotaSelection`（旧 `statusBarPinnedProvider` 仅作 JSON 迁移）：
-- 缺省或 nil：主套餐仍走全局接力聚合，中心取非零最小有效余量；双窗原始左右弧保留 min/avg 口径。API 赠金与活动权益不自动加入此集合。
+- 缺省或 nil：主套餐仍走全局接力聚合，中心取非零最小有效余量；双窗左右弧中左弧取有效 5h 额度（逐 model min(5h, 周×N)，与中心同真源 `aggregateActualAvailable`）的 avg 口径，右弧保持原始周 avg。API 赠金与活动权益不自动加入此集合。
 - 选 Provider 默认 `.plan`：走 `QuotaInfo.aggregateQuotaModels(providerKind:)` 聚合过滤，跟随主套餐主力窗口（双窗显示原双弧；单窗口类别显示单环）。保存的是主套餐身份，套餐窗口变化不会使选择失效。
 - `.planModel(modelName:)`（多模型套餐）：按模型唯一 `modelName` 精确选择单个 `ModelQuota`（直接读取该行自身双窗或单窗，**不应用 `aggregateQuotaModels` 聚合排除**，使用户可单独盯住如 Antigravity `Gemini 4 Argon`、`Claude and GPT models` 或 MiniMax `video`）。默认仅在多模型套餐（`activeModels.count > 1`）时在选项列表中额外展开 `.planModel`，单模型套餐只保留 `.plan`；若用户当前 `statusBarQuotaSelection` 已固定该 Provider 的 `.planModel(selectedName)` 且多模型套餐临时缩减为 1 个活跃模型（`activeModels.count == 1` 恰好匹配 `selectedName`），`statusBarQuotaPools` 仍补发该 `.planModel` 池，防止状态栏读数瞬时跌成「暂无数据」。
 - `.apiCredit(keyID:)` 精确选择单个 Admin API Key；`.activityPlan(planID:entitlementID:)` 精确选择一份 ZCode 活动权益。均为单环，不与主套餐或其他 Key / 权益混算。
@@ -574,5 +574,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-11 · 代码 fc07716
+> 核对基线：2026-11-13 · 代码 5ecb410
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

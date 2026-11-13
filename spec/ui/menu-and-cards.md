@@ -77,9 +77,15 @@ thresholds. Composite elements (the bottom dots and the center percentage) read 
 effective 5h reading — per dual-window model `min(5h, weekly × N)` paired with 5h time via
 `ModelQuota.aggregateActualAvailable`; weekly-only models use raw weekly percent and weekly time.
 The bottom dots and aggregate health evaluate effective 5h and raw weekly readings separately
-and take the worse tier via `aggregateHealthLevel`, while the left/right
-arcs keep their raw per-window averages (both short and weekly arcs use the widest remaining-time
-fraction across models for their dynamic thresholds). DeepSeek balance health is determined
+and take the worse tier via `aggregateHealthLevel`. The left arc takes the average of the
+per-model effective 5h quota — `min(5h, weekly × N)` through `aggregateActualAvailable`,
+the same source as the center — while the right arc keeps its raw weekly average (both short and
+weekly arcs use the widest remaining-time fraction across models for their dynamic thresholds).
+裁定记录：2026-11-13 起状态栏左弧与中心扇形 / 底部三点 / 边缘窗外环（`EdgeDockEntry.intervalFraction`）
+统一为跨 provider 的有效额度口径 min(5h, 周×N)，N 由 `ModelQuota.weeklyEquivalentMultiplier`
+按 provider 分派（antigravity 4/2、minimax 10/7、glm 5、codex 6）；原始 5h 只保留在卡片逐
+model 行与诊断日志（与 `EdgeDockEntry.rawIntervalFraction` 只喂 hover 文案的对照设计同思路）。
+DeepSeek balance health is determined
 by balance thresholds (`< 3` red, `< 10` yellow; default `deepseekBalanceCritical = 3.0`,
 `deepseekBalanceWarning = 10.0`). During GLM peak hours a peak
 floor raises a provider's composite status to at least `.warning` (red wins); the floor
@@ -1178,4 +1184,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-11 · 代码 fc07716
+> 核对基线：2026-11-13 · 代码 5ecb410
