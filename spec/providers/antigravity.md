@@ -59,6 +59,7 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 | Gemini Flash 3.x（`gemini-3.6-flash` / `gemini-3.7-flash` / `gemini-3.8-flash`） | 0.75 | 0.075 | 3.75 |
 | `gemini-3.1-pro` | 2.00 | 0.20 | 12.00 |
 | `gemini-4-argon` | 2.00 | 0.10 | 10.00 |
+| `gemini-4-hydrogen` | 1.50 | 0.075 | 7.50 |
 | `claude-opus-5.5` / `claude-opus-5-5` | 4.00 | 0.20 | 20.00 |
 | `claude-sonnet-5.5` / `claude-sonnet-5-5` | 2.00 | 0.20 | 10.00 |
 | `gpt-oss-120b` | 0.09 | 0.009 | 0.36 |
@@ -66,9 +67,10 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 | `claude-3.5-haiku` | 0.80 | 0.08 | 4.00 |
 | `gpt-4.1` | 2.00 | 0.50 | 8.00 |
 
-- **Gemini 支持清单**：`gemini-3.1-pro`、`gemini-4-argon` 与 3.6 / 3.7 / 3.8 Flash 有价。
+- **Gemini 支持清单**：`gemini-3.1-pro`、`gemini-4-argon`、`gemini-4-hydrogen` 与 3.6 / 3.7 / 3.8 Flash 有价。
   **Gemini 2.5 系列（Pro / Flash）已退休**：条目已删除，历史用量显示"未定价"（有意行为）。
 - **Gemini 4 Argon**：按 introductory API 定价（至 2026-11-30，`2.00 / 0.10 / 10.00`）；`gemini-4-argon` 子串同时覆盖 `-low` / `-medium` / `-high` 三个思考档位。
+- **Gemini 4 Hydrogen**：Flash 级新模型（2026-11-13 接入，USD `1.50 / 0.075 / 7.50`）；本地账本实测字符串为 kebab-case 的 `gemini-4-hydrogen` 与 `gemini-4-hydrogen-medium`，contains 子串同时覆盖各思考档位后缀（与 Argon 同口径）。
 - **Claude Opus / Sonnet 4.6 已下架**（2026-10 起被 5.5 取代）：条目已删除，历史用量显示"未定价"（有意行为，与 Gemini 2.5 退休同口径）。
 - **Gemini 3.1 Pro**：按标准档（≤200K 上下文）定价；>200K 的长上下文档不建模 ——
   本地账本不保留请求上下文长度，与 MiniMax >512K 档不参与同一口径。
@@ -1910,4 +1912,4 @@ For raw quota export outside the menu app:
    的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-11 · 代码 0891871
+> 核对基线：2026-11-13 · 代码 908a5ef
