@@ -280,7 +280,7 @@ final class ModelPricingAliasTests: XCTestCase {
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-10-27",
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-11-13",
                        "与 ModelPricingJSONTests.testPricingJSONIntegrity 保持一致：改定价目录要同步改这两处")
     }
 }

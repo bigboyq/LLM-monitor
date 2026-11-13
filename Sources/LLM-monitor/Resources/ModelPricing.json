@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-10-27",
+  "lastUpdated": "2026-11-13",
   "providers": {
     "minimax": {
       "models": [
@@ -119,6 +119,15 @@
           "inputPerMillion": 2,
           "cacheReadPerMillion": 0.1,
           "outputPerMillion": 10
+        },
+        {
+          "match": "contains",
+          "keywords": ["gemini-4-hydrogen"],
+          "label": "Gemini 4 Hydrogen",
+          "currency": "USD",
+          "inputPerMillion": 1.5,
+          "cacheReadPerMillion": 0.075,
+          "outputPerMillion": 7.5
         },
         {
           "match": "contains",

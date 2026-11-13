@@ -2,6 +2,12 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.7.9] - 2026-11-13
+
+### Added
+
+- Antigravity 新增 Gemini 4 Hydrogen 定价支持：Flash 级新模型按 USD `1.50 input / 0.075 cache read / 7.50 output` per 1M tokens 计价，contains 匹配覆盖 `gemini-4-hydrogen` 及各思考档位后缀（与 Gemini 4 Argon 同口径）。
+
 ## [2.7.8] - 2026-11-11
 
 ### Fixed
