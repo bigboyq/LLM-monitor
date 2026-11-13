@@ -288,6 +288,135 @@ final class StatusBarQuotaSelectionTests: XCTestCase {
                      "a failed first request cannot present the configured limit as 100% remaining")
     }
 
+    /// 左弧（5h 额度）与中心扇形统一为有效额度口径：逐 model
+    /// min(5h 剩余, 周剩余 × N)，N 由 `weeklyEquivalentMultiplier` 按 provider
+    /// 分派（codex 6、minimax 10 / video 7、glm 5）。右弧保持原始周剩余。
+    @MainActor
+    func testIntervalArcShowsEffectiveQuotaCappedByWeeklyEquivalent() throws {
+        let (state, store, directory) = try makeMultiModelFixture()
+        defer { state.stop(); try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+
+        // Codex（N=6）：周 × 6 折算后比 5h 更紧：左弧必须收缩到 min(70, 10 × 6) = 60，而不是原始 70。
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "chatgpt_plan", interval: 70, weekly: 10, now: now)], resetCredits: nil,
+                planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "codex_chatgpt", in: state
+        )
+        var config = store.config
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "codex_chatgpt", source: .plan)
+        try store.applyAndSave(config)
+        let binding = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(binding.singleQuota)
+        XCTAssertEqual(binding.interval.avgAvailable, 0.60, accuracy: 0.001,
+                       "the left arc shows the effective 5h quota, capped by weekly × N")
+        XCTAssertEqual(binding.weekly.avgAvailable, 0.10, accuracy: 0.001,
+                       "the right arc keeps the raw weekly remainder")
+        XCTAssertEqual(binding.centerAvailable ?? -1, 0.60, accuracy: 0.001)
+
+        // 周不构成瓶颈（weekly × 6 封顶 100）：左弧维持原始 5h 读数。
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "chatgpt_plan", interval: 70, weekly: 90, now: now)], resetCredits: nil,
+                planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "codex_chatgpt", in: state
+        )
+        let nonBinding = state.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(nonBinding.interval.avgAvailable, 0.70, accuracy: 0.001,
+                       "a non-binding weekly window leaves the 5h arc at its raw reading")
+
+        // 仅 5h 窗口：有效额度即原始 5h。
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "chatgpt_plan", interval: 70, weekly: nil, now: now)], resetCredits: nil,
+                planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "codex_chatgpt", in: state
+        )
+        let intervalOnly = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNotNil(intervalOnly.singleQuota)
+        XCTAssertEqual(intervalOnly.interval.avgAvailable, 0.70, accuracy: 0.001)
+
+        // MiniMax general（N=10）：weekly × 10 = 80% 高于 5h 70%，左弧维持原始读数
+        // （video 不参与 .plan 聚合，不影响该断言）。
+        setQuota(
+            QuotaInfo(
+                models: [
+                    makeModel(name: "general", interval: 70, weekly: 8, now: now),
+                    makeModel(name: MinimaxModelKind.video.rawValue, interval: 50, weekly: 10, now: now),
+                ],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "minimax_token_plan", in: state
+        )
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "minimax_token_plan", source: .plan)
+        try store.applyAndSave(config)
+        let minimaxPlan = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(minimaxPlan.singleQuota, "dual-window general retains the dual gauge")
+        XCTAssertEqual(minimaxPlan.interval.avgAvailable, 0.70, accuracy: 0.001,
+                       "a non-binding weekly × 10 leaves the minimax 5h arc at its raw reading")
+        XCTAssertEqual(minimaxPlan.weekly.avgAvailable, 0.08, accuracy: 0.001,
+                       "the right arc keeps the raw weekly remainder")
+        XCTAssertEqual(minimaxPlan.centerAvailable ?? -1, 0.70, accuracy: 0.001)
+
+        // MiniMax general（N=10）周瓶颈生效：min(70, 6 × 10) = 60。
+        setQuota(
+            QuotaInfo(
+                models: [
+                    makeModel(name: "general", interval: 70, weekly: 6, now: now),
+                    makeModel(name: MinimaxModelKind.video.rawValue, interval: 50, weekly: 10, now: now),
+                ],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "minimax_token_plan", in: state
+        )
+        let minimaxTightened = state.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(minimaxTightened.interval.avgAvailable, 0.60, accuracy: 0.001,
+                       "the minimax left arc shrinks to min(70, 6 × 10) = 60")
+        XCTAssertEqual(minimaxTightened.weekly.avgAvailable, 0.06, accuracy: 0.001,
+                       "the right arc keeps the raw weekly remainder")
+        XCTAssertEqual(minimaxTightened.centerAvailable ?? -1, 0.60, accuracy: 0.001)
+
+        // MiniMax video（日窗，N=7）：不参与 .plan 聚合，选中单 model 池后左弧即其
+        // 有效额度 min(50, 10 × 7) = 50（日窗也走同一跨 provider 口径）。
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(
+            providerID: "minimax_token_plan",
+            source: .planModel(modelName: MinimaxModelKind.video.rawValue)
+        )
+        try store.applyAndSave(config)
+        let videoMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(videoMetrics.singleQuota, "dual-window video model keeps the dual gauge")
+        XCTAssertEqual(videoMetrics.interval.avgAvailable, 0.50, accuracy: 0.001,
+                       "the video left arc reads min(50, 10 × 7) = 50")
+        XCTAssertEqual(videoMetrics.weekly.avgAvailable, 0.10, accuracy: 0.001,
+                       "the right arc keeps the raw weekly remainder")
+        XCTAssertEqual(videoMetrics.centerAvailable ?? -1, 0.50, accuracy: 0.001)
+
+        // GLM Coding Plan（N=5）：周 × 5 折算后更紧：min(70, 12 × 5) = 60。
+        setQuota(
+            QuotaInfo(
+                models: [makeModel(name: "glm_coding_plan", interval: 70, weekly: 12, now: now)],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now
+            ),
+            for: "glm_coding_plan", in: state
+        )
+        config.statusBarQuotaSelection = StatusBarQuotaSelection(providerID: "glm_coding_plan", source: .plan)
+        try store.applyAndSave(config)
+        let glmMetrics = state.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(glmMetrics.singleQuota, "dual-window glm plan retains the dual gauge")
+        XCTAssertEqual(glmMetrics.interval.avgAvailable, 0.60, accuracy: 0.001,
+                       "the glm left arc shrinks to min(70, 12 × 5) = 60")
+        XCTAssertEqual(glmMetrics.weekly.avgAvailable, 0.12, accuracy: 0.001,
+                       "the right arc keeps the raw weekly remainder")
+        XCTAssertEqual(glmMetrics.centerAvailable ?? -1, 0.60, accuracy: 0.001)
+    }
+
     @MainActor
     func testGLMActivityOptionsRemainIndependentAndExpiredBalanceIsZero() throws {
         let (state, store, directory) = try makeFixture(zcodeEnabled: true)
@@ -570,7 +699,8 @@ final class StatusBarQuotaSelectionTests: XCTestCase {
         try store.applyAndSave(config)
         let claudeMetrics = state.statusBarQuotaMetrics(at: now)
         XCTAssertNil(claudeMetrics.singleQuota, "dual-window claude_and_gpt_models uses dual-gauge presentation")
-        XCTAssertEqual(claudeMetrics.interval.avgAvailable, 0.80, accuracy: 0.001)
+        XCTAssertEqual(claudeMetrics.interval.avgAvailable, 0.30, accuracy: 0.001,
+                       "the left arc now shows the effective 5h quota too: min(80%, 15% × 2) = 30%, same as centerAvailable")
         XCTAssertEqual(claudeMetrics.weekly.avgAvailable, 0.15, accuracy: 0.001)
         XCTAssertEqual(claudeMetrics.centerAvailable ?? -1, 0.30, accuracy: 0.001,
                        "Claude weekly multiplier is 2.0, so min(80%, 15% * 2) = 30%")

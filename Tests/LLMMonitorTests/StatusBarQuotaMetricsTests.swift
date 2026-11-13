@@ -452,7 +452,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"weekly-track\""))
         XCTAssertEqual(weeklyOnlyMetrics.singleQuota?.remainingFraction, 0.70)
 
-        // 双窗口中周窗口耗尽时，5h 原始弧仍保留自身 75%；但有效额度（中心）归零。
+        // 双窗口中周窗口耗尽时，左弧与中心同口径（有效额度）：min(75, 0 × N) = 0。
         let exhaustedWeekly = try parsedCodexQuota(
             primary: [
                 "used_percent": 25,
@@ -468,7 +468,8 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertEqual(exhaustedWeekly.aggregateActualAvailable(providerKind: .codexChatGpt, at: now)?.percent, 0)
         setCodexQuota(exhaustedWeekly)
         let exhaustedWeeklyMetrics = appState.statusBarQuotaMetrics(at: now)
-        XCTAssertEqual(exhaustedWeeklyMetrics.interval.minAvailable, 0.75, accuracy: 0.001)
+        XCTAssertEqual(exhaustedWeeklyMetrics.interval.minAvailable, 0, accuracy: 0.001,
+                       "周耗尽时左弧与中心同口径收缩到有效额度 0，不再保留原始 5h 75%")
         XCTAssertEqual(exhaustedWeeklyMetrics.weekly.minAvailable, 0, accuracy: 0.001)
         XCTAssertEqual(exhaustedWeeklyMetrics.centerAvailable ?? -1, 0, accuracy: 0.001)
 
@@ -560,8 +561,8 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             accuracy: 0.001,
             "周×N(50%) 先于 5h(80%) 耗尽时，中心应显示实际可用 50%"
         )
-        // 左右弧仍为原始物理剩余，不受实际可用口径影响。
-        XCTAssertEqual(metrics.interval.minAvailable, 0.80, accuracy: 0.001)
+        // 左弧与中心同为有效额度口径（GLM N=5：min(80, 10 × 5) = 50）；右弧保持原始周剩余。
+        XCTAssertEqual(metrics.interval.minAvailable, 0.50, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.minAvailable, 0.10, accuracy: 0.001)
         // 回归：虽然周额度限制了中心读数，时间仍配 5h 的 1h / 5h = 0.2，
         // 不得误用周窗口刚重置的 1.0。

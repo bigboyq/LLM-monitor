@@ -63,8 +63,12 @@ enum StatusBarQuotaProjection {
         return labels.isEmpty ? "主套餐" : labels.joined(separator: " / ")
     }
 
-    /// Both the global relay and a selected main plan retain the existing physical
-    /// window readings and effective-quota calculation. Layout follows window presence.
+    /// The left arc reads the effective 5h quota: per model
+    /// `min(5h remaining, weekly remaining × N)` via `aggregateActualAvailable` —
+    /// the same source as the center wedge, the bottom dots and the edge-dock
+    /// outer ring (`EdgeDockEntry.intervalFraction`). The right arc keeps the raw
+    /// weekly remainder ("how much of the weekly quota itself is left"). Dual/single
+    /// gauge layout still follows physical window presence.
     static func metrics(
         models entries: [StatusBarPlanModel],
         alertThresholds: AlertThresholdConfig,
@@ -73,7 +77,13 @@ enum StatusBarQuotaProjection {
         let models = entries.map(\.model)
         let intervalModels = models.filter(\.hasIntervalWindow)
         let weeklyModels = models.filter(\.hasWeeklyWindow)
-        let interval = ringMetrics(intervalModels.map(\.intervalRemainingPercent))
+        // 周剩余 × N 可能比 5h 更紧（N 由 weeklyEquivalentMultiplier 按 provider 分派），
+        // 直接读原始 5h 会高估可用额度，左弧与中心扇形取同一有效额度口径。
+        let interval = ringMetrics(
+            entries.filter { $0.model.hasIntervalWindow }.compactMap { entry in
+                entry.model.aggregateActualAvailable(providerKind: entry.kind, at: now)?.percent
+            }
+        )
         let weekly = ringMetrics(weeklyModels.map(\.weeklyRemainingPercent))
 
         var best: (percent: Double, bindingTimeFraction: Double?)?
